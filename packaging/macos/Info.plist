@@ -2,10 +2,10 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleName</key><string>ZapFast</string>
-    <key>CFBundleDisplayName</key><string>ZapFast</string>
-    <!-- Keep the installed app identity across the rename. -->
-    <key>CFBundleIdentifier</key><string>me.paolino.fastsapp</string>
+    <key>CFBundleName</key><string>ZapFast Silicon</string>
+    <key>CFBundleDisplayName</key><string>ZapFast Silicon</string>
+    <!-- This fork has an independent app and privacy-permission identity. -->
+    <key>CFBundleIdentifier</key><string>org.erlin.zapfast-silicon</string>
     <key>CFBundleExecutable</key><string>zapfast</string>
     <key>CFBundleIconFile</key><string>zapfast</string>
     <key>CFBundlePackageType</key><string>APPL</string>
@@ -14,7 +14,7 @@
     <key>LSMinimumSystemVersion</key><string>11.0</string>
     <key>LSApplicationCategoryType</key><string>public.app-category.social-networking</string>
     <key>NSHighResolutionCapable</key><true/>
-    <key>NSMicrophoneUsageDescription</key><string>ZapFast uses the microphone to record voice messages you choose to send.</string>
+    <key>NSMicrophoneUsageDescription</key><string>ZapFast Silicon uses the microphone to record voice messages you choose to send.</string>
     <key>NSHumanReadableCopyright</key><string>MIT License. Not affiliated with WhatsApp or Meta.</string>
 </dict>
 </plist>

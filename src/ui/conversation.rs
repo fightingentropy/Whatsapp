@@ -58,7 +58,7 @@ fn empty(app: &mut App, ui: &mut egui::Ui) {
     ui.painter().text(
         center,
         Align2::CENTER_CENTER,
-        "ZapFast",
+        "ZapFast Silicon",
         theme::bold(24.0),
         palette.text,
     );

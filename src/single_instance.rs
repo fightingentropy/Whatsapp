@@ -9,12 +9,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// Fixed high loopback port outside the ephemeral range.
-const INSTANCE_PORT: u16 = 47_119;
+const INSTANCE_PORT: u16 = 47_120;
 
-/// Stable wire identity shared with FastsApp so upgrades surface a running
-/// older copy before migrating its session files.
-const PREFIX: &str = "fastsapp:";
-const OK_REPLY: &str = "fastsapp:ok";
+/// Independent wire identity: a fork launch must never control upstream.
+const PREFIX: &str = "zapfast-silicon:";
+const OK_REPLY: &str = "zapfast-silicon:ok";
 
 pub enum Outcome {
     /// This process owns the instance guard.
@@ -152,10 +151,10 @@ mod tests {
 
     #[test]
     fn only_our_own_show_is_understood() {
-        assert_eq!(parse("fastsapp:show\n"), Some(ControlCommand::Show));
-        assert_eq!(parse("fastsapp:show"), Some(ControlCommand::Show));
+        assert_eq!(parse("zapfast-silicon:show\n"), Some(ControlCommand::Show));
+        assert_eq!(parse("zapfast-silicon:show"), Some(ControlCommand::Show));
         assert_eq!(parse("GET / HTTP/1.1"), None);
-        assert_eq!(parse("fastsapp:frobnicate"), None);
+        assert_eq!(parse("zapfast-silicon:frobnicate"), None);
         assert_eq!(parse(""), None);
     }
 

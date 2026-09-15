@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build ZapFast.app from a GUI binary on macOS.
+# Build ZapFast Silicon.app from a GUI binary on macOS.
 #
 #   packaging/macos/bundle.sh <binary> <output.app> <version>
 #
@@ -14,6 +14,9 @@ binary="$1"
 app="$2"
 version="$3"
 here="$(cd "$(dirname "$0")" && pwd)"
+
+# Reject a universal or Intel input before touching the destination.
+test "$(lipo -archs "$binary")" = arm64
 
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"

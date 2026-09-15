@@ -74,7 +74,7 @@ fn main() -> eframe::Result<()> {
         match single_instance::acquire(&waker) {
             single_instance::Outcome::Only(guard) => Some(guard),
             single_instance::Outcome::Surfaced => {
-                eprintln!("ZapFast or FastsApp is already running; asked it to show its window");
+                eprintln!("ZapFast Silicon is already running; asked it to show its window");
                 return Ok(());
             }
         }
@@ -84,8 +84,7 @@ fn main() -> eframe::Result<()> {
     } else {
         "warn,zapfast=info"
     };
-    // A demo must not create empty ZapFast directories that would prevent a
-    // later real launch from adopting the existing FastsApp session.
+    // Keep offline demos separate from the fork's linked account and settings.
     let dirs = if demo {
         paths::AppDirs::under(&std::env::temp_dir().join(format!(
             "zapfast-demo-{}-{}",
@@ -95,10 +94,6 @@ fn main() -> eframe::Result<()> {
     } else {
         paths::AppDirs::discover()
     };
-    if !demo {
-        dirs.adopt_previous_names()
-            .map_err(|error| eframe::Error::AppCreation(error.into()))?;
-    }
     let dirs_ready = dirs.ensure();
     let mut logger =
         env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(default_filter));
@@ -155,7 +150,7 @@ fn main() -> eframe::Result<()> {
         #[cfg(feature = "demo")]
         let creator_tour_events = cli.demo_tour_events.clone();
         eframe::run_native(
-            "ZapFast",
+            "ZapFast Silicon",
             native_options(demo_persistence.clone()),
             Box::new(move |cc| {
                 creator_waker.attach(&cc.egui_ctx);
@@ -203,15 +198,16 @@ fn main() -> eframe::Result<()> {
             .expect("application state present")
             .window_gone();
         loop {
-            {
+            let delay = {
                 let mut guard = slot.lock().unwrap_or_else(|p| p.into_inner());
                 let app = guard.as_mut().expect("application state present");
                 app.background_frame(&headless);
                 if app.quit_requested || app.wants_show {
                     break;
                 }
-            }
-            zapfast::tray::idle(std::time::Duration::from_millis(150));
+                app.background_wait()
+            };
+            zapfast::tray::idle(delay);
         }
         let quit = slot
             .lock()
@@ -283,8 +279,16 @@ fn native_options(demo_persistence: Option<std::path::PathBuf>) -> eframe::Nativ
     let demo_size = demo_size_arg().unwrap_or([1180.0, 780.0]);
     let demo = demo_persistence.is_some();
     let viewport = egui::ViewportBuilder::default()
-        .with_title(if demo { "ZapFast Demo" } else { "ZapFast" })
-        .with_app_id(if demo { "zapfast-demo" } else { "zapfast" })
+        .with_title(if demo {
+            "ZapFast Silicon Demo"
+        } else {
+            "ZapFast Silicon"
+        })
+        .with_app_id(if demo {
+            "zapfast-silicon-demo"
+        } else {
+            "zapfast-silicon"
+        })
         .with_inner_size(demo_size)
         .with_min_inner_size([720.0, 480.0])
         .with_icon(app_icon())

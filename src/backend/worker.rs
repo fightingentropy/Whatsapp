@@ -553,7 +553,7 @@ impl Worker {
             // WhatsApp reads the linked-device name, version, and icon at pairing.
             .with_device_props(
                 DevicePropsOverride::new()
-                    .with_os("ZapFast")
+                    .with_os("ZapFast Silicon")
                     .with_version(app_version())
                     .with_platform_type(wa::device_props::PlatformType::DESKTOP),
             )
@@ -1658,6 +1658,34 @@ impl Worker {
         self.emit_chats();
     }
 
+    fn store_history_batch(&self, batch: &mut Vec<(Message, Vec<u8>)>) {
+        if batch.is_empty() {
+            return;
+        }
+        if let Err(error) = self.archive.insert_messages(
+            batch
+                .iter()
+                .map(|(message, raw)| (message, Some(raw.as_slice()))),
+        ) {
+            log::warn!("could not store a history batch: {error}");
+            // The transaction rolled back. Preserve the previous per-message
+            // behavior if one malformed row prevents the whole batch committing.
+            let mut failed = false;
+            for (message, raw) in batch.iter() {
+                if let Err(error) = self.archive.insert_message(message, Some(raw)) {
+                    log::warn!("could not store a history message: {error}");
+                    failed = true;
+                }
+            }
+            if failed {
+                self.emit(Event::Error(
+                    "Some history could not be saved. Check available disk space.".into(),
+                ));
+            }
+        }
+        batch.clear();
+    }
+
     /// Archives a history chunk. `metadata` controls chat-state updates.
     /// Returns each chat's message count and whether the phone has more.
     fn apply_history(
@@ -1749,6 +1777,7 @@ impl Worker {
                 self.request_group_info(&id, false);
             }
             let count = chat.messages.len();
+            let mut batch = Vec::with_capacity(256);
             for message in chat.messages {
                 let sender = if message.from_me {
                     self.me()
@@ -1810,10 +1839,12 @@ impl Worker {
                     forwarded: message.forwarded,
                     thumbnail: message.thumbnail,
                 };
-                if let Err(error) = self.archive.insert_message(&row, Some(&message.raw)) {
-                    log::warn!("could not store a history message: {error}");
+                batch.push((row, message.raw));
+                if batch.len() == 256 {
+                    self.store_history_batch(&mut batch);
                 }
             }
+            self.store_history_batch(&mut batch);
             for revoked in chat.revoked {
                 let _ = self
                     .archive

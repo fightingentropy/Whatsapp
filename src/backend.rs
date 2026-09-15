@@ -436,6 +436,9 @@ impl Waker {
     pub fn wake(&self) {
         if let Some(ctx) = self.0.lock().unwrap_or_else(|p| p.into_inner()).as_ref() {
             ctx.request_repaint();
+        } else {
+            #[cfg(target_os = "macos")]
+            crate::background::wake();
         }
     }
 

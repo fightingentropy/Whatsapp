@@ -97,7 +97,7 @@ fn deliver(
     }
     let mut notification = notify_rust::Notification::new();
     notification
-        .appname("ZapFast")
+        .appname("ZapFast Silicon")
         .summary(title)
         .body(body)
         .icon("zapfast")
@@ -152,7 +152,10 @@ fn deliver(
         return;
     }
     let mut notification = notify_rust::Notification::new();
-    notification.appname("ZapFast").summary(title).body(body);
+    notification
+        .appname("ZapFast Silicon")
+        .summary(title)
+        .body(body);
     // Windows uses the image; macOS always uses the app icon.
     if let Some(picture) = picture {
         notification.image_path(&picture.to_string_lossy());

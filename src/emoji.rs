@@ -37,6 +37,7 @@ static FONT: OnceLock<Option<Font>> = OnceLock::new();
 /// Noto Color Emoji supplies bitmap glyphs on systems such as Windows whose
 /// installed emoji font uses an outline colour format this renderer cannot
 /// rasterize.
+#[cfg(any(feature = "bundled-emoji", test))]
 const BUNDLED: &[u8] = include_bytes!("../assets/fonts/NotoColorEmoji.ttf");
 
 /// Whether a color emoji font is available.
@@ -60,7 +61,14 @@ fn load() -> Option<Font> {
     {
         return Some(font);
     }
-    load_bytes(BUNDLED.to_vec(), 0, "bundled Noto Color Emoji")
+    #[cfg(any(feature = "bundled-emoji", test))]
+    {
+        load_bytes(BUNDLED.to_vec(), 0, "bundled Noto Color Emoji")
+    }
+    #[cfg(not(any(feature = "bundled-emoji", test)))]
+    {
+        None
+    }
 }
 
 fn load_bytes(bytes: Vec<u8>, index: u32, source: &str) -> Option<Font> {
