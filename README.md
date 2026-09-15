@@ -134,15 +134,15 @@ cargo build --locked --release
 ./target/aarch64-apple-darwin/release/zapfast
 ```
 
-For a locally signed app bundle:
+For a local test DMG:
 
 ```sh
-bash packaging/macos/bundle.sh target/aarch64-apple-darwin/release/zapfast \
-  "dist/ZapFast Silicon.app" 0.13.1
-open "dist/ZapFast Silicon.app"
+bash packaging/macos/build-local.sh
+open "dist/ZapFast-Silicon-0.13.1-local-arm64.dmg"
 ```
 
-Local bundles use an ad-hoc signature unless `CODESIGN_IDENTITY` is supplied.
+The helper signs the app ad hoc in a temporary directory outside iCloud, then
+copies the finished DMG back to `dist/`. It does not install or notarize the app.
 Public releases require Developer ID signing and notarization; see
 [PACKAGING.md](PACKAGING.md).
 

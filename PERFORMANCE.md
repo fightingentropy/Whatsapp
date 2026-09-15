@@ -2,7 +2,8 @@
 
 ## Measured on 15 September 2026
 
-Apple M4 Pro, macOS 27.0 (26A428), Rust 1.98.0, bundled SQLite 3.53.2.
+Apple M4 Pro, macOS 27.0 (26A428), Rust 1.98.0 (88d9e12ae), bundled SQLite 3.53.2.
+The compiler, Cargo, Clippy and rustdoc were selected from the same rustup toolchain.
 These are local synthetic benchmarks, not a linked WhatsApp account.
 Raw results are in [the measurement file](benchmarks/apple-silicon-2026-09-15.json).
 
@@ -15,10 +16,10 @@ sides return the same ordered IDs and are also checked against the public
 Archive API. Timings cover SQL and ID collection, excluding UI rendering,
 message deserialization, the 180 ms typing delay and network traffic.
 
-- Rare `parcelreference`: **77.094 ms → 0.736 ms**.
-- Missing `no-such-phrase`: **80.000 ms → 0.370 ms**.
-- Common `ordinary`: **83.502 ms → 0.322 ms**.
-- Short `or`: **83.805 ms → 0.118 ms**.
+- Rare `parcelreference`: **77.111 ms → 0.740 ms**.
+- Missing `no-such-phrase`: **79.629 ms → 0.367 ms**.
+- Common `ordinary`: **84.127 ms → 0.318 ms**.
+- Short `or`: **83.017 ms → 0.110 ms**.
 
 The implementation combines an FTS5 trigram index with a global timestamp
 index. For a normal page of results, it first checks at most the newest 256
@@ -38,8 +39,8 @@ level 2. It does not measure whole-app speed or predict every user's latency.
 with synchronous NORMAL. Median of three runs using the same current indexed
 schema and the public Archive API on both sides:
 
-- Individual `insert_message` calls: **1,083.745 ms**.
-- `insert_messages` in batches of 256: **366.488 ms** (**2.96× faster**).
+- Individual `insert_message` calls: **1,054.161 ms**.
+- `insert_messages` in batches of 256: **363.458 ms** (**2.90× faster**).
 
 This isolates transaction batching and per-chat activity updates. It is not an
 end-to-end phone history-sync benchmark or a comparison with upstream's
@@ -49,7 +50,7 @@ raw attachment metadata and chat activity.
 ### Background and animation checks
 
 The closed-window loop no longer wakes every 150 ms. A main-thread
-CoreFoundation probe verified a worker wake after **32.53 ms**, including the
+CoreFoundation probe verified a worker wake after **33.04 ms**, including the
 worker's deliberate 30 ms delay, survived 100 signal/wait races and respected
 an idle deadline. This proves the wake mechanism; it is not a measured battery
 percentage. Protocol maintenance and network timers still run.
@@ -68,7 +69,10 @@ The implementation still decodes complete bounded clips before playback.
 - Real native ARM64 demo window opened and saved a screenshot; layout and
   color emoji were visually checked using offline sample chats.
 - Mac bundle scripts, plist metadata and the native-packages configuration
-  validated. The DMG recipe resolves to this fork and ARM64 only.
+  validated. A local release DMG was built, mounted read-only, and its app's
+  ad-hoc signature, ARM64 architecture, microphone metadata and binary hash
+  verified. The release executable before bundle signing is 28,315,312 bytes (27.00 MiB), with macOS 11.0 recorded
+  as its minimum deployment version. This build is not notarized.
 - Live account linking, message delivery, physical microphone recording,
   notifications and Developer ID notarization were not tested in this run.
 

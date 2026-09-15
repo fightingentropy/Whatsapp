@@ -35,6 +35,10 @@ for size in 16 32 128 256 512; do
 done
 iconutil -c icns "$iconset" -o "$app/Contents/Resources/zapfast.icns"
 
+# Finder/iCloud metadata can be inherited from a local checkout or generated
+# icon. Only the freshly built bundle is cleared; codesign rejects this metadata.
+xattr -cr "$app"
+
 # Attach the microphone entitlement before native-packages preserves it when
 # replacing the ad-hoc signature with a hardened Developer ID signature.
 if [ -n "${CODESIGN_IDENTITY:-}" ]; then
