@@ -1,42 +1,42 @@
 {
-  "batch_insert_median_ms": 366.48825,
+  "batch_insert_median_ms": 363.458208,
   "batch_size": 256,
   "dataset": "100000 synthetic text messages, 100 chats, 256 raw bytes per message",
   "search_trials": 21,
   "searches": [
     {
       "hits": 50,
-      "new_sql_median_ms": 0.735709,
-      "old_sql_median_ms": 77.093792,
+      "new_sql_median_ms": 0.7402920000000001,
+      "old_sql_median_ms": 77.111041,
       "query": "parcelreference"
     },
     {
       "hits": 0,
-      "new_sql_median_ms": 0.369542,
-      "old_sql_median_ms": 80.000166,
+      "new_sql_median_ms": 0.367125,
+      "old_sql_median_ms": 79.62887500000001,
       "query": "no-such-phrase"
     },
     {
       "hits": 50,
-      "new_sql_median_ms": 0.321542,
-      "old_sql_median_ms": 83.502375,
+      "new_sql_median_ms": 0.318,
+      "old_sql_median_ms": 84.126542,
       "query": "ordinary"
     },
     {
       "hits": 50,
-      "new_sql_median_ms": 0.118292,
-      "old_sql_median_ms": 83.805458,
+      "new_sql_median_ms": 0.109625,
+      "old_sql_median_ms": 83.017166,
       "query": "or"
     }
   ],
-  "single_insert_median_ms": 1083.7452919999998,
+  "single_insert_median_ms": 1054.160875,
   "sqlite_version": "3.53.2",
   "write_note": "Same current indexed schema and public Archive API on both sides; file-backed WAL, synchronous NORMAL",
   "write_rows": 10000,
   "write_trials": 3,
   "host": "Apple M4 Pro, macOS 27.0 (26A428)",
   "date": "2026-09-15",
-  "rust": "1.98.0",
+  "rust": "1.98.0 (88d9e12ae 2026-08-18)",
   "profile": "dev; dependencies opt-level=2",
   "baseline": "Equivalent ID-only SQL; original six-field LIKE expression with full scan forced because the fork adds a timestamp index"
 }

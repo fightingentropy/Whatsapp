@@ -12,19 +12,24 @@ The artifact is `zapfast-vX.Y.Z-macos-arm64.dmg` and contains
 On an Apple Silicon Mac with Rust, CMake and Xcode Command Line Tools:
 
 ```sh
-cargo build --locked --release
-bash packaging/macos/bundle.sh target/aarch64-apple-darwin/release/zapfast \
-  "dist/macos-input/ZapFast Silicon.app" 0.13.1
-cp README.md LICENSE dist/macos-input/
-gem install native-packages --version 0.5.1 --no-document
-native-packages --config native-packages.macos.yaml build \
-  --version 0.13.1 --target macos-arm64 --output dist/macos-packages-test
+bash packaging/macos/build-local.sh
 ```
 
-`bundle.sh` validates the input architecture, includes microphone permission
-metadata, and signs the app ad hoc by default. `CODESIGN_IDENTITY` enables a
-Developer ID signature. An ad-hoc signature is for local testing; it does not
-establish notarization or Gatekeeper distribution acceptance.
+The helper selects the repository-pinned compiler through rustup, builds the ARM64 release binary, stages and signs the app in a
+fresh temporary directory, creates and verifies the DMG, then writes
+`dist/ZapFast-Silicon-VERSION-local-arm64.dmg`. An optional first argument
+chooses another `.dmg` output path. It uses the same bundle and disk-image
+recipes as release packaging and requires Ruby and Python 3 in addition to
+the build tools. Re-running replaces only the named output DMG.
+
+Temporary staging supports checkouts in iCloud Drive: File Provider can
+immediately re-add Finder metadata to a synced `.app`, causing signing to fail.
+The finished DMG encloses the signed app, so it can be stored in iCloud.
+`bundle.sh` also strips inherited attributes from its freshly generated bundle.
+
+Local test packages are ad-hoc signed and not notarized. For a Developer ID
+bundle, call `bundle.sh` with `CODESIGN_IDENTITY` in an unsynced directory.
+The public release workflow below uses the native-packages CLI at version 0.5.1.
 
 ## Release workflow
 
