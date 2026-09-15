@@ -1,0 +1,132 @@
+[package]
+name = "zapfast"
+version = "0.13.1"
+edition = "2024"
+rust-version = "1.98"
+license = "MIT"
+description = "A native WhatsApp client built with Rust and egui"
+homepage = "https://zapfast.rocks"
+repository = "https://github.com/crmne/zapfast"
+keywords = ["whatsapp", "chat", "egui", "messaging"]
+categories = ["gui"]
+
+[lib]
+name = "zapfast"
+path = "src/lib.rs"
+
+[[bin]]
+name = "zapfast"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+# Hashes saved stickers by content. Already included through wacore.
+sha2 = "0.11"
+# Decrypts Signal sticker packs. All four crates are already included through
+# wacore at these versions.
+aes = "0.9"
+cbc = { version = "0.2", features = ["alloc", "block-padding"] }
+hkdf = "0.13"
+hmac = "0.13"
+# Reads .wastickers zip archives.
+zip = { version = "5", default-features = false, features = ["deflate"] }
+clap = { version = "4.5", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = "0.4"
+env_logger = { version = "0.11", default-features = false, features = ["auto-color", "humantime"] }
+directories = "6"
+# UI framework. glow avoids the larger wgpu dependency.
+eframe = { version = "0.36", default-features = false, features = ["glow", "default_fonts", "links", "wayland", "x11", "persistence"] }
+egui = "0.36"
+egui_extras = { version = "0.36", features = ["file", "image", "svg", "webp", "gif"] }
+# Finds system fonts for scripts not covered by Inter. Keep skrifa aligned with
+# epaint to avoid compiling two versions. memmap2 limits font scans to the
+# required pages.
+skrifa = "0.44"
+memmap2 = "0.9"
+# Decodes JPEG, PNG, WebP, and GIF images.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
+# WhatsApp Web protocol: pairing, encryption, history sync, and media. Version
+# 0.7.0 on crates.io enables `simd`, which needs nightly Rust. This commit builds
+# on stable. Selected features provide Tokio transport, ureq media downloads,
+# and the SQLite device store. The window handles shutdown instead of `signal`.
+whatsapp-rust = { git = "https://github.com/oxidezap/whatsapp-rust", rev = "1ace865716726daec8d0f00335453fcb8de35d1b", default-features = false, features = ["sqlite-storage", "tokio-transport", "tokio-runtime", "ureq-client", "tokio-native"] }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros", "fs"] }
+# Local message archive. `bundled` uses the same SQLite build as the device
+# store.
+rusqlite = { version = "0.40", features = ["bundled"] }
+qrcode = { version = "0.14", default-features = false }
+# Downloads profile pictures. The protocol library already includes this crate
+# and TLS stack.
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+jiff = "0.2"
+# Treats joined emoji as one grapheme. Already included through egui.
+unicode-segmentation = "1"
+# Opens downloaded attachments in their default desktop apps.
+open = "5"
+# File picker, clipboard images, and MIME detection for attachments. Clipboard
+# text support is already included through egui-winit, and MIME detection
+# through egui_extras.
+rfd = { version = "0.17", default-features = false, features = ["xdg-portal", "wayland"] }
+arboard = { version = "3", default-features = false, features = ["image-data", "wayland-data-control"] }
+mime_guess2 = "2"
+# Emoji names, groups, and shortcodes for picker search.
+emojis = "0.9"
+
+# Rasterizes the SVG logo for windows, the tray, and notifications. Already
+# included through egui_extras.
+resvg = { version = "0.45", default-features = false }
+
+# Desktop notifications through D-Bus on Linux and system frameworks elsewhere.
+notify-rust = { version = "4", default-features = false, features = ["z"] }
+openh264 = "0.9"
+mp4 = "0.14"
+rodio = { version = "0.22", default-features = false, features = ["playback", "recording", "mp3", "mp4", "wav", "vorbis"] }
+opus = "0.4"
+ogg = "0.9"
+# Converts animated Signal APNG stickers to the animated WebP used by WhatsApp.
+webp-animation = "0.10"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Linux status-notifier tray item over D-Bus.
+ksni = { version = "0.3", features = ["blocking"] }
+
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+# Windows and macOS tray item.
+tray-icon = { version = "0.24", default-features = false }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Pumps AppKit without a window. The status item and Dock reopen callback must
+# stay on the main thread.
+objc2 = "0.6"
+raw-window-handle = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSButton", "NSControl", "NSEvent", "NSMenu", "NSMenuItem", "NSResponder", "NSRunningApplication", "NSView", "NSWindow"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSDate", "NSGeometry", "NSObjCRuntime", "NSRunLoop", "NSString"] }
+
+[target.'cfg(windows)'.dependencies]
+# Windows tray-thread message loop.
+windows-sys = { version = "0.60", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
+
+# The icon and version information Windows shows for the executable.
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
+
+[dev-dependencies]
+# Creates small APNGs in sticker-import tests. Already included through image.
+png = "0.18"
+
+[features]
+# Sample data, layout tests, and screenshots. Not used in release builds.
+demo = []
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "abort"
+
+# Optimize dependencies in development for usable decryption and UI layout.
+# Keep the application crate incremental.
+[profile.dev.package."*"]
+opt-level = 2
