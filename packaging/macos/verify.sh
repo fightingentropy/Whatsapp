@@ -15,10 +15,10 @@ trap cleanup EXIT
 
 xcrun stapler validate "$dmg"
 hdiutil attach "$dmg" -readonly -nobrowse -mountpoint "$mount" >/dev/null
-app="$mount/ZapFast.app"
+app="$mount/ZapFast Silicon.app"
 codesign --verify --strict --deep "$app"
 spctl --assess --type execute --verbose=2 "$app"
-lipo "$app/Contents/MacOS/zapfast" -verify_arch x86_64 arm64
+test "$(lipo -archs "$app/Contents/MacOS/zapfast")" = "arm64"
 codesign --display --entitlements - --xml "$app" > "$temporary/entitlements.plist"
 
 python3 - "$app/Contents/Info.plist" "$temporary/entitlements.plist" <<'PY'
@@ -33,5 +33,5 @@ if not info.get("NSMicrophoneUsageDescription", "").strip():
     sys.exit("The release app is missing its microphone permission description")
 if entitlements.get("com.apple.security.device.audio-input") is not True:
     sys.exit("The signed release app is missing its audio-input entitlement")
-print("Verified microphone permission metadata in the signed universal app")
+print("Verified microphone permission metadata in the signed arm64 app")
 PY

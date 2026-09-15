@@ -1,23 +1,46 @@
-# ZapFast
+# ZapFast Silicon
 
-**WhatsApp, native and fast.** ZapFast is a WhatsApp client written in Rust
-with [egui](https://github.com/emilk/egui). It uses
-[whatsapp-rust](https://github.com/oxidezap/whatsapp-rust) for the WhatsApp Web
-protocol. It runs on Linux, macOS, and Windows, links to your phone as a
-companion device, and has no browser engine. In our Linux test, it opened in
-under a second and used about 150 MB of idle RAM, compared with 1.13 GB for
-WhatsApp Web and its Chromium processes. [See the measurements](https://zapfast.rocks/benchmarks/).
+A native WhatsApp companion for **Apple Silicon Macs (M1 and newer)**, built
+with Rust and [egui](https://github.com/emilk/egui). This is an independent
+fork of [crmne/ZapFast](https://github.com/crmne/zapfast). The WhatsApp protocol
+still comes from [whatsapp-rust](https://github.com/oxidezap/whatsapp-rust).
+There is no browser engine, hosted backend, or telemetry.
 
-ZapFast is a sibling of [Spotifast](https://spotifast.rocks),
-with the same native UI for a different service.
+The current fork is available from source. Its release channel is
+[fightingentropy/zapfast](https://github.com/fightingentropy/zapfast/releases).
+Upstream releases and performance numbers describe the upstream app, not this fork.
 
-![ZapFast showing a chat with a photo, a document, a voice message, a quoted reply, and a link](docs/screenshot.png)
+## Apple Silicon changes
 
-See **[zapfast.rocks](https://zapfast.rocks)** for downloads and guides.
+- ARM64-only builds, CI, and DMG packaging. The compiler targets the M1 baseline
+  so newer M-series Macs can run the same app. The deployment target is macOS 11;
+  current validation runs on newer macOS versions, not every supported OS release.
+- A main-run-loop wake source replaces the closed-window 150 ms polling loop.
+  Backend messages and native events wake it; pending settings, audio and other
+  real deadlines still run. The protocol worker retains its 5-second maintenance
+  tick and the protocol library's own network timers.
+- Message search waits 180 ms after typing and uses an FTS5 trigram index for
+  literal substrings of three or more characters. A bounded recent-message check
+  handles common terms without sorting a large match set. Short searches retain the
+  original matching rules. The index is derived from the local archive and
+  follows edits, replays, deletions and chat merges. Its initial build and disk
+  space are additional costs.
+- History is saved in transactions of up to 256 messages with cached SQL
+  statements, preserving raw attachment keys and delivery state.
+- Animated media keeps one GPU texture per clip and uploads the current frame
+  as needed. Decoded pixels have a 128 MiB cache budget, unseen clips expire
+  after 20 seconds, and preview width and height are bounded at 320 pixels.
+  Decoder work and GPU textures are additional memory outside that CPU cache.
+- System font collections share their bytes across faces. Apple Color Emoji
+  supplies emoji by default; `--features bundled-emoji` restores the Noto
+  compatibility fallback. Demo builds still include Noto for their sample art.
+- App identity, data directories, single-instance signalling and update notices
+  belong to this fork. It links as a separate companion device and does not
+  automatically move or reuse an upstream installation's session.
 
-![A group chat with sender names and pictures, a photo with reactions, a reply with a mention, and a poll](docs/screenshot-group.png)
-
-![The linking screen with the QR code](docs/screenshot-link.png)
+Metal rendering, VideoToolbox decoding, incremental streaming decoders and full
+conversation virtualization remain follow-up experiments. See
+[PERFORMANCE.md](PERFORMANCE.md) for measurements and validation details.
 
 ## What it does
 
@@ -40,7 +63,7 @@ See **[zapfast.rocks](https://zapfast.rocks)** for downloads and guides.
   waits for the phone's aggregate status instead of guessing from one reader.
 - **WhatsApp formatting.** Bold, italic, strikethrough, code, lists, quotes,
   mentions, and link previews are supported. Links are clickable. Emoji use
-  the desktop's color emoji font, with a bundled fallback, and emoji-only
+  Apple Color Emoji (an optional bundled fallback is available), and emoji-only
   messages are larger.
 - **Send attachments with captions.** Paste a picture, drop files, or use the
   file picker. They stay in the composer until you send them or press Escape.
@@ -77,21 +100,19 @@ See **[zapfast.rocks](https://zapfast.rocks)** for downloads and guides.
   status.
 - **Runs in the background.** Closing the window keeps ZapFast linked in the
   system tray. Reopen it from the tray or by launching it again. Quit from the
-  tray or with `Ctrl+Q`, or disable this behavior in Settings.
+  tray or with `⌘Q`, or disable this behavior in Settings.
 - **Desktop notifications.** Get notifications with the chat picture when you
-  are away from the open chat. Muted chats do not notify you. On Linux,
-  clicking a notification opens the chat, and reading the chat here or on another
-  device dismisses its outstanding notifications.
+  are away from the open chat. Muted chats do not notify you.
 - **Update notices.** ZapFast checks GitHub once a day and shows a download
   link when a newer release is available. You can turn this off in Settings.
-- **Light and dark**, or follow the system. Zoom with Ctrl+plus and
-  Ctrl+minus.
+- **Light and dark**, or follow the system. Zoom with ⌘plus and
+  ⌘minus.
 - **Copy text.** Select part of a message or copy across messages in
   WhatsApp's `[time, date] Name:` format. Contact names and numbers are also
   selectable.
-- **Keyboard shortcuts.** `Ctrl+K` searches, `Alt+↑/↓` switches chats and
+- **Keyboard shortcuts.** `⌘K` searches, `Alt+↑/↓` switches chats and
   keeps the active chat visible in the list, `Esc` cancels the current action,
-  and `Ctrl+/` lists all shortcuts.
+  and `⌘/` lists all shortcuts.
 - **Local storage.** Messages are stored in one SQLite file and attachments
   in the cache directory. Unlinking deletes both and removes this device from
   your phone.
@@ -102,175 +123,77 @@ See **[zapfast.rocks](https://zapfast.rocks)** for downloads and guides.
   a message with an attachment.
 - Calls, status posts, communities, newsletters, and group administration.
 
-## Installing
+## Build and run
 
-ZapFast was previously called FastsApp. Version 0.13.0 introduces the new
-package and executable names. On Arch Linux:
-
-```sh
-yay -S zapfast-bin      # the released build, ready made
-yay -S zapfast          # the release, built from source
-yay -S zapfast-git      # built from the latest commit
-```
-
-Builds for every release are on the
-[releases page](https://github.com/crmne/zapfast/releases):
-
-| Platform | File |
-| --- | --- |
-| Linux x86_64 and arm64 | `zapfast-vX.Y.Z-<target>.tar.gz`, with the desktop file and icon in `packaging/` |
-| Windows x64 and arm64 | `zapfast-vX.Y.Z-<target>-setup.exe` (no administrator rights needed), or the `.zip` |
-| macOS, universal | `zapfast-vX.Y.Z-macos-universal.dmg` |
-
-On macOS, the rounded Dock icon matches the app bundle. Native menus provide
-Settings, editing, search, view controls, and window commands. The traffic
-lights share the chat header, leaving more room for conversations in a normal
-window. Settings is also available with `⌘,`.
-
-The macOS release process signs the app with Developer ID, submits the DMG
-to Apple's notarization service, and staples and validates its ticket before
-publishing. Open the DMG and drag **ZapFast** to Applications.
-When upgrading from FastsApp on macOS, quit the old app and remove its
-application bundle after installing ZapFast.
-
-Releases before 0.13.0 keep their original FastsApp filenames.
-
-### From source
-
-ZapFast needs Rust. `rust-toolchain.toml` pins the exact version. On Linux,
-it also needs GUI development packages:
+Use an Apple Silicon Mac, Xcode Command Line Tools, CMake and Rust via rustup.
+`rust-toolchain.toml` pins Rust 1.98.0; `.cargo/config.toml` selects
+`aarch64-apple-darwin`. Intel, Windows and Linux builds are unsupported in this fork.
 
 ```sh
-# Debian and Ubuntu
-sudo apt install libxkbcommon-dev libwayland-dev libgl1-mesa-dev
-# Arch
-sudo pacman -S libxkbcommon wayland mesa
+cargo build --locked --release
+./target/aarch64-apple-darwin/release/zapfast
 ```
 
-Then:
+For a locally signed app bundle:
 
 ```sh
-cargo install --path .
-zapfast
+bash packaging/macos/bundle.sh target/aarch64-apple-darwin/release/zapfast \
+  "dist/ZapFast Silicon.app" 0.13.1
+open "dist/ZapFast Silicon.app"
 ```
 
-The desktop file and icon are in `packaging/`.
+Local bundles use an ad-hoc signature unless `CODESIGN_IDENTITY` is supplied.
+Public releases require Developer ID signing and notarization; see
+[PACKAGING.md](PACKAGING.md).
 
-`whatsapp-rust` is pinned to a Git commit because version 0.7.0 on crates.io
-enables a `simd` feature that needs nightly Rust. The pinned commit builds on
-stable Rust.
-
-## Using it
-
-On first start, scan the QR code from WhatsApp under **Linked devices**,
-**Link a device**. To link without the camera, click **Link with phone number
-instead**, enter your number with its country code, then enter the shown code
-on your phone.
-
-WhatsApp then sends your recent history. This can take a few minutes. A banner
-shows the progress. New messages arrive live, and your phone does not need to
-stay on the same network.
-
-Right-click a chat or message to open its menu. Open Settings from the gear or
-with `Ctrl+,`. Use the pencil to message a new number or save a contact. You
-can also open a group member's contact card. Saved names sync through WhatsApp
-to your phone and linked devices.
+On first start, use WhatsApp on your phone: **Linked devices → Link a device**.
+Scan the QR code, or choose phone-number linking. History arrives from the phone
+and remains in this app's local archive. Settings is available with `⌘,`.
 
 ## Files
 
-| What | Linux | Notes |
-| --- | --- | --- |
-| Settings | `~/.config/zapfast/settings.json` | JSON, safe to edit |
-| Device keys | `~/.local/state/zapfast/session.db` | Owned by whatsapp-rust; deleting it unlinks |
-| Messages | `~/.local/state/zapfast/archive.db` | SQLite; raw messages contain the keys needed to download attachments |
-| Attachments, avatars | `~/.cache/zapfast/` | Safe to delete |
-| Saved stickers and packs | `~/.local/state/zapfast/stickers/` | Plain WebP files; each pack is a folder |
-| Log of the last run | `~/.local/state/zapfast/zapfast.log` | `--verbose` for more |
-
-macOS and Windows use the standard platform directories selected by the
-`directories` crate. On first start, ZapFast moves settings, the linked session,
-message archive, saved stickers, caches, and window state from `fastsapp`
-(or the earlier `fastwhatsapp`) paths. Existing ZapFast directories take
-precedence and are never overwritten. Quit FastsApp before starting ZapFast;
-if an older copy is still running, the new launch brings its window forward.
-Your phone may keep showing the old linked-device name until you link again.
+Settings, `session.db`, `archive.db`, saved stickers and logs are under
+`~/Library/Application Support/org.erlin.zapfast-silicon/`.
+Downloaded media and avatars are under
+`~/Library/Caches/org.erlin.zapfast-silicon/`.
+Window state uses eframe's independent `zapfast-silicon` app id.
+The device database and archived raw messages contain account and attachment
+keys. Clearing the cache does not remove them; unlinking removes the local account.
 
 ## Developing
 
 ```sh
-cargo run --features demo -- --demo            # sample chats, no connection
-cargo run --features demo -- --demo-page login # or settings, pair, info, light, …
-cargo run --features demo -- --demo-shot shot.png --demo-page chat,light
-cargo run --features demo -- --demo-tour      # Space starts/replays a 41-second tour
-cargo test --all-features                      # includes a headless layout of every screen
-cargo clippy --all-targets --all-features -- -D warnings
+cargo run --locked --features demo -- --demo
+cargo run --locked --features demo -- --demo-page login
+cargo run --locked --features demo -- --demo-shot shot.png --demo-page chat,light
+cargo run --locked --features demo -- --demo-tour
+cargo run --locked --example background_probe
+cargo fmt --all --check
+cargo clippy --locked --all-targets -- -D warnings
+cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo test --locked --all-targets
+cargo test --locked --all-targets --all-features
+RUSTDOCFLAGS='-D warnings' cargo doc --locked --all-features --no-deps
 ```
 
-To include a default GIPHY key for GIF search, set it at build time. A key in
-Settings overrides it:
+The demo uses offline sample chats in a fresh temporary directory. It does not
+open a linked account, connect to WhatsApp, or register a tray icon. Space starts
+or replays its scripted tour. Demo screenshots verify layout, not live messaging.
 
-```sh
-ZAPFAST_GIPHY_KEY=your-key cargo build --release
-```
-
-The earlier `FASTSAPP_GIPHY_KEY` build variable remains supported as a fallback.
-
-`AGENTS.md` describes the architecture and the rules for changes.
-
-### Recording a demo
-
-The `demo` feature uses offline sample chats in a fresh temporary directory.
-It does not open your linked account, read your message archive, connect to
-WhatsApp, or register a tray icon. You can run it alongside your regular app.
-
-```sh
-cargo build --locked --features demo
-./target/debug/zapfast --demo-tour --demo-size 1280x800
-```
-
-The **ZapFast Demo** window waits for **Space**. The 41-second tour starts with
-search, switches chats with keyboard shortcuts, scrolls, right-clicks a message
-and selects Reply, types quickly, completes emoji and mentions, searches the GIF
-picker and sends a still sticker, opens group information and the shortcut list,
-and changes themes through Settings. It uses the normal mouse and keyboard handlers;
-a local responder handles outgoing messages with no WhatsApp connection.
-The GIF-search thumbnails and still stickers are rendered from the bundled
-Noto emoji font; demo GIF search uses these local fixtures. The tour makes no
-sound and holds its final frame. Space rebuilds the sample and replays.
-For an automatic start, add `--demo-tour-delay 5000` (milliseconds).
-Use `--demo` instead of `--demo-tour` to explore the sample chats yourself.
-
-On Omarchy, run `omarchy screenrecord`, select the demo window, then press Space
-in ZapFast. Recording has no audio unless you explicitly enable desktop or
-microphone audio. Stop with `omarchy screenrecord --stop-recording` after the
-tour finishes. The default capture records a fixed rectangle, so keep the demo
-window visible and stationary until recording stops.
-
-To annotate the video with a visible pointer, click rings, and outlined shortcut
-labels, add `--demo-tour-events tour.json` when launching the tour. After
-recording, run:
-
-```sh
-python3 scripts/render-demo.py recording.mp4 tour.json launch.mp4 --start 0.8
-```
-
-Set `--start` to the recording time (in seconds) when you pressed Space. The
-export trims the setup footage, adds a caption band below the app, and produces
-a silent H.264 MP4. It requires `ffmpeg` with libass support and `ffprobe`.
-These annotations are added during video export, not drawn by the app. The
-trace contains only pointer coordinates and shortcut labels, not typed text.
+GIF search uses a key entered in Settings or `ZAPFAST_GIPHY_KEY` at build time.
+The source includes no key. `AGENTS.md` describes the architecture and invariants.
+The `docs/` website and non-Mac packaging recipes are retained as upstream
+reference material and are not published by this fork's workflows.
 
 ## Disclaimer
 
-ZapFast is an unofficial client and is not affiliated with WhatsApp or
+ZapFast Silicon is an unofficial client and is not affiliated with WhatsApp or
 Meta. Using an unofficial client may be against WhatsApp's terms of service
 and could get an account suspended. Use it at your own risk.
 
-## Packaging maintenance
+## License and credit
 
-Release packaging uses the [native-packages](https://rubygems.org/gems/native-packages) gem. macOS release builds automatically sign and notarize when the Apple CI credentials are configured. `native-packages.yaml` declares packages and downstream repositories; native recipes and installation assets live in `packaging/`; see [PACKAGING.md](PACKAGING.md) for local commands and CI behavior.
-
-## License
-
-MIT. Inter and Noto Color Emoji are under the SIL Open Font License; the icons
-are from [Lucide](https://lucide.dev) (ISC).
+MIT, retaining the upstream ZapFast copyright and attribution. Inter and Noto
+Color Emoji are under the SIL Open Font License; icons are from
+[Lucide](https://lucide.dev) (ISC). The original project is
+[crmne/zapfast](https://github.com/crmne/zapfast).

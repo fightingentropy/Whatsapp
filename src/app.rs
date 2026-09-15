@@ -152,6 +152,7 @@ pub struct App {
     pub search: String,
     /// Message search results, newest first.
     pub search_hits: Vec<Message>,
+    search_due: Option<Instant>,
     /// Active typers and their latest event time by chat.
     pub typing: HashMap<ChatId, Vec<(String, Instant)>>,
     pub presence: HashMap<String, Presence>,
@@ -357,6 +358,7 @@ impl App {
             last_keystroke: None,
             search: String::new(),
             search_hits: Vec::new(),
+            search_due: None,
             typing: HashMap::new(),
             presence: HashMap::new(),
             account_receipts_off: false,
@@ -1534,8 +1536,23 @@ impl App {
         self.at_bottom = true;
     }
 
+    fn pump_search(&mut self, now: Instant, ctx: &egui::Context) {
+        if let Some(due) = self.search_due {
+            if now >= due {
+                self.search_due = None;
+                let query = self.search.trim().to_owned();
+                if !query.is_empty() {
+                    self.backend.send(Command::SearchMessages { query });
+                }
+            } else {
+                ctx.request_repaint_after(due - now);
+            }
+        }
+    }
+
     fn tick(&mut self, ctx: &egui::Context) {
         let now = Instant::now();
+        self.pump_search(now, ctx);
         if self.composing
             && let Some(last) = self.last_keystroke
             && now.duration_since(last) > COMPOSING_TIMEOUT
@@ -2073,11 +2090,10 @@ impl App {
             Action::Search(text) => {
                 self.search = text;
                 let query = self.search.trim().to_owned();
-                if query.is_empty() {
-                    self.search_hits.clear();
-                } else {
-                    self.backend.send(Command::SearchMessages { query });
-                }
+                self.search_hits.clear();
+                self.search_due =
+                    (!query.is_empty()).then(|| Instant::now() + Duration::from_millis(180));
+                self.pump_search(Instant::now(), ctx);
             }
             Action::SettingsChanged => self.mark_settings_dirty(),
             Action::ZoomBy(delta) => {
@@ -2161,9 +2177,48 @@ impl App {
         self.handle_control_commands();
         self.handle_notification_opens();
         self.handle_events();
+        crate::animation::maintain(ctx);
         self.tick(ctx);
         self.tick_audio();
         self.apply_actions(ctx);
+    }
+
+    /// Next deadline while there is no window. Backend and AppKit events wake
+    /// the loop immediately; periodic UI polling is unnecessary while idle.
+    pub fn background_wait(&self) -> Duration {
+        let now = Instant::now();
+        let mut wait = Duration::from_secs(60 * 60);
+        let mut until = |deadline: Instant| {
+            wait = wait.min(deadline.saturating_duration_since(now));
+        };
+        if self.settings_dirty {
+            until(self.last_settings_save + Duration::from_secs(2));
+        }
+        if let Some(due) = self.search_due {
+            until(due);
+        }
+        if self.composing
+            && self.open_chat.is_some()
+            && let Some(last) = self.last_keystroke
+        {
+            until(last + COMPOSING_TIMEOUT);
+        }
+        for (_, since) in self.typing.values().flatten() {
+            until(*since + TYPING_TIMEOUT);
+        }
+        for toast in &self.toasts {
+            until(toast.created + Duration::from_millis(3200));
+        }
+        if self.settings.check_for_updates && !self.backend.is_offline() {
+            until(
+                self.last_update_check
+                    .map_or(now, |last| last + crate::updates::CHECK_INTERVAL),
+            );
+        }
+        if self.player.is_playing() || self.recording.is_some() {
+            wait = wait.min(Duration::from_millis(40));
+        }
+        wait
     }
 
     /// Polls audio state and schedules repaints while it changes.
@@ -2553,6 +2608,30 @@ mod tests {
     }
 
     #[test]
+    fn background_wait_has_no_fast_idle_timer_and_respects_pending_work() {
+        let mut app = app();
+        assert_eq!(app.background_wait(), Duration::from_secs(3600));
+        app.composing = true;
+        app.last_keystroke = Some(Instant::now() - COMPOSING_TIMEOUT);
+        assert_eq!(
+            app.background_wait(),
+            Duration::from_secs(3600),
+            "no chat cannot keep an expired composing timer alive"
+        );
+        app.composing = false;
+        app.search_due = Some(Instant::now() + Duration::from_millis(180));
+        assert!(app.background_wait() <= Duration::from_millis(180));
+        app.search_due = None;
+        app.typing
+            .insert("chat".into(), vec![("peer".into(), Instant::now())]);
+        assert!(app.background_wait() <= TYPING_TIMEOUT);
+        app.typing.clear();
+        app.last_settings_save = Instant::now() - Duration::from_secs(3);
+        app.settings_dirty = true;
+        assert_eq!(app.background_wait(), Duration::ZERO);
+    }
+
+    #[test]
     fn a_closed_window_does_not_read_new_messages_in_the_last_chat() {
         let mut app = app();
         let mut chat = Chat::new("peer@s.whatsapp.net".into(), "Peer".into());
@@ -2691,6 +2770,26 @@ mod tests {
         assert_eq!(app.open_chat.as_deref(), Some(chat));
         assert_eq!(app.scroll_anchor.as_deref(), Some("old"));
         assert!(!app.scroll_to_bottom, "aims at the hit, not the end");
+    }
+
+    #[test]
+    fn search_waits_for_typing_to_settle_and_cancels_on_clear() {
+        let mut app = app();
+        let (backend, mut commands) = Backend::recording();
+        app.backend = backend;
+        let ctx = egui::Context::default();
+        app.apply(Action::Search("eng".into()), &ctx);
+        app.apply(Action::Search("engine".into()), &ctx);
+        assert!(commands.try_recv().is_err());
+        app.pump_search(Instant::now() + Duration::from_secs(1), &ctx);
+        assert!(
+            matches!(commands.try_recv().unwrap(), Command::SearchMessages { query } if query == "engine")
+        );
+        assert!(commands.try_recv().is_err());
+        app.apply(Action::Search("cancel".into()), &ctx);
+        app.apply(Action::Search(String::new()), &ctx);
+        app.pump_search(Instant::now() + Duration::from_secs(1), &ctx);
+        assert!(commands.try_recv().is_err());
     }
 
     #[test]

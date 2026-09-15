@@ -14,93 +14,9 @@ env:
   ZAPFAST_GIPHY_KEY: ${{ secrets.ZAPFAST_GIPHY_KEY || secrets.FASTSAPP_GIPHY_KEY }}
 
 jobs:
-  build:
-    name: build (${{ matrix.target }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-          # A native arm64 runner, so the GUI's system libraries need no
-          # cross-compilation sysroot.
-          - os: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-          # Cross-compiled from x64: the MSVC arm64 linker ships with the
-          # runner's Visual Studio.
-          - os: windows-latest
-            target: aarch64-pc-windows-msvc
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-      # The repository pins its toolchain; add the cross-target's standard
-      # library to the toolchain the pin actually resolves to.
-      - run: rustup target add ${{ matrix.target }}
-      - name: GUI build dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libxkbcommon-dev libwayland-dev libgl1-mesa-dev libasound2-dev
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.target }}
-
-      - run: cargo build --release --target ${{ matrix.target }}
-
-      - name: Package
-        shell: bash
-        run: |
-          name="zapfast-${GITHUB_REF_NAME}-${{ matrix.target }}"
-          mkdir -p "dist/$name"
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            cp "target/${{ matrix.target }}/release/zapfast.exe" "dist/$name/"
-          else
-            cp "target/${{ matrix.target }}/release/zapfast" "dist/$name/"
-          fi
-          cp README.md LICENSE "dist/$name/"
-          if [ "${{ runner.os }}" = "Linux" ]; then
-            # Desktop integration for package builds and hand-installs.
-            cp --parents packaging/applications/zapfast.desktop packaging/icons/zapfast.svg "dist/$name/"
-          fi
-          cd dist
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            7z a "$name.zip" "$name"
-          else
-            tar czf "$name.tar.gz" "$name"
-          fi
-
-      # Inno Setup ships with the runner image. PowerShell, because bash on
-      # Windows rewrites /D... arguments as paths.
-      - name: Installer
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $version = $env:GITHUB_REF_NAME.TrimStart("v")
-          $arch = "${{ matrix.target }}".Split("-")[0]
-          $iscc = (Get-Command iscc -ErrorAction SilentlyContinue).Source
-          if (-not $iscc) { $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
-          & $iscc "/DVersion=$version" "/DArch=$arch" `
-            "/DBinary=$PWD\target\${{ matrix.target }}\release\zapfast.exe" `
-            "/DOutputDir=$PWD\dist" packaging\windows\zapfast.iss
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: ${{ matrix.target }}
-          path: |
-            dist/*.tar.gz
-            dist/*.zip
-            dist/*-setup.exe
-          if-no-files-found: error
-
   macos:
-    name: macOS universal app
-    runs-on: macos-latest
+    name: Apple Silicon app
+    runs-on: macos-15
     env:
       # Complete Apple credentials enable native-packages signing/notarization.
       APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
@@ -113,24 +29,15 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
-      - run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          toolchain: 1.98.0
+          targets: aarch64-apple-darwin
+      - run: rustup target add aarch64-apple-darwin
       - uses: Swatinem/rust-cache@v2
         with:
-          key: macos-universal
+          key: macos-arm64
 
-      - name: Build both architectures
-        run: |
-          cargo build --release --target aarch64-apple-darwin
-          cargo build --release --target x86_64-apple-darwin
-
-      - name: Universal binary
-        run: |
-          mkdir -p universal
-          lipo -create \
-            target/aarch64-apple-darwin/release/zapfast \
-            target/x86_64-apple-darwin/release/zapfast \
-            -output universal/zapfast
+      - name: Build Apple Silicon
+        run: cargo build --locked --release --target aarch64-apple-darwin
 
       - uses: ruby/setup-ruby@v1
         with:
@@ -142,28 +49,28 @@ jobs:
         run: |
           version="${GITHUB_REF_NAME#v}"
           mkdir -p dist/macos-input
-          bash packaging/macos/bundle.sh universal/zapfast dist/macos-input/ZapFast.app "$version"
+          bash packaging/macos/bundle.sh target/aarch64-apple-darwin/release/zapfast "dist/macos-input/ZapFast Silicon.app" "$version"
           cp README.md LICENSE dist/macos-input/
 
       - name: Package, sign and notarize macOS app
         run: |
           native-packages --config native-packages.macos.yaml build \
-            --version "${GITHUB_REF_NAME#v}" --target macos-universal \
+            --version "${GITHUB_REF_NAME#v}" --target macos-arm64 \
             --output "$RUNNER_TEMP/macos-packages"
-          cp "$RUNNER_TEMP/macos-packages/packages/macos-universal/dmg/"*.dmg dist/
+          cp "$RUNNER_TEMP/macos-packages/packages/macos-arm64/dmg/"*.dmg dist/
 
       - name: Verify the notarized release app
-        run: bash packaging/macos/verify.sh "dist/zapfast-${GITHUB_REF_NAME}-macos-universal.dmg"
+        run: bash packaging/macos/verify.sh "dist/zapfast-${GITHUB_REF_NAME}-macos-arm64.dmg"
 
       - uses: actions/upload-artifact@v7
         with:
-          name: macos-universal
+          name: macos-arm64
           path: dist/*.dmg
           if-no-files-found: error
 
   publish:
     name: GitHub release
-    needs: [build, macos]
+    needs: macos
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v7
@@ -178,11 +85,3 @@ jobs:
         with:
           files: dist/*
           generate_release_notes: true
-
-  packaging:
-    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-')
-    needs: publish
-    uses: ./.github/workflows/packaging.yml
-    with:
-      version: ${{ github.ref_name }}
-    secrets: inherit

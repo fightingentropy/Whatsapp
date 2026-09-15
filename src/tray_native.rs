@@ -9,7 +9,7 @@ use std::time::Duration;
 
 #[cfg(windows)]
 use tray_icon::menu::MenuEvent;
-#[cfg(any(windows, test))]
+#[cfg(windows)]
 use tray_icon::menu::MenuId;
 use tray_icon::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
@@ -26,7 +26,7 @@ type Wake = Arc<dyn Fn() + Send + Sync>;
 const SHOW: &str = "show";
 const QUIT: &str = "quit";
 
-#[cfg(any(windows, test))]
+#[cfg(windows)]
 fn command_for(id: &MenuId) -> Option<TrayCommand> {
     match id.0.as_str() {
         SHOW => Some(TrayCommand::ShowHide),
@@ -50,13 +50,13 @@ fn build(sender: Sender<TrayCommand>, wake: Wake) -> Result<Item, Box<dyn std::e
     let icon = Icon::from_rgba(crate::util::tray_template_rgba(size as usize), size, size)?;
     let menu = Menu::new();
     menu.append_items(&[
-        &MenuItem::with_id(SHOW, "Show or hide ZapFast", true, None),
+        &MenuItem::with_id(SHOW, "Show or hide ZapFast Silicon", true, None),
         &PredefinedMenuItem::separator(),
         &MenuItem::with_id(QUIT, "Quit", true, None),
     ])?;
     let builder = TrayIconBuilder::new()
         .with_icon(icon)
-        .with_tooltip("ZapFast")
+        .with_tooltip("ZapFast Silicon")
         .with_menu(Box::new(menu));
     // Left-click toggles the window; right-click opens the menu.
     #[cfg(target_os = "macos")]
@@ -268,28 +268,38 @@ mod host {
         app.activateIgnoringOtherApps(true);
     }
 
-    /// Pumps AppKit events for `duration` while headless.
+    /// Service queued native events, then sleep on a source the backend can wake.
     pub fn pump(duration: Duration) {
         let Some(mtm) = MainThreadMarker::new() else {
             std::thread::sleep(duration);
             return;
         };
         let app = NSApplication::sharedApplication(mtm);
-        let deadline = NSDate::dateWithTimeIntervalSinceNow(duration.as_secs_f64());
-        // Safety: AppKit defines this immutable extern static.
+        if drain(&app) {
+            return;
+        }
+        crate::background::wait(duration);
+        drain(&app);
+    }
+
+    fn drain(app: &NSApplication) -> bool {
+        let deadline = NSDate::distantPast();
         let mode = unsafe { NSDefaultRunLoopMode };
-        loop {
-            let event = app.nextEventMatchingMask_untilDate_inMode_dequeue(
+        let mut handled = false;
+        // Bound a burst so queued backend work also gets a turn.
+        for _ in 0..64 {
+            let Some(event) = app.nextEventMatchingMask_untilDate_inMode_dequeue(
                 NSEventMask::Any,
                 Some(&deadline),
                 mode,
                 true,
-            );
-            match event {
-                Some(event) => app.sendEvent(&event),
-                None => break,
-            }
+            ) else {
+                break;
+            };
+            app.sendEvent(&event);
+            handled = true;
         }
+        handled
     }
 }
 

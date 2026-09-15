@@ -1,0 +1,6 @@
+[build]
+target = "aarch64-apple-darwin"
+
+[env]
+# Keep the deployment target aligned with Info.plist. Rust targets M1 by default.
+MACOSX_DEPLOYMENT_TARGET = "11.0"

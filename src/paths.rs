@@ -16,14 +16,14 @@ pub struct AppDirs {
 
 impl AppDirs {
     pub fn discover() -> Self {
-        match Self::of("zapfast") {
+        match Self::of("zapfast-silicon") {
             Some(dirs) => dirs,
             None => {
                 let fallback = std::env::current_dir().unwrap_or_default();
                 Self {
-                    config: fallback.join("zapfast-config"),
-                    state: fallback.join("zapfast-state"),
-                    cache: fallback.join("zapfast-cache"),
+                    config: fallback.join("zapfast-silicon-config"),
+                    state: fallback.join("zapfast-silicon-state"),
+                    cache: fallback.join("zapfast-silicon-cache"),
                 }
             }
         }
@@ -31,7 +31,7 @@ impl AppDirs {
 
     /// Standard platform directories for the app.
     fn of(name: &str) -> Option<Self> {
-        let project = ProjectDirs::from("me", "paolino", name)?;
+        let project = ProjectDirs::from("org", "erlin", name)?;
         Some(Self {
             config: project.config_dir().to_path_buf(),
             state: project

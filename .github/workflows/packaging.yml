@@ -1,46 +1,23 @@
-name: Packaging
+name: Packaging validation
 
 on:
   push:
-    branches: [main, master]
-    paths: [native-packages.yaml, native-packages.macos.yaml, packaging/**, .github/workflows/packaging.yml, .github/workflows/release.yml]
+    branches: [main]
+    paths: [native-packages.yaml, native-packages.macos.yaml, packaging/macos/**, .github/workflows/packaging.yml, .github/workflows/release.yml]
   pull_request:
-    paths: [native-packages.yaml, native-packages.macos.yaml, packaging/**, .github/workflows/packaging.yml, .github/workflows/release.yml]
+    paths: [native-packages.yaml, native-packages.macos.yaml, packaging/macos/**, .github/workflows/packaging.yml, .github/workflows/release.yml]
   workflow_dispatch:
-    inputs:
-      version:
-        description: Published version (empty validates recipes only)
-        type: string
-        default: ''
-      publish:
-        description: Attach packages and run enabled downstream publishers
-        type: boolean
-        default: false
-  workflow_call:
-    inputs:
-      version:
-        required: true
-        type: string
-      publish:
-        type: boolean
-        default: true
-    secrets:
-      AUR_SSH_KEY:
-        required: false
-      AUR_KNOWN_HOSTS:
-        required: false
-      HOMEBREW_TAP_GITHUB_TOKEN:
-        required: false
 
 permissions:
   contents: read
 
 jobs:
-  packaging:
-    permissions:
-      contents: write
-    uses: crmne/native-packages/.github/workflows/package.yml@5caecbb702d6605cb48f83c380ea8b8196c9909e # v0.5.1
-    with:
-      version: ${{ inputs.version || '' }}
-      publish: ${{ inputs.publish == true && inputs.version != '' }}
-    secrets: inherit
+  validate:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Validate Mac recipes
+        run: |
+          bash -n packaging/macos/bundle.sh packaging/macos/verify.sh
+          ruby -c packaging/macos/dmg.rb
+          plutil -lint packaging/macos/Info.plist packaging/macos/entitlements.plist

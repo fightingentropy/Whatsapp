@@ -10,6 +10,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use crate::model::{Chat, ChatKind, Contact, Content, Delivery, LastMessage, Message};
 
 mod receipts;
+mod search;
 
 /// Recent phone sticker metadata, last-used time, and optional local file.
 #[derive(Clone, Debug)]
@@ -228,6 +229,8 @@ impl Archive {
                 ))?;
             }
         }
+        search::install(&connection)?;
+        connection.set_prepared_statement_cache_capacity(64);
         Ok(Self { connection })
     }
 
@@ -506,29 +509,52 @@ impl Archive {
     /// Upserts a message, preserves the furthest delivery state, and updates
     /// chat activity. `raw` contains attachment metadata.
     pub fn insert_message(&self, message: &Message, raw: Option<&[u8]>) -> Result<()> {
-        let existing: Option<i64> = self
-            .connection
-            .query_row(
-                "SELECT status FROM messages WHERE chat = ?1 AND id = ?2",
-                params![message.chat, message.id],
-                |row| row.get(0),
-            )
-            .optional()?;
-        let status = match existing {
-            Some(rank)
-                if message.status != Delivery::Failed && rank > status_rank(message.status) =>
-            {
-                rank
-            }
-            _ => status_rank(message.status),
-        };
-        self.connection.execute(
+        self.write_message(message, raw)?;
+        self.connection
+            .prepare_cached(
+                "UPDATE chats SET last_activity = MAX(last_activity, ?2) WHERE id = ?1",
+            )?
+            .execute(params![message.chat, message.timestamp])?;
+        Ok(())
+    }
+
+    /// Atomically stores a bounded history batch and advances each chat once.
+    /// Callers retain raw attachment metadata until the transaction commits.
+    pub fn insert_messages<'a>(
+        &self,
+        messages: impl IntoIterator<Item = (&'a Message, Option<&'a [u8]>)>,
+    ) -> Result<usize> {
+        let transaction = self.connection.unchecked_transaction()?;
+        let mut latest = std::collections::BTreeMap::<&str, i64>::new();
+        let mut count = 0;
+        for (message, raw) in messages {
+            self.write_message(message, raw)?;
+            latest
+                .entry(&message.chat)
+                .and_modify(|time| *time = (*time).max(message.timestamp))
+                .or_insert(message.timestamp);
+            count += 1;
+        }
+        for (chat, timestamp) in latest {
+            self.connection
+                .prepare_cached(
+                    "UPDATE chats SET last_activity = MAX(last_activity, ?2) WHERE id = ?1",
+                )?
+                .execute(params![chat, timestamp])?;
+        }
+        transaction.commit()?;
+        Ok(count)
+    }
+
+    fn write_message(&self, message: &Message, raw: Option<&[u8]>) -> Result<()> {
+        self.connection.prepare_cached(
             "INSERT INTO messages (chat, id, sender, sender_name, from_me, timestamp, content, status, quoted, reactions, edited, raw, thumbnail, mentions, forwarded, delivered_at, read_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
              ON CONFLICT(chat, id) DO UPDATE SET
                 sender_name = COALESCE(excluded.sender_name, sender_name),
                 content = excluded.content,
-                status = excluded.status,
+                status = CASE WHEN excluded.status != 6 AND messages.status > excluded.status
+                    THEN messages.status ELSE excluded.status END,
                 quoted = COALESCE(excluded.quoted, quoted),
                 reactions = excluded.reactions,
                 edited = excluded.edited,
@@ -538,7 +564,7 @@ impl Archive {
                 forwarded = excluded.forwarded,
                 delivered_at = COALESCE(delivered_at, excluded.delivered_at),
                 read_at = COALESCE(read_at, excluded.read_at)",
-            params![
+        )?.execute(params![
                 message.chat,
                 message.id,
                 message.sender,
@@ -546,7 +572,7 @@ impl Archive {
                 message.from_me,
                 message.timestamp,
                 serde_json::to_string(&message.content).unwrap_or_default(),
-                status,
+                status_rank(message.status),
                 message
                     .quoted
                     .as_ref()
@@ -560,10 +586,6 @@ impl Archive {
                 message.delivered_at,
                 message.read_at,
             ],
-        )?;
-        self.connection.execute(
-            "UPDATE chats SET last_activity = MAX(last_activity, ?2) WHERE id = ?1",
-            params![message.chat, message.timestamp],
         )?;
         Ok(())
     }
@@ -620,29 +642,50 @@ impl Archive {
     /// Searches visible message text, filenames, polls, contacts, and places.
     /// ASCII matching is case-insensitive; other text follows SQLite behavior.
     pub fn search_messages(&self, needle: &str, limit: usize) -> Result<Vec<Message>> {
+        let normalized = needle.to_lowercase();
         let pattern = format!(
             "%{}%",
-            needle
-                .to_lowercase()
+            normalized
                 .replace('\\', "\\\\")
                 .replace('%', "\\%")
                 .replace('_', "\\_")
         );
-        let mut statement = self.connection.prepare(
+        let phrase = search::phrase(&normalized);
+        if phrase.is_some() && limit > 0 && limit <= 256 {
+            // Common terms can match most of a large archive. If the newest
+            // 256 rows contain a full page, it is already the correct result;
+            // avoid collecting and sorting every FTS match. Otherwise use FTS
+            // across the entire archive, including older matches.
+            let recent = self.search_rows(
+                "AND rowid IN (SELECT rowid FROM messages ORDER BY timestamp DESC, rowid DESC LIMIT 256) AND ?3 IS NULL",
+                &pattern, limit, None,
+            )?;
+            if recent.len() == limit {
+                return Ok(recent);
+            }
+        }
+        let candidates = if phrase.is_some() {
+            "AND rowid IN (SELECT rowid FROM message_search WHERE message_search MATCH ?3)"
+        } else {
+            "AND ?3 IS NULL"
+        };
+        self.search_rows(candidates, &pattern, limit, phrase.as_deref())
+    }
+
+    fn search_rows(
+        &self,
+        candidates: &str,
+        pattern: &str,
+        limit: usize,
+        phrase: Option<&str>,
+    ) -> Result<Vec<Message>> {
+        let sql = format!(
             "SELECT chat, id, sender, sender_name, from_me, timestamp, content, status, quoted, reactions, edited, thumbnail, mentions, forwarded, delivered_at, read_at
-             FROM messages
-             WHERE json_valid(content) AND lower(
-                     coalesce(json_extract(content, '$.text'), '') || char(10) ||
-                     coalesce(json_extract(content, '$.caption'), '') || char(10) ||
-                     coalesce(json_extract(content, '$.file_name'), '') || char(10) ||
-                     coalesce(json_extract(content, '$.question'), '') || char(10) ||
-                     coalesce(json_extract(content, '$.display_name'), '') || char(10) ||
-                     coalesce(json_extract(content, '$.name'), '')
-                 ) LIKE ?1 ESCAPE '\\'
-             ORDER BY timestamp DESC, rowid DESC
-             LIMIT ?2",
-        )?;
-        let rows = statement.query_map(params![pattern, limit as i64], |row| {
+             FROM messages WHERE json_valid(content) AND search_text LIKE ?1 ESCAPE '\\' {candidates}
+             ORDER BY timestamp DESC, rowid DESC LIMIT ?2"
+        );
+        let mut statement = self.connection.prepare_cached(&sql)?;
+        let rows = statement.query_map(params![pattern, limit as i64, phrase], |row| {
             let chat: String = row.get(0)?;
             let content: String = row.get(6)?;
             let quoted: Option<String> = row.get(8)?;
@@ -1193,6 +1236,188 @@ mod tests {
         let hits = archive.search_messages("e", 1).expect("search");
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].id, "m3", "newest first");
+    }
+
+    #[test]
+    fn substring_index_matches_the_original_query_for_literal_and_unicode_text() {
+        let archive = Archive::in_memory().unwrap();
+        let texts = [
+            "The Difference Engine",
+            "100% snake_case C:\\files",
+            "say \"hello\" OR world",
+            "你好世界 café CAFÉ",
+            "a\nb",
+            "A😀B and 🧑‍💻",
+            "",
+            "a%_b",
+        ];
+        for (i, text) in texts.iter().enumerate() {
+            let mut row = message("chat", &i.to_string(), i as i64, false);
+            row.content = Content::text(*text);
+            archive.insert_message(&row, None).unwrap();
+        }
+        archive.connection.execute(
+            "INSERT INTO messages(chat,id,sender,from_me,timestamp,content) VALUES ('chat','invalid','sender',0,100,'invalid json')", [],
+        ).unwrap();
+        for needle in [
+            "eng",
+            "ENGINE",
+            "gin",
+            "100%",
+            "_",
+            "%_",
+            "C:\\",
+            "\"hello\"",
+            "OR",
+            "你好",
+            "好世界",
+            "café",
+            "CAFÉ",
+            "😀",
+            "🧑‍💻",
+            "a\nb",
+            "",
+            "a%_b",
+            "missing",
+            "a\0b",
+        ] {
+            let pattern = format!(
+                "%{}%",
+                needle
+                    .to_lowercase()
+                    .replace('\\', "\\\\")
+                    .replace('%', "\\%")
+                    .replace('_', "\\_")
+            );
+            let expected: Vec<String> = archive
+                .connection
+                .prepare(
+                    "SELECT id FROM messages WHERE json_valid(content) AND lower(
+                    coalesce(json_extract(content, '$.text'), '') || char(10) ||
+                    coalesce(json_extract(content, '$.caption'), '') || char(10) ||
+                    coalesce(json_extract(content, '$.file_name'), '') || char(10) ||
+                    coalesce(json_extract(content, '$.question'), '') || char(10) ||
+                    coalesce(json_extract(content, '$.display_name'), '') || char(10) ||
+                    coalesce(json_extract(content, '$.name'), '')) LIKE ?1 ESCAPE '\\'
+                    ORDER BY timestamp DESC, rowid DESC LIMIT 50",
+                )
+                .unwrap()
+                .query_map([pattern], |row| row.get(0))
+                .unwrap()
+                .collect::<Result<_>>()
+                .unwrap();
+            let actual: Vec<_> = archive
+                .search_messages(needle, 50)
+                .unwrap()
+                .into_iter()
+                .map(|row| row.id)
+                .collect();
+            assert_eq!(actual, expected, "query {needle:?}");
+        }
+    }
+
+    #[test]
+    fn recent_search_fast_path_preserves_order_and_finds_older_hits() {
+        let archive = Archive::in_memory().unwrap();
+        let rows: Vec<_> = (0..600)
+            .map(|i| {
+                let mut row = message("chat", &i.to_string(), i / 2, false);
+                row.content = Content::text(if i < 10 { "older parcel" } else { "ordinary" });
+                row
+            })
+            .collect();
+        archive
+            .insert_messages(rows.iter().map(|row| (row, None)))
+            .unwrap();
+        let common = archive.search_messages("ordinary", 50).unwrap();
+        assert_eq!(common.len(), 50);
+        assert_eq!(common[0].id, "599");
+        assert_eq!(common[49].id, "550");
+        let old = archive.search_messages("parcel", 50).unwrap();
+        assert_eq!(
+            old.len(),
+            10,
+            "partial recent results must not hide older hits"
+        );
+        assert_eq!(old[0].id, "9");
+        assert_eq!(archive.search_messages("ordinary", 300).unwrap().len(), 300);
+    }
+
+    #[test]
+    fn search_index_tracks_edits_replays_deletion_and_clear() {
+        let archive = Archive::in_memory().unwrap();
+        let mut row = message("chat", "one", 1, false);
+        row.content = Content::text("original text");
+        archive
+            .insert_message(&row, Some(b"attachment keys"))
+            .unwrap();
+        archive
+            .set_edited_text("chat", "one", &Content::text("updated text"), &[])
+            .unwrap();
+        assert!(archive.search_messages("original", 10).unwrap().is_empty());
+        assert_eq!(archive.search_messages("updated", 10).unwrap().len(), 1);
+        row.content = Content::text("replayed text");
+        archive.insert_message(&row, None).unwrap();
+        assert!(archive.search_messages("updated", 10).unwrap().is_empty());
+        assert_eq!(
+            archive.raw("chat", "one").unwrap(),
+            Some(b"attachment keys".to_vec())
+        );
+        archive.delete_message("chat", "one").unwrap();
+        assert!(archive.search_messages("replayed", 10).unwrap().is_empty());
+        archive.insert_message(&row, None).unwrap();
+        archive.clear().unwrap();
+        assert!(archive.search_messages("replayed", 10).unwrap().is_empty());
+        archive
+            .connection
+            .execute(
+                "INSERT INTO message_search(message_search, rank) VALUES ('integrity-check', 1)",
+                [],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn existing_archive_gets_a_search_index_without_losing_raw_messages() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(SCHEMA).unwrap();
+        connection.execute("INSERT INTO messages(chat,id,sender,from_me,timestamp,content,raw) VALUES ('chat','old','sender',0,1,?1,?2)",
+            params![serde_json::to_string(&Content::text("archived engine")).unwrap(), b"raw keys".as_slice()]).unwrap();
+        let archive = Archive::prepare(connection).unwrap();
+        assert_eq!(archive.search_messages("engine", 50).unwrap()[0].id, "old");
+        assert_eq!(
+            archive.raw("chat", "old").unwrap(),
+            Some(b"raw keys".to_vec())
+        );
+        let reopened = Archive::prepare(archive.connection).unwrap();
+        assert_eq!(reopened.search_messages("engine", 50).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn history_batch_is_atomic_and_preserves_delivery_and_raw_metadata() {
+        let archive = Archive::in_memory().unwrap();
+        archive.ensure_chat("chat", "Test").unwrap();
+        let mut first = message("chat", "one", 10, true);
+        first.status = Delivery::Read;
+        archive
+            .insert_messages([(&first, Some(b"keys".as_slice()))])
+            .unwrap();
+        first.status = Delivery::Sent;
+        archive.insert_messages([(&first, None)]).unwrap();
+        let saved = archive.message("chat", "one").unwrap().unwrap();
+        assert_eq!(saved.status, Delivery::Read);
+        assert_eq!(archive.raw("chat", "one").unwrap(), Some(b"keys".to_vec()));
+        archive.connection.execute_batch("CREATE TRIGGER reject_bad BEFORE INSERT ON messages WHEN new.id = 'bad' BEGIN SELECT RAISE(ABORT, 'test failure'); END;").unwrap();
+        let second = message("chat", "two", 20, true);
+        let bad = message("chat", "bad", 30, true);
+        assert!(
+            archive
+                .insert_messages([(&second, None), (&bad, None)])
+                .is_err()
+        );
+        assert!(archive.message("chat", "two").unwrap().is_none());
+        assert_eq!(archive.chat("chat").unwrap().unwrap().last_activity, 10);
+        assert!(archive.search_messages("two", 10).unwrap().is_empty());
     }
 
     #[test]

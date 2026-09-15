@@ -1,6 +1,6 @@
-# ZapFast agent guide
+# ZapFast Silicon agent guide
 
-ZapFast is a small native WhatsApp client: Rust, egui, and the
+ZapFast Silicon is an Apple Silicon-only fork of crmne/ZapFast: Rust, egui, and the
 [whatsapp-rust](https://github.com/oxidezap/whatsapp-rust) library for the
 protocol. These notes are for coding agents and new contributors.
 
@@ -48,8 +48,8 @@ protocol. These notes are for coding agents and new contributors.
   B); `ffmpeg` is only a fallback for other codecs. `openh264` compiles
   its C++ from source with the C++ compiler of the host; `nasm` is
   optional and only adds the SIMD paths (the AUR recipes leave it out,
-  the build works without it). Frames become textures on the interface
-  thread and are dropped when unseen.
+  the build works without it). Frames share one playback texture per clip on the interface
+  thread. The CPU frame cache is bounded by bytes and expires unseen clips.
 - Message bodies paint through `markup::paint_selectable` and single lines
   through `widgets::selectable_rich_text`: both hand the galley to
   `egui::text_selection::LabelSelectionState` (which paints it) and only
@@ -121,10 +121,10 @@ protocol. These notes are for coding agents and new contributors.
   `StickerMetadata`, fetched when the picker opens; favourite stickers sync
   through app state (`FavoriteSticker`), which whatsapp-rust does not
   surface, so they are not shown.
-- `src/paths.rs` moves a setup left by the app's earlier name
-  (`fastsapp`, then `fastwhatsapp`) over once, so the linked device survives
-  the rename. Migration runs after the single-instance guard and outside demos;
-  keep the guard's `fastsapp:` wire identity compatible with running old copies.
+- The fork uses `org.erlin.zapfast-silicon` storage and bundle identity, its
+  own single-instance port/protocol and its own GitHub release endpoint. Never
+  automatically adopt an upstream session. Legacy migration helpers are retained
+  for reference and tests, but startup does not call them.
 - The app outlives the window, as in Spotifast: `main` runs
   `eframe::run_native` in a loop; closing the window with "keep running"
   on sets `hide_intent`, the window is destroyed, and a headless loop keeps
@@ -153,8 +153,10 @@ protocol. These notes are for coding agents and new contributors.
   `Client::fetch_message_history` → a `HistorySync` chunk with
   `sync_type == ON_DEMAND`); the archive is paged first, the phone only
   when it is exhausted.
-- Platform-specific code belongs behind `cfg` blocks; a change for one
-  platform must keep the other two compiling.
+- This fork targets `aarch64-apple-darwin` only, including CI and packaging.
+  Keep the M1 baseline; do not use `target-cpu=native` for distributable builds.
+  Legacy platform branches can remain for upstream comparison, but they are not
+  supported build targets. Respect the explicit Mac-only scope.
 
 Three egui pitfalls this code has already hit:
 
@@ -184,26 +186,11 @@ A release is not finished when the tag is pushed. Do these in order:
 1. Bump `version` in `Cargo.toml` and update `Cargo.lock` with a build. Run
    the full checks, commit, and push before tagging so the binaries report
    the right version.
-2. Tag `vX.Y.Z` and push the tag. Wait for every platform build, artifact,
-   and `checksums.txt`.
-3. Replace the generated GitHub notes with written release notes. Start with
-   a short summary, group user-visible changes under headings such as `New`
-   and `Fixed`, credit contributors and reporters where it helps, and end
-   with a full-changelog link comparing the previous tag. Write about what
-   changed for the user, not the commit history.
-4. After the release files exist, update both `zapfast_version` in
-   `docs/_config.yml` and the version menu in `docs/_data/versions.yml`.
-   The menu lists only the current version, which points to `/download/`,
-   and the Changelog link; do not add older versions to it. Never point the
-   download page at files that do not exist yet. Set `release_asset_prefix` to
-   `zapfast` and `release_app_name` to `ZapFast` only once those assets exist.
-5. Update the AUR packages from the templates in `packaging/arch/`. The shared
-   packaging workflow generates versions, hashes and `.SRCINFO` after the
-   release exists, and publishes when `PUBLISH_AUR` and the required secrets
-   are configured. Otherwise use `native-packages` to build, stage,
-   review and publish the generated recipes; see `PACKAGING.md`. Validate
-   native builds with `makepkg -f`. A recipe-only `zapfast-git` change does
-   not require an application release.
+2. Tag `vX.Y.Z` and push the tag. Wait for the Apple Silicon DMG and
+   `checksums.txt`; verify signing and notarization, not just compilation.
+3. Write release notes about the final user-visible behavior and validation.
+   Publish only to fightingentropy/zapfast. Do not publish the inherited website,
+   upstream packages, AUR or Homebrew repositories from this fork.
 
 ## Definition of done
 

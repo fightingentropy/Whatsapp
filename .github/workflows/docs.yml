@@ -20,6 +20,8 @@ concurrency:
 
 jobs:
   build:
+    # The inherited site and domain belong to upstream.
+    if: github.repository == 'crmne/zapfast'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

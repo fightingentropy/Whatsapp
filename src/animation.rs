@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use egui::{ColorImage, TextureHandle, TextureOptions};
 
-/// Maximum frame width uploaded to the GPU.
+/// Maximum frame width or height uploaded to the GPU.
 const MAX_WIDTH: u32 = 320;
 /// Maximum frames kept per animation.
 const MAX_FRAMES: usize = 150;
@@ -21,8 +21,9 @@ const MAX_FRAMES: usize = 150;
 const IDLE: Duration = Duration::from_secs(20);
 /// Maximum concurrent decoders.
 const MAX_DECODERS: usize = 2;
-/// Global texture-frame budget. Least-recently-used animations are removed first.
-const MAX_RESIDENT_FRAMES: usize = 450;
+/// Decoded pixel budget, independent of frame dimensions. GPU playback keeps
+/// one texture per animation instead of uploading the entire clip at once.
+const MAX_RESIDENT_BYTES: usize = 128 * 1024 * 1024;
 
 static DECODING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
@@ -40,7 +41,9 @@ struct Decoded {
 }
 
 struct Playing {
-    frames: Vec<(TextureHandle, Duration)>,
+    frames: Vec<(Arc<ColorImage>, Duration)>,
+    texture: Option<(usize, TextureHandle)>,
+    bytes: usize,
     total: Duration,
     started: Instant,
     last_drawn: Instant,
@@ -90,64 +93,10 @@ pub enum Frame {
 pub fn frame(ctx: &egui::Context, path: &Path) -> Frame {
     let cache = cache(ctx);
     let inbox = inbox(ctx);
-    // Upload decoded frames on the UI thread.
-    let arrived: Vec<Delivery> =
-        std::mem::take(&mut *inbox.0.lock().unwrap_or_else(|p| p.into_inner()));
     let mut entries = cache.0.lock().unwrap_or_else(|p| p.into_inner());
-    for (arrived_path, decoded) in arrived {
-        let entry = match decoded {
-            Some(decoded) if !decoded.frames.is_empty() => {
-                let mut total = Duration::ZERO;
-                let frames = decoded
-                    .frames
-                    .into_iter()
-                    .enumerate()
-                    .map(|(index, (image, delay))| {
-                        total += delay;
-                        let name = format!("{}#{index}", arrived_path.display());
-                        (ctx.load_texture(name, image, TextureOptions::LINEAR), delay)
-                    })
-                    .collect();
-                Entry::Ready(Playing {
-                    frames,
-                    total: total.max(Duration::from_millis(50)),
-                    started: Instant::now(),
-                    last_drawn: Instant::now(),
-                })
-            }
-            _ => Entry::Failed,
-        };
-        entries.insert(arrived_path, entry);
-    }
-    // Remove idle and least-recently-used animations.
     let now = Instant::now();
-    entries.retain(|_, entry| match entry {
-        Entry::Ready(playing) => now.duration_since(playing.last_drawn) < IDLE,
-        _ => true,
-    });
-    let mut resident: usize = entries
-        .values()
-        .map(|entry| match entry {
-            Entry::Ready(playing) => playing.frames.len(),
-            _ => 0,
-        })
-        .sum();
-    while resident > MAX_RESIDENT_FRAMES {
-        let victim = entries
-            .iter()
-            .filter_map(|(entry_path, entry)| match entry {
-                Entry::Ready(playing) if entry_path.as_path() != path => {
-                    Some((entry_path.clone(), playing.last_drawn, playing.frames.len()))
-                }
-                _ => None,
-            })
-            .min_by_key(|(_, last_drawn, _)| *last_drawn);
-        let Some((victim, _, count)) = victim else {
-            break;
-        };
-        entries.remove(&victim);
-        resident -= count;
-    }
+    receive(&mut entries, &inbox, now);
+    prune(&mut entries, now, MAX_RESIDENT_BYTES);
     match entries.get_mut(path) {
         Some(Entry::Ready(playing)) => {
             playing.last_drawn = now;
@@ -165,7 +114,24 @@ pub fn frame(ctx: &egui::Context, path: &Path) -> Frame {
                 position -= *delay;
             }
             ctx.request_repaint_after(until_next.max(Duration::from_millis(10)));
-            Frame::Ready(playing.frames[chosen].0.clone())
+            match &mut playing.texture {
+                Some((uploaded, texture)) => {
+                    if *uploaded != chosen {
+                        texture.set(playing.frames[chosen].0.clone(), TextureOptions::LINEAR);
+                        *uploaded = chosen;
+                    }
+                    Frame::Ready(texture.clone())
+                }
+                None => {
+                    let texture = ctx.load_texture(
+                        path.display().to_string(),
+                        playing.frames[chosen].0.clone(),
+                        TextureOptions::LINEAR,
+                    );
+                    playing.texture = Some((chosen, texture.clone()));
+                    Frame::Ready(texture)
+                }
+            }
         }
         Some(Entry::Decoding) => Frame::Pending,
         Some(Entry::Failed) => Frame::Unavailable,
@@ -201,6 +167,87 @@ pub fn frame(ctx: &egui::Context, path: &Path) -> Frame {
             }
             Frame::Pending
         }
+    }
+}
+
+/// Accept completed decodes even when the current view contains no animation.
+fn receive(entries: &mut HashMap<PathBuf, Entry>, inbox: &Inbox, now: Instant) {
+    let arrived = std::mem::take(&mut *inbox.0.lock().unwrap_or_else(|p| p.into_inner()));
+    for (path, decoded) in arrived {
+        let entry = match decoded {
+            Some(decoded) if !decoded.frames.is_empty() => {
+                let total: Duration = decoded.frames.iter().map(|(_, delay)| *delay).sum();
+                let bytes = decoded
+                    .frames
+                    .iter()
+                    .map(|(image, _)| image.pixels.len() * 4)
+                    .sum();
+                Entry::Ready(Playing {
+                    frames: decoded
+                        .frames
+                        .into_iter()
+                        .map(|(image, delay)| (Arc::new(image), delay))
+                        .collect(),
+                    texture: None,
+                    bytes,
+                    total: total.max(Duration::from_millis(50)),
+                    started: now,
+                    last_drawn: now,
+                })
+            }
+            _ => Entry::Failed,
+        };
+        entries.insert(path, entry);
+    }
+}
+
+fn prune(entries: &mut HashMap<PathBuf, Entry>, now: Instant, budget: usize) {
+    entries.retain(|_, entry| match entry {
+        Entry::Ready(playing) => now.saturating_duration_since(playing.last_drawn) < IDLE,
+        _ => true,
+    });
+    let mut resident: usize = entries
+        .values()
+        .map(|entry| match entry {
+            Entry::Ready(playing) => playing.bytes,
+            _ => 0,
+        })
+        .sum();
+    while resident > budget {
+        let victim = entries
+            .iter()
+            .filter_map(|(path, entry)| match entry {
+                Entry::Ready(playing) => Some((path.clone(), playing.last_drawn, playing.bytes)),
+                _ => None,
+            })
+            .min_by_key(|(_, last, _)| *last);
+        let Some((path, _, bytes)) = victim else {
+            break;
+        };
+        entries.remove(&path);
+        resident -= bytes;
+    }
+}
+
+/// Retire offscreen animations even after navigating to a chat with no media.
+/// The final scheduled repaint frees them; an empty cache schedules no timer.
+pub fn maintain(ctx: &egui::Context) {
+    let cache = cache(ctx);
+    let mut entries = cache.0.lock().unwrap_or_else(|p| p.into_inner());
+    let now = Instant::now();
+    receive(&mut entries, &inbox(ctx), now);
+    prune(&mut entries, now, MAX_RESIDENT_BYTES);
+    if let Some(next) = entries
+        .values()
+        .filter_map(|entry| match entry {
+            Entry::Ready(playing) => {
+                Some(IDLE.saturating_sub(now.saturating_duration_since(playing.last_drawn)))
+            }
+            _ => None,
+        })
+        .min()
+    {
+        ctx.request_repaint_after(next);
     }
 }
 
@@ -275,14 +322,13 @@ fn decode_webp(path: &Path) -> Option<Decoded> {
 }
 
 fn to_color_image(image: &image::RgbaImage) -> ColorImage {
-    let image = if image.width() > MAX_WIDTH {
-        let height = (image.height() * MAX_WIDTH / image.width()).max(1);
-        image::imageops::resize(
-            image,
-            MAX_WIDTH,
-            height,
-            image::imageops::FilterType::Triangle,
-        )
+    let largest = image.width().max(image.height());
+    let image = if largest > MAX_WIDTH {
+        let width =
+            ((u64::from(image.width()) * u64::from(MAX_WIDTH)) / u64::from(largest)).max(1) as u32;
+        let height =
+            ((u64::from(image.height()) * u64::from(MAX_WIDTH)) / u64::from(largest)).max(1) as u32;
+        image::imageops::resize(image, width, height, image::imageops::FilterType::Triangle)
     } else {
         image.clone()
     };
@@ -371,19 +417,7 @@ fn frame_of(
     let mut rgba = vec![0u8; width * height * 4];
     yuv.write_rgba8(&mut rgba);
     let image = image::RgbaImage::from_raw(width as u32, height as u32, rgba)?;
-    let out_width = (width as u32).min(MAX_WIDTH);
-    let out_height = ((height as u64 * out_width as u64 / width as u64) as u32).max(1);
-    let scaled = if out_width == width as u32 {
-        image
-    } else {
-        image::imageops::resize(
-            &image,
-            out_width,
-            out_height,
-            image::imageops::FilterType::Triangle,
-        )
-    };
-    Some((to_color_image(&scaled), delay))
+    Some((to_color_image(&image), delay))
 }
 
 fn push_annex_b(out: &mut Vec<u8>, nal: &[u8]) {
@@ -430,9 +464,11 @@ fn decode_with_ffmpeg(path: &Path) -> Option<Decoded> {
     if width == 0 || height == 0 {
         return None;
     }
-    let out_width = width.min(MAX_WIDTH);
-    // Use even dimensions and preserve aspect ratio.
-    let out_height = ((height as u64 * out_width as u64 / width as u64) as u32).max(2) & !1;
+    // Bound both dimensions, including portrait clips. RGBA output permits
+    // odd dimensions, so tiny frames do not need to be stretched to even sizes.
+    let largest = width.max(height).max(MAX_WIDTH);
+    let out_width = (u64::from(width) * u64::from(MAX_WIDTH) / u64::from(largest)).max(1) as u32;
+    let out_height = (u64::from(height) * u64::from(MAX_WIDTH) / u64::from(largest)).max(1) as u32;
     let fps = 15u32;
     let mut child = Command::new("ffmpeg")
         .args(["-v", "error", "-i"])
@@ -474,6 +510,122 @@ fn decode_with_ffmpeg(path: &Path) -> Option<Decoded> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn clip(side: usize) -> Decoded {
+        Decoded {
+            frames: [egui::Color32::RED, egui::Color32::BLUE]
+                .into_iter()
+                .map(|color| {
+                    (
+                        ColorImage::filled([side, side], color),
+                        Duration::from_secs(10),
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn tall_frames_are_bounded_without_stretching_small_images() {
+        assert_eq!(
+            to_color_image(&image::RgbaImage::new(100, 2000)).size,
+            [16, 320]
+        );
+        assert_eq!(
+            to_color_image(&image::RgbaImage::new(2000, 100)).size,
+            [320, 16]
+        );
+        assert_eq!(
+            to_color_image(&image::RgbaImage::new(21, 17)).size,
+            [21, 17]
+        );
+    }
+
+    #[test]
+    fn playback_uploads_one_frame_and_reuses_its_texture() {
+        let ctx = egui::Context::default();
+        let path = PathBuf::from("test-animation");
+        inbox(&ctx)
+            .0
+            .lock()
+            .unwrap()
+            .push((path.clone(), Some(clip(8))));
+        let Frame::Ready(first) = frame(&ctx, &path) else {
+            panic!("ready")
+        };
+        let mut first_delta = ctx.tex_manager().write().take_delta();
+        assert_eq!(
+            first_delta
+                .set
+                .iter()
+                .filter(|(id, _)| **id == first.id())
+                .count(),
+            1
+        );
+        first_delta.clear(); // The test inspects uploads instead of handing them to a GPU.
+        // A repaint within the same frame does not upload again.
+        let _ = frame(&ctx, &path);
+        assert!(ctx.tex_manager().write().take_delta().set.is_empty());
+        {
+            let cache = cache(&ctx);
+            let mut entries = cache.0.lock().unwrap();
+            let Entry::Ready(playing) = entries.get_mut(&path).unwrap() else {
+                panic!("ready")
+            };
+            playing.started = Instant::now() - Duration::from_secs(11);
+        }
+        let Frame::Ready(second) = frame(&ctx, &path) else {
+            panic!("ready")
+        };
+        assert_eq!(first.id(), second.id());
+        let mut delta = ctx.tex_manager().write().take_delta();
+        assert_eq!(delta.set.len(), 1);
+        let egui::ImageData::Color(image) = &delta.set[&second.id()][0].image;
+        assert_eq!(image.pixels[0], egui::Color32::BLUE);
+        delta.clear();
+    }
+
+    #[test]
+    fn cache_evicts_by_bytes_and_drains_completed_decodes_without_media_in_view() {
+        let ctx = egui::Context::default();
+        let path = PathBuf::from("offscreen");
+        inbox(&ctx)
+            .0
+            .lock()
+            .unwrap()
+            .push((path.clone(), Some(clip(16))));
+        maintain(&ctx);
+        assert!(inbox(&ctx).0.lock().unwrap().is_empty());
+        let cache = cache(&ctx);
+        let mut entries = cache.0.lock().unwrap();
+        let now = Instant::now();
+        let Entry::Ready(playing) = entries.get_mut(&path).unwrap() else {
+            panic!("ready")
+        };
+        assert!(playing.texture.is_none(), "offscreen frames never upload");
+        playing.last_drawn = now - IDLE;
+        drop(entries);
+        maintain(&ctx);
+        assert!(cache.0.lock().unwrap().is_empty());
+        let deliveries = Inbox::default();
+        let mut entries = HashMap::new();
+        deliveries
+            .0
+            .lock()
+            .unwrap()
+            .push(("old".into(), Some(clip(16))));
+        receive(&mut entries, &deliveries, now - Duration::from_secs(1));
+        deliveries
+            .0
+            .lock()
+            .unwrap()
+            .push(("new".into(), Some(clip(8))));
+        receive(&mut entries, &deliveries, now);
+        // One large clip consumes more bytes than a small clip with equal frames.
+        prune(&mut entries, now, 8 * 8 * 4 * 2);
+        assert_eq!(entries.len(), 1);
+        assert!(entries.contains_key(Path::new("new")));
+    }
 
     /// Verifies animated WebP frame disposal.
     #[test]

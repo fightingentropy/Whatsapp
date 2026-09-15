@@ -5,8 +5,8 @@ edition = "2024"
 rust-version = "1.98"
 license = "MIT"
 description = "A native WhatsApp client built with Rust and egui"
-homepage = "https://zapfast.rocks"
-repository = "https://github.com/crmne/zapfast"
+homepage = "https://github.com/fightingentropy/zapfast"
+repository = "https://github.com/fightingentropy/zapfast"
 keywords = ["whatsapp", "chat", "egui", "messaging"]
 categories = ["gui"]
 
@@ -37,7 +37,7 @@ log = "0.4"
 env_logger = { version = "0.11", default-features = false, features = ["auto-color", "humantime"] }
 directories = "6"
 # UI framework. glow avoids the larger wgpu dependency.
-eframe = { version = "0.36", default-features = false, features = ["glow", "default_fonts", "links", "wayland", "x11", "persistence"] }
+eframe = { version = "0.36", default-features = false, features = ["glow", "default_fonts", "links", "persistence"] }
 egui = "0.36"
 egui_extras = { version = "0.36", features = ["file", "image", "svg", "webp", "gif"] }
 # Finds system fonts for scripts not covered by Inter. Keep skrifa aligned with
@@ -68,8 +68,8 @@ open = "5"
 # File picker, clipboard images, and MIME detection for attachments. Clipboard
 # text support is already included through egui-winit, and MIME detection
 # through egui_extras.
-rfd = { version = "0.17", default-features = false, features = ["xdg-portal", "wayland"] }
-arboard = { version = "3", default-features = false, features = ["image-data", "wayland-data-control"] }
+rfd = { version = "0.17", default-features = false, features = [] }
+arboard = { version = "3", default-features = false, features = ["image-data"] }
 mime_guess2 = "2"
 # Emoji names, groups, and shortcodes for picker search.
 emojis = "0.9"
@@ -100,6 +100,7 @@ tray-icon = { version = "0.24", default-features = false }
 # Pumps AppKit without a window. The status item and Dock reopen callback must
 # stay on the main thread.
 objc2 = "0.6"
+core-foundation-sys = "0.8"
 raw-window-handle = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSButton", "NSControl", "NSEvent", "NSMenu", "NSMenuItem", "NSResponder", "NSRunningApplication", "NSView", "NSWindow"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSDate", "NSGeometry", "NSObjCRuntime", "NSRunLoop", "NSString"] }
@@ -119,6 +120,8 @@ png = "0.18"
 [features]
 # Sample data, layout tests, and screenshots. Not used in release builds.
 demo = []
+# Optional compatibility fallback; macOS supplies Apple Color Emoji.
+bundled-emoji = []
 
 [profile.release]
 lto = "thin"

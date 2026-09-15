@@ -5,14 +5,14 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use skrifa::MetadataProvider as _;
 
 /// Registered fallback name, font bytes, and face index.
 pub struct Fallback {
     pub name: String,
-    pub bytes: Vec<u8>,
+    pub bytes: Arc<[u8]>,
     pub index: u32,
 }
 
@@ -102,6 +102,7 @@ fn load() -> Vec<Fallback> {
     // Read and register a face only once when it covers several scripts.
     let mut fonts: Vec<Fallback> = Vec::new();
     let mut taken: Vec<(PathBuf, u32)> = Vec::new();
+    let mut files = BTreeMap::<PathBuf, Arc<[u8]>>::new();
     for (script, _, _) in FALLBACK_SCRIPTS {
         let Some(candidate) = best.get(script) else {
             log::debug!("no fallback face covers {script}");
@@ -110,11 +111,18 @@ fn load() -> Vec<Fallback> {
         if taken.contains(&(candidate.path.clone(), candidate.index)) {
             continue;
         }
-        let bytes = match std::fs::read(&candidate.path) {
-            Ok(bytes) => bytes,
-            Err(error) => {
-                log::warn!("cannot read {}: {error}", candidate.path.display());
-                continue;
+        // Several regional faces can share a large TTC file. Own its bytes
+        // once, even when different face indices are selected for scripts.
+        let bytes = match files.entry(candidate.path.clone()) {
+            std::collections::btree_map::Entry::Occupied(entry) => Arc::clone(entry.get()),
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                match std::fs::read(&candidate.path) {
+                    Ok(bytes) => Arc::clone(entry.insert(Arc::from(bytes))),
+                    Err(error) => {
+                        log::warn!("cannot read {}: {error}", candidate.path.display());
+                        continue;
+                    }
+                }
             }
         };
         log::debug!(
