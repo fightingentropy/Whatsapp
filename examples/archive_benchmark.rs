@@ -5,8 +5,8 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use rusqlite::{Connection, params};
-use zapfast::archive::Archive;
-use zapfast::model::{Content, Delivery, Message};
+use whatsapp::archive::Archive;
+use whatsapp::model::{Content, Delivery, Message};
 
 struct Scratch(PathBuf);
 impl Drop for Scratch {
@@ -60,7 +60,7 @@ fn median_ms(mut times: Vec<f64>) -> f64 {
 
 fn main() {
     let root = Scratch(std::env::temp_dir().join(format!(
-        "zapfast-silicon-benchmark-{}-{}",
+        "whatsapp-benchmark-{}-{}",
         std::process::id(),
         jiff::Timestamp::now().as_millisecond()
     )));

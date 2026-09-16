@@ -215,7 +215,7 @@ mod tests {
 
     fn app() -> (App, std::sync::mpsc::Sender<Event>) {
         let root = std::env::temp_dir().join(format!(
-            "zapfast-cache-{}-{:?}",
+            "whatsapp-cache-{}-{:?}",
             std::process::id(),
             std::thread::current().id()
         ));

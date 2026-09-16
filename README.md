@@ -1,14 +1,16 @@
-# ZapFast Silicon
+<p align="center"><img src="packaging/macos/icon-1024.png" width="112" alt="Whatsapp icon"></p>
 
-A native WhatsApp companion for **Apple Silicon Macs (M1 and newer)**, built
-with Rust and [egui](https://github.com/emilk/egui). This is an independent
-fork of [crmne/ZapFast](https://github.com/crmne/zapfast). The WhatsApp protocol
-still comes from [whatsapp-rust](https://github.com/oxidezap/whatsapp-rust).
-There is no browser engine, hosted backend, or telemetry.
+# Whatsapp
 
-The current fork is available from source. Its release channel is
-[fightingentropy/zapfast](https://github.com/fightingentropy/zapfast/releases).
-Upstream releases and performance numbers describe the upstream app, not this fork.
+A small native WhatsApp companion for **Apple Silicon Macs (M1 and newer)**.
+Built with Rust, [egui](https://github.com/emilk/egui) and
+[whatsapp-rust](https://github.com/oxidezap/whatsapp-rust). Charcoal surfaces,
+green accents, a handset-and-chat icon, and a dark theme by default.
+
+The standalone project lives at [fightingentropy/Whatsapp](https://github.com/fightingentropy/Whatsapp).
+There is no browser engine, hosted backend, telemetry or extra account.
+Build from source below; signed, notarized public downloads will appear under
+[Releases](https://github.com/fightingentropy/Whatsapp/releases).
 
 ## Apple Silicon changes
 
@@ -55,8 +57,9 @@ Upstream releases and performance numbers describe the upstream app, not this fo
   supplies emoji by default; `--features bundled-emoji` restores the Noto
   compatibility fallback. Demo builds still include Noto for their sample art.
 - App identity, data directories, single-instance signalling and update notices
-  belong to this fork. It links as a separate companion device and does not
-  automatically move or reuse an upstream installation's session.
+  belong to Whatsapp. Existing ZapFast Silicon users keep their linked device,
+  settings, messages and downloads through a one-time local migration. An
+  upstream ZapFast installation's session is never adopted.
 
 An optional Metal renderer is available for comparison with OpenGL (see below).
 See [PERFORMANCE.md](PERFORMANCE.md) for measurements, remaining costs and validation details.
@@ -78,7 +81,7 @@ See [PERFORMANCE.md](PERFORMANCE.md) for measurements, remaining costs and valid
   Group messages show two gray checks after every recipient has received
   them, and blue checks after every recipient has read them. The recipient
   list and individual receipts are saved locally; later membership changes
-  do not change that list. If the original recipients are unknown, ZapFast
+  do not change that list. If the original recipients are unknown, Whatsapp
   waits for the phone's aggregate status instead of guessing from one reader.
 - **WhatsApp formatting.** Bold, italic, strikethrough, code, lists, quotes,
   mentions, and link previews are supported. Links are clickable. Emoji use
@@ -98,10 +101,10 @@ See [PERFORMANCE.md](PERFORMANCE.md) for measurements, remaining costs and valid
   an emoji without leaving the composer, or `@` in a group to mention a member.
   Reply, react, edit, forward, delete, and check when a message was sent,
   delivered, or read.
-- **View attachments.** ZapFast downloads files up to 64 MB automatically or
+- **View attachments.** Whatsapp downloads files up to 64 MB automatically or
   on click. Photos, stickers, GIFs, voice messages, audio, locations, contacts,
   polls, and link previews appear in the chat. Videos and documents open in
-  their default desktop apps. If an attachment has expired, ZapFast asks your
+  their default desktop apps. If an attachment has expired, Whatsapp asks your
   phone to upload it again.
 - **Emoji, GIF, and sticker picker.** Search emoji and GIFs, use recent emoji
   and stickers, and save stickers with a right-click. Emoji autocomplete and
@@ -117,14 +120,14 @@ See [PERFORMANCE.md](PERFORMANCE.md) for measurements, remaining costs and valid
   groups are read-only for non-admins.
 - **Presence.** See online, last-seen, and typing status, and send your typing
   status.
-- **Runs in the background.** Closing the window keeps ZapFast linked in the
+- **Runs in the background.** Closing the window keeps Whatsapp linked in the
   system tray. Reopen it from the tray or by launching it again. Quit from the
   tray or with `⌘Q`, or disable this behavior in Settings.
 - **Desktop notifications.** Get notifications with the chat picture when you
   are away from the open chat. Muted chats do not notify you.
-- **Update notices.** ZapFast checks GitHub once a day and shows a download
+- **Update notices.** Whatsapp checks GitHub once a day and shows a download
   link when a newer release is available. You can turn this off in Settings.
-- **Light and dark**, or follow the system. Zoom with ⌘plus and
+- **Dark by default**, with light and system options. Zoom with ⌘plus and
   ⌘minus.
 - **Copy text.** Select part of a message or copy across messages in
   WhatsApp's `[time, date] Name:` format. Contact names and numbers are also
@@ -146,11 +149,11 @@ See [PERFORMANCE.md](PERFORMANCE.md) for measurements, remaining costs and valid
 
 Use an Apple Silicon Mac, Xcode Command Line Tools, CMake and Rust via rustup.
 `rust-toolchain.toml` pins Rust 1.98.0; `.cargo/config.toml` selects
-`aarch64-apple-darwin`. Intel, Windows and Linux builds are unsupported in this fork.
+`aarch64-apple-darwin`. Intel, Windows and Linux builds are unsupported.
 
 ```sh
 cargo build --locked --release
-./target/aarch64-apple-darwin/release/zapfast
+./target/aarch64-apple-darwin/release/whatsapp
 ```
 
 To build the experimental Metal backend, add `--features metal`, then launch
@@ -162,11 +165,11 @@ Offline measurements (no linked account required):
 
 ```sh
 cargo build --locked --release --features demo,metal
-./target/aarch64-apple-darwin/release/zapfast --renderer metal --demo-benchmark /tmp/metal.json
-./target/aarch64-apple-darwin/release/zapfast --renderer open-gl --demo-benchmark /tmp/opengl.json
-./target/aarch64-apple-darwin/release/zapfast --demo --demo-page long --demo-benchmark /tmp/scroll.json --demo-benchmark-scroll
+./target/aarch64-apple-darwin/release/whatsapp --renderer metal --demo-benchmark /tmp/metal.json
+./target/aarch64-apple-darwin/release/whatsapp --renderer open-gl --demo-benchmark /tmp/opengl.json
+./target/aarch64-apple-darwin/release/whatsapp --demo --demo-page long --demo-benchmark /tmp/scroll.json --demo-benchmark-scroll
 # Compare the same 10,000 messages with offscreen layout enabled:
-./target/aarch64-apple-darwin/release/zapfast --demo --demo-page long --demo-benchmark /tmp/full-scroll.json --demo-benchmark-scroll --demo-full-layout
+./target/aarch64-apple-darwin/release/whatsapp --demo --demo-page long --demo-benchmark /tmp/full-scroll.json --demo-benchmark-scroll --demo-full-layout
 cargo run --locked --release --features demo --example conversation_probe > /tmp/layout.json
 cargo run --locked --release --features demo --example video_probe -- tests/fixtures/h264-bframes.mp4
 ```
@@ -181,7 +184,7 @@ For a local test DMG:
 
 ```sh
 bash packaging/macos/build-local.sh
-open "dist/ZapFast-Silicon-0.13.1-local-arm64.dmg"
+open "dist/Whatsapp-0.13.1-local-arm64.dmg"
 ```
 
 The helper signs the app ad hoc in a temporary directory outside iCloud, then
@@ -195,14 +198,23 @@ and remains in this app's local archive. Settings is available with `⌘,`.
 When the QR session expires, the app requests a fresh session automatically.
 If no code is available, **Get a new QR code** retries without restarting the app
 or deleting its data. An outstanding phone-number pairing code is preserved.
+The pairing card scrolls in short windows so every linking option stays reachable.
 
 ## Files
 
 Settings, `session.db`, `archive.db`, saved stickers and logs are under
-`~/Library/Application Support/org.erlin.zapfast-silicon/`.
+`~/Library/Application Support/org.erlin.whatsapp/`.
 Downloaded media and avatars are under
-`~/Library/Caches/org.erlin.zapfast-silicon/`.
-Window state uses eframe's independent `zapfast-silicon` app id.
+`~/Library/Caches/org.erlin.whatsapp/`.
+Window state uses eframe's independent `whatsapp` app id.
+On first launch after upgrading from our previous **ZapFast Silicon** build,
+Whatsapp moves only the `org.erlin.zapfast-silicon` profile and cache to these
+new locations. Existing destination directories are never overwritten or
+merged. SQLite databases move with their journal files; a failed move stops
+startup so it cannot silently replace your account with an empty profile.
+Quit the previous app before upgrading. Upstream ZapFast data is never moved.
+WhatsApp caches a linked device's display name at pairing, so an existing
+link may keep its previous name on the phone; the account remains linked.
 Connection-status logs record only the state name, omitting QR payloads,
 pairing codes, phone numbers and server error details.
 The device database and archived raw messages contain account and attachment
@@ -228,20 +240,22 @@ The demo uses offline sample chats in a fresh temporary directory. It does not
 open a linked account, connect to WhatsApp, or register a tray icon. Space starts
 or replays its scripted tour. Demo screenshots verify layout, not live messaging.
 
-GIF search uses a key entered in Settings or `ZAPFAST_GIPHY_KEY` at build time.
+GIF search uses a key entered in Settings or `WHATSAPP_GIPHY_KEY` at build time.
 The source includes no key. `AGENTS.md` describes the architecture and invariants.
-The `docs/` website and non-Mac packaging recipes are retained as upstream
-reference material and are not published by this fork's workflows.
+The repository contains only the Mac packaging and CI workflows. Icon sources
+live in `assets/brand/` and are rebuilt with `cargo run --locked --example render_icon`.
+Historical performance reports retain the product name used when measured.
 
 ## Disclaimer
 
-ZapFast Silicon is an unofficial client and is not affiliated with WhatsApp or
+Whatsapp is an unofficial client and is not affiliated with WhatsApp or
 Meta. Using an unofficial client may be against WhatsApp's terms of service
 and could get an account suspended. Use it at your own risk.
 
 ## License and credit
 
-MIT, retaining the upstream ZapFast copyright and attribution. Inter and Noto
+Whatsapp is independently maintained by Erlin Hoxha. It began from
+[ZapFast by Carmine Paolino](https://github.com/crmne/zapfast) and retains the
+original MIT copyright and license in [LICENSE](LICENSE). Inter and Noto
 Color Emoji are under the SIL Open Font License; icons are from
-[Lucide](https://lucide.dev) (ISC). The original project is
-[crmne/zapfast](https://github.com/crmne/zapfast).
+[Lucide](https://lucide.dev) (ISC). The handset-and-chat artwork is maintained in this repository. WhatsApp is a trademark of Meta.

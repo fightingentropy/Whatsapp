@@ -1,6 +1,6 @@
-# ZapFast Silicon agent guide
+# Whatsapp agent guide
 
-ZapFast Silicon is an Apple Silicon-only fork of crmne/ZapFast: Rust, egui, and the
+Whatsapp is an independent Apple Silicon-only client derived from ZapFast: Rust, egui, and the
 [whatsapp-rust](https://github.com/oxidezap/whatsapp-rust) library for the
 protocol. These notes are for coding agents and new contributors.
 
@@ -145,16 +145,22 @@ protocol. These notes are for coding agents and new contributors.
   player must use an explicit `Layout::left_to_right` at their own width.
   `src/ui/picker.rs` is the emoji/GIF/sticker panel. GIF search uses the
   key from Settings, else one baked in at build time from
-  `ZAPFAST_GIPHY_KEY` (`option_env!`); the repository carries none. The
+  `WHATSAPP_GIPHY_KEY` (`option_env!`); the repository carries none. The
   phone's recently used stickers arrive in `HistorySync.recent_stickers`
   when the device links and live in the archive's `stickers` table as raw
   `StickerMetadata`, fetched when the picker opens; favourite stickers sync
   through app state (`FavoriteSticker`), which whatsapp-rust does not
   surface, so they are not shown.
-- The fork uses `org.erlin.zapfast-silicon` storage and bundle identity, its
-  own single-instance port/protocol and its own GitHub release endpoint. Never
-  automatically adopt an upstream session. Legacy migration helpers are retained
-  for reference and tests, but startup does not call them.
+- Whatsapp uses `org.erlin.whatsapp` storage and bundle identity and the
+  fightingentropy/Whatsapp release endpoint. Startup migrates only our previous
+  `org.erlin.zapfast-silicon` profile after acquiring the single-instance guard;
+  move whole directories with SQLite journals, never merge or overwrite an
+  existing destination, and stop on errors. Never adopt an upstream session.
+  The guard also understands our previous `zapfast-silicon:` protocol so the
+  two app versions cannot open the same linked account during an upgrade.
+- `assets/brand/whatsapp-mark.svg` owns the handset-and-chat mark. Run
+  `cargo run --locked --example render_icon` to regenerate the committed dark
+  macOS SVG and PNG. The menu-bar template uses the transparent mark directly.
 - The app outlives the window, as in Spotifast: `main` runs
   `eframe::run_native` in a loop; closing the window with "keep running"
   on sets `hide_intent`, the window is destroyed, and a headless loop keeps
@@ -225,7 +231,7 @@ A release is not finished when the tag is pushed. Do these in order:
 2. Tag `vX.Y.Z` and push the tag. Wait for the Apple Silicon DMG and
    `checksums.txt`; verify signing and notarization, not just compilation.
 3. Write release notes about the final user-visible behavior and validation.
-   Publish only to fightingentropy/zapfast. Do not publish the inherited website,
+   Publish only to fightingentropy/Whatsapp. Do not publish the inherited website,
    upstream packages, AUR or Homebrew repositories from this fork.
 
 ## Definition of done

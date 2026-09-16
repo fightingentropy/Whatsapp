@@ -2,10 +2,10 @@
 //! Timings include the whole demo UI pass, but no rendering or GPU work.
 
 use std::time::Instant;
-use zapfast::{app::App, demo, paths::AppDirs, settings::Settings};
+use whatsapp::{app::App, demo, paths::AppDirs, settings::Settings};
 
 fn main() -> anyhow::Result<()> {
-    let root = std::env::temp_dir().join(format!("zapfast-sidebar-probe-{}", std::process::id()));
+    let root = std::env::temp_dir().join(format!("whatsapp-sidebar-probe-{}", std::process::id()));
     std::fs::create_dir(&root)?;
     let mut results = Vec::new();
     for count in [1_000, 10_000] {

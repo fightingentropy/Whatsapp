@@ -114,7 +114,7 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ("Ctrl++ / Ctrl+-", "Zoom in / out"),
     ("Ctrl+0", "Reset zoom"),
     ("Ctrl+/", "This list"),
-    ("Ctrl+W", "Close the window (ZapFast remains in the tray)"),
+    ("Ctrl+W", "Close the window (Whatsapp remains in the tray)"),
     ("Ctrl+Q", "Quit"),
 ];
 

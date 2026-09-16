@@ -1,11 +1,11 @@
 # Apple Silicon packaging
 
-This fork builds `aarch64-apple-darwin` only. `native-packages.macos.yaml`
+Whatsapp builds `aarch64-apple-darwin` only. `native-packages.macos.yaml`
 pins the packaging CLI and describes the `macos-arm64` DMG for
-`fightingentropy/zapfast`. `packaging/macos/Info.plist` sets the independent
-`org.erlin.zapfast-silicon` app identifier and macOS 11 deployment target.
-The artifact is `zapfast-vX.Y.Z-macos-arm64.dmg` and contains
-`ZapFast Silicon.app`.
+`fightingentropy/Whatsapp`. `packaging/macos/Info.plist` sets the independent
+`org.erlin.whatsapp` app identifier and macOS 11 deployment target.
+The artifact is `whatsapp-vX.Y.Z-macos-arm64.dmg` and contains
+`Whatsapp.app`.
 
 ## Local build
 
@@ -17,7 +17,7 @@ bash packaging/macos/build-local.sh
 
 The helper selects the repository-pinned compiler through rustup, builds the ARM64 release binary, stages and signs the app in a
 fresh temporary directory, creates and verifies the DMG, then writes
-`dist/ZapFast-Silicon-VERSION-local-arm64.dmg`. An optional first argument
+`dist/Whatsapp-VERSION-local-arm64.dmg`. An optional first argument
 chooses another `.dmg` output path. It uses the same bundle and disk-image
 recipes as release packaging and requires Ruby and Python 3 in addition to
 the build tools. Re-running replaces only the named output DMG.
@@ -36,7 +36,7 @@ The public release workflow below uses the native-packages CLI at version 0.5.1.
 After all CI checks pass, update the package version and tag `vX.Y.Z` when a
 release is wanted. `.github/workflows/release.yml` builds one ARM64 binary,
 creates a DMG, verifies its signature and notarization, then publishes it and
-`checksums.txt` to this fork's GitHub release. Missing signing credentials do
+`checksums.txt` to Whatsapp's GitHub release. Missing signing credentials do
 not produce a successful public release: the final notarization check fails.
 No Linux/Windows packages, AUR recipes, upstream tap or website are published.
 
@@ -54,5 +54,6 @@ See the pinned tool's
 [Apple setup instructions](https://github.com/crmne/native-packages/blob/v0.5.1/docs/apple-notarization.md).
 
 `native-packages.yaml` links to the same Mac configuration so the CLI default
-also targets this fork. Non-Mac recipes remain as upstream reference material
-and are unused by the workflows.
+also targets Whatsapp. Unused non-Mac installers and the inherited website have
+been removed. App artwork is generated from `assets/brand/whatsapp-mark.svg`:
+run `cargo run --locked --example render_icon` before rebuilding the bundle.

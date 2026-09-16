@@ -56,7 +56,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                         ui,
                         &palette,
                         "Zoom",
-                        "You can also use Ctrl+plus and Ctrl+minus.",
+                        &super::keys::label("You can also use Ctrl+plus and Ctrl+minus."),
                         |ui| {
                             if theme::icon_button(ui, Icon::Plus, 16.0, palette.secondary, palette.text, "Larger").clicked() {
                                 app.actions.push(Action::ZoomBy(0.1));
@@ -74,7 +74,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     );
 
                     section(ui, app, "Chats");
-                    toggle(ui, app, "Enter sends", "When off, Enter adds a line and Ctrl+Enter sends.", |settings| &mut settings.enter_sends);
+                    toggle(ui, app, "Enter sends", &super::keys::label("When off, Enter adds a line and Ctrl+Enter sends."), |settings| &mut settings.enter_sends);
                     let receipts_note = if app.account_receipts_off {
                         "Read receipts are disabled for your WhatsApp account. Direct chats will not send them. When this switch is on, groups still do. Read state syncs between your devices either way."
                     } else {
@@ -89,9 +89,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     toggle(ui, app, "Show shortcut hints", "", |settings| &mut settings.show_shortcut_hints);
 
                     section(ui, app, "Window");
-                    toggle(ui, app, "Keep running when the window closes", "Keep ZapFast linked in the system tray. Quit from the tray menu or with Ctrl+Q.", |settings| &mut settings.keep_running_in_background);
+                    toggle(ui, app, "Keep running when the window closes", "Keep Whatsapp linked in the menu bar. Quit from the menu or with ⌘Q.", |settings| &mut settings.keep_running_in_background);
                     toggle(ui, app, "Notify about new messages", "Show desktop notifications when the window is hidden, in the background, or showing another chat. Muted chats do not notify you.", |settings| &mut settings.notifications);
-                    toggle(ui, app, "Check for updates", "Ask GitHub once a day whether a newer ZapFast release exists. The request identifies only ZapFast and its version.", |settings| &mut settings.check_for_updates);
+                    toggle(ui, app, "Check for updates", "Ask GitHub once a day whether a newer Whatsapp release exists. The request identifies only Whatsapp and its version.", |settings| &mut settings.check_for_updates);
 
                     widgets::setting_row(
                         ui,
@@ -179,7 +179,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     widgets::setting_row(
                         ui,
                         &palette,
-                        &format!("ZapFast Silicon {}", env!("CARGO_PKG_VERSION")),
+                        &format!("Whatsapp {}", env!("CARGO_PKG_VERSION")),
                         "A native WhatsApp client built with Rust, egui, and whatsapp-rust.",
                         |ui| {
                             if theme::soft_button(ui, &palette, Some(Icon::Info), "About", false).clicked() {

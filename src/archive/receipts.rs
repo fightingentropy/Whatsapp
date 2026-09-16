@@ -112,7 +112,7 @@ mod tests {
     #[test]
     fn group_receipts_survive_reopening_and_use_the_last_readers_time() {
         let path =
-            std::env::temp_dir().join(format!("zapfast-group-receipts-{}.db", std::process::id()));
+            std::env::temp_dir().join(format!("whatsapp-group-receipts-{}.db", std::process::id()));
         let _ = std::fs::remove_file(&path);
         let group = "123-456@g.us";
         {

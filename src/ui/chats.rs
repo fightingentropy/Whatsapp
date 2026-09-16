@@ -787,7 +787,7 @@ mod tests {
     #[test]
     fn clicks_follow_chat_ids_after_reordering_and_archiving() {
         let root = std::env::temp_dir().join(format!(
-            "zapfast-chat-clicks-{}-{:?}",
+            "whatsapp-chat-clicks-{}-{:?}",
             std::process::id(),
             std::thread::current().id()
         ));
@@ -871,7 +871,7 @@ mod tests {
     #[test]
     fn alt_navigation_scrolls_the_destination_chat_into_view() {
         let root = std::env::temp_dir().join(format!(
-            "zapfast-chat-list-{}-{:?}",
+            "whatsapp-chat-list-{}-{:?}",
             std::process::id(),
             std::thread::current().id()
         ));

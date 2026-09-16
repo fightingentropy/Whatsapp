@@ -11,7 +11,7 @@ env:
   CARGO_TERM_COLOR: always
   # Baked into the binary by settings.rs; releases built without the
   # secret simply ship keyless and the picker asks for one.
-  ZAPFAST_GIPHY_KEY: ${{ secrets.ZAPFAST_GIPHY_KEY || secrets.FASTSAPP_GIPHY_KEY }}
+  WHATSAPP_GIPHY_KEY: ${{ secrets.WHATSAPP_GIPHY_KEY }}
 
 jobs:
   macos:
@@ -49,7 +49,7 @@ jobs:
         run: |
           version="${GITHUB_REF_NAME#v}"
           mkdir -p dist/macos-input
-          bash packaging/macos/bundle.sh target/aarch64-apple-darwin/release/zapfast "dist/macos-input/ZapFast Silicon.app" "$version"
+          bash packaging/macos/bundle.sh target/aarch64-apple-darwin/release/whatsapp "dist/macos-input/Whatsapp.app" "$version"
           cp README.md LICENSE dist/macos-input/
 
       - name: Package, sign and notarize macOS app
@@ -60,7 +60,7 @@ jobs:
           cp "$RUNNER_TEMP/macos-packages/packages/macos-arm64/dmg/"*.dmg dist/
 
       - name: Verify the notarized release app
-        run: bash packaging/macos/verify.sh "dist/zapfast-${GITHUB_REF_NAME}-macos-arm64.dmg"
+        run: bash packaging/macos/verify.sh "dist/whatsapp-${GITHUB_REF_NAME}-macos-arm64.dmg"
 
       - uses: actions/upload-artifact@v7
         with:

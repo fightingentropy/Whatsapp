@@ -23,9 +23,8 @@ task explicitly changes it.
   retain raw messages where attachment recovery depends on their keys.
 - Check optimistic and asynchronous state carefully. A delayed backend answer
   must not undo a newer action the person already sees.
-- Keep Linux, macOS, and Windows compiling. Isolate platform behavior with
-  target-specific modules or `cfg` blocks and call out platform coverage
-  accurately.
+- Build and test Apple Silicon macOS only, retaining the M1 baseline. Report
+  compiled, tested, signed and notarized states separately.
 - Route text that can contain emoji through the existing rich-text and markup
   paths. Preserve selectable transcript behavior, nested click targets, and
   right-aligned bubble layout rules described in `AGENTS.md`.

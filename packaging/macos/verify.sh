@@ -15,10 +15,10 @@ trap cleanup EXIT
 
 xcrun stapler validate "$dmg"
 hdiutil attach "$dmg" -readonly -nobrowse -mountpoint "$mount" >/dev/null
-app="$mount/ZapFast Silicon.app"
+app="$mount/Whatsapp.app"
 codesign --verify --strict --deep "$app"
 spctl --assess --type execute --verbose=2 "$app"
-test "$(lipo -archs "$app/Contents/MacOS/zapfast")" = "arm64"
+test "$(lipo -archs "$app/Contents/MacOS/whatsapp")" = "arm64"
 codesign --display --entitlements - --xml "$app" > "$temporary/entitlements.plist"
 
 python3 - "$app/Contents/Info.plist" "$temporary/entitlements.plist" <<'PY'

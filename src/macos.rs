@@ -27,19 +27,19 @@ fn item(id: &str, text: &str, shortcut: Option<&str>) -> MenuItem {
 
 fn build_menu() -> tray_icon::menu::Result<Menu> {
     let menu = Menu::new();
-    let app = Submenu::new("ZapFast Silicon", true);
+    let app = Submenu::new("Whatsapp", true);
     app.append_items(&[
-        &item("about", "About ZapFast Silicon", None),
+        &item("about", "About Whatsapp", None),
         &Native::separator(),
         &item("settings", "Settings…", Some("Super+Comma")),
         &Native::separator(),
         &Native::services(None),
         &Native::separator(),
-        &Native::hide(Some("Hide ZapFast Silicon")),
+        &Native::hide(Some("Hide Whatsapp")),
         &Native::hide_others(None),
         &Native::show_all(None),
         &Native::separator(),
-        &item("quit", "Quit ZapFast Silicon", Some("Super+KeyQ")),
+        &item("quit", "Quit Whatsapp", Some("Super+KeyQ")),
     ])?;
     let file = Submenu::new("File", true);
     file.append_items(&[
@@ -76,12 +76,12 @@ fn build_menu() -> tray_icon::menu::Result<Menu> {
         &Native::minimize(None),
         &Native::maximize(Some("Zoom")),
         &Native::separator(),
-        &item("show-window", "Show ZapFast Silicon", None),
+        &item("show-window", "Show Whatsapp", None),
     ])?;
     let help = Submenu::new("Help", true);
     help.append_items(&[
         &item("shortcuts", "Keyboard Shortcuts", Some("Super+Slash")),
-        &item("help", "ZapFast Silicon Help", None),
+        &item("help", "Whatsapp Help", None),
     ])?;
     menu.append_items(&[&app, &file, &edit, &view, &window, &help])?;
     window.set_as_windows_menu_for_nsapp();
@@ -202,7 +202,7 @@ fn action(id: &str, hidden: bool) -> Option<Action> {
         "zoom-out" => Action::ZoomBy(-0.1),
         "zoom-reset" => Action::ResetZoom,
         "shortcuts" => Action::ShowDialog(Dialog::Shortcuts),
-        "help" => Action::OpenUrl("https://github.com/fightingentropy/zapfast#using-it".into()),
+        "help" => Action::OpenUrl("https://github.com/fightingentropy/Whatsapp#using-it".into()),
         "show-window" => Action::ShowWindow,
         // These two ids are shared with the native tray menu.
         "show" => {

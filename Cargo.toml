@@ -1,21 +1,21 @@
 [package]
-name = "zapfast"
+name = "whatsapp"
 version = "0.13.1"
 edition = "2024"
 rust-version = "1.98"
 license = "MIT"
-description = "A native WhatsApp client built with Rust and egui"
-homepage = "https://github.com/fightingentropy/zapfast"
-repository = "https://github.com/fightingentropy/zapfast"
+description = "A native WhatsApp companion for Apple Silicon Macs"
+homepage = "https://github.com/fightingentropy/Whatsapp"
+repository = "https://github.com/fightingentropy/Whatsapp"
 keywords = ["whatsapp", "chat", "egui", "messaging"]
 categories = ["gui"]
 
 [lib]
-name = "zapfast"
+name = "whatsapp"
 path = "src/lib.rs"
 
 [[bin]]
-name = "zapfast"
+name = "whatsapp"
 path = "src/main.rs"
 
 [[example]]
@@ -130,10 +130,6 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["std
 [target.'cfg(windows)'.dependencies]
 # Windows tray-thread message loop.
 windows-sys = { version = "0.60", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
-
-# The icon and version information Windows shows for the executable.
-[target.'cfg(windows)'.build-dependencies]
-winresource = "0.1"
 
 [dev-dependencies]
 # Creates small APNGs in sticker-import tests. Already included through image.

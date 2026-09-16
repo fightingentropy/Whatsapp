@@ -4,12 +4,12 @@ tool:
   version: 0.5.1
   nfpm: 2.47.0
 nfpm:
-  name: zapfast
+  name: whatsapp
   maintainer: Erlin Hoxha
-  description: ZapFast Silicon for Apple Silicon Macs
+  description: Whatsapp for Apple Silicon Macs
   license: MIT
 release:
-  repository: fightingentropy/zapfast
+  repository: fightingentropy/Whatsapp
   prereleases: true
 targets:
   macos-arm64:
@@ -21,4 +21,4 @@ targets:
       local: dist/macos-input
     native:
       command: [ruby, packaging/macos/dmg.rb, '@PAYLOAD@', '@PACKAGE@']
-      output: 'zapfast-@TAG@-macos-arm64.dmg'
+      output: 'whatsapp-@TAG@-macos-arm64.dmg'

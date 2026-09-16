@@ -2,10 +2,10 @@
 //! This measures egui passes, not native rendering, GPU time or frame rate.
 
 use std::time::Instant;
-use zapfast::{app::App, demo, paths::AppDirs, settings::Settings};
+use whatsapp::{app::App, demo, paths::AppDirs, settings::Settings};
 
 fn main() -> anyhow::Result<()> {
-    let root = std::env::temp_dir().join(format!("zapfast-layout-probe-{}", std::process::id()));
+    let root = std::env::temp_dir().join(format!("whatsapp-layout-probe-{}", std::process::id()));
     // Only an isolated, newly created directory may be cleaned up afterwards.
     std::fs::create_dir(&root)?;
     let mut results = Vec::new();

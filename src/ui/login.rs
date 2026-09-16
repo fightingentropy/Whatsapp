@@ -14,8 +14,6 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         .frame(Frame::new().fill(palette.window))
         .show(ui, |ui| {
             let rect = ui.max_rect();
-            let top = theme::blend(palette.window, palette.accent, 0.10);
-            super::widgets::paint_vertical_gradient(ui, rect, top, palette.window);
             let card_width = 460.0_f32.min(rect.width() - 24.0);
             // Center the card using its previous height. Its content determines
             // the next frame's height.
@@ -29,7 +27,12 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 egui::Rect::from_center_size(rect.center(), Vec2::new(card_width, card_height));
             let mut card_ui = ui.new_child(
                 egui::UiBuilder::new()
-                    .max_rect(card)
+                    // Measure against the viewport, not the previous card
+                    // height, so a short connecting state can grow into a QR.
+                    .max_rect(egui::Rect::from_min_size(
+                        card.min,
+                        Vec2::new(card_width, rect.height() - 24.0),
+                    ))
                     .layout(Layout::top_down(Align::Center)),
             );
             let shown = Frame::new()
@@ -45,25 +48,26 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 })
                 .show(&mut card_ui, |ui| {
                     ui.set_width(card_width - 64.0);
-                    ui.spacing_mut().item_spacing.y = 8.0;
-                    let (logo, _) = ui.allocate_exact_size(Vec2::splat(64.0), egui::Sense::hover());
-                    theme::logo(
-                        ui,
-                        logo.center(),
-                        64.0,
-                        palette.accent,
-                        egui::Color32::WHITE,
-                    );
-                    ui.add_space(4.0);
-                    theme::text(ui, "ZapFast Silicon", theme::bold(28.0), palette.text);
-                    theme::text(
-                        ui,
-                        "A native WhatsApp client.",
-                        theme::regular(14.5),
-                        palette.secondary,
-                    );
-                    ui.add_space(16.0);
-                    body(app, ui);
+                    egui::ScrollArea::vertical()
+                        .id_salt("link-card-scroll")
+                        .max_height((rect.height() - 88.0).max(1.0))
+                        .auto_shrink([false, true])
+                        .show(ui, |ui| {
+                            ui.spacing_mut().item_spacing.y = 8.0;
+                            let (logo, _) =
+                                ui.allocate_exact_size(Vec2::splat(64.0), egui::Sense::hover());
+                            theme::logo(ui, logo.center(), 64.0);
+                            ui.add_space(4.0);
+                            theme::text(ui, "Whatsapp", theme::bold(28.0), palette.text);
+                            theme::text(
+                                ui,
+                                "WhatsApp, at home on your Mac.",
+                                theme::regular(14.5),
+                                palette.secondary,
+                            );
+                            ui.add_space(16.0);
+                            body(app, ui);
+                        });
                 });
             let height = shown.response.rect.height();
             if (height - known_height).abs() > 0.5 {
@@ -273,12 +277,18 @@ mod tests {
     use crate::settings::Settings;
 
     fn frame(app: &mut App, ctx: &egui::Context, events: Vec<egui::Event>) -> egui::FullOutput {
+        sized_frame(app, ctx, events, egui::vec2(1024.0, 680.0))
+    }
+
+    fn sized_frame(
+        app: &mut App,
+        ctx: &egui::Context,
+        events: Vec<egui::Event>,
+        size: Vec2,
+    ) -> egui::FullOutput {
         let mut output = ctx.run_ui(
             egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(1024.0, 680.0),
-                )),
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
                 events,
                 ..Default::default()
             },
@@ -289,8 +299,80 @@ mod tests {
     }
 
     #[test]
+    fn phone_linking_remains_reachable_in_a_short_window() {
+        let root =
+            std::env::temp_dir().join(format!("whatsapp-short-login-{}", std::process::id()));
+        let (mut app, _events) = App::headless(AppDirs::under(&root), Settings::default());
+        app.link = LinkStatus::Unlinked {
+            qr: Some("offline-layout-test".into()),
+            pair_code: None,
+            pairing_phone: None,
+        };
+        let ctx = egui::Context::default();
+        app.attach(&ctx);
+        let size = egui::vec2(720.0, 480.0);
+        for _ in 0..3 {
+            sized_frame(&mut app, &ctx, Vec::new(), size);
+        }
+        sized_frame(
+            &mut app,
+            &ctx,
+            vec![
+                egui::Event::PointerMoved(egui::pos2(360.0, 240.0)),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(0.0, -1600.0),
+                    modifiers: egui::Modifiers::NONE,
+                    phase: egui::TouchPhase::Move,
+                },
+            ],
+            size,
+        );
+        for _ in 0..30 {
+            sized_frame(&mut app, &ctx, Vec::new(), size);
+        }
+        let output = sized_frame(&mut app, &ctx, Vec::new(), size);
+        let button = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text)
+                    if text.galley.text() == "Link with phone number instead" =>
+                {
+                    let center = text.pos + text.galley.size() / 2.0;
+                    (shape.clip_rect.contains(center)
+                        && egui::Rect::from_min_size(egui::Pos2::ZERO, size).contains(center))
+                    .then_some(center)
+                }
+                _ => None,
+            })
+            .expect("scrolling must reveal the phone-link control inside the window");
+        for pressed in [true, false] {
+            sized_frame(
+                &mut app,
+                &ctx,
+                vec![
+                    egui::Event::PointerMoved(button),
+                    egui::Event::PointerButton {
+                        pos: button,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+                size,
+            );
+        }
+        assert!(
+            app.actions
+                .iter()
+                .any(|action| matches!(action, Action::ShowDialog(Dialog::PairWithPhone)))
+        );
+    }
+
+    #[test]
     fn a_missing_qr_has_a_working_retry_control() {
-        let root = std::env::temp_dir().join(format!("zapfast-login-test-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("whatsapp-login-test-{}", std::process::id()));
         let (mut app, _events) = App::headless(AppDirs::under(&root), Settings::default());
         app.link = LinkStatus::Unlinked {
             qr: None,

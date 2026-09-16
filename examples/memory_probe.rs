@@ -2,7 +2,7 @@
 //! RSS is whole-process resident memory; payload bytes count text and thumbnails
 //! only, not allocator overhead, model fields or renderer/codec allocations.
 
-use zapfast::{
+use whatsapp::{
     app::{App, Conversation},
     backend::LinkStatus,
     model::{Action, Chat, Content, Delivery, Media, MediaState, Message},
@@ -45,7 +45,7 @@ fn snapshot(app: &App, visited: usize) -> anyhow::Result<serde_json::Value> {
 }
 
 fn main() -> anyhow::Result<()> {
-    let root = std::env::temp_dir().join(format!("zapfast-memory-probe-{}", std::process::id()));
+    let root = std::env::temp_dir().join(format!("whatsapp-memory-probe-{}", std::process::id()));
     std::fs::create_dir(&root)?;
     let (mut app, _events) = App::headless(AppDirs::under(&root), Settings::default());
     app.link = LinkStatus::Connected;
