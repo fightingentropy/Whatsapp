@@ -55,6 +55,8 @@ jobs:
           test -s "$RUNNER_TEMP/zapfast-content.png"
           "$binary" --demo --demo-page video --demo-shot "$RUNNER_TEMP/zapfast-video.png"
           test -s "$RUNNER_TEMP/zapfast-video.png"
+          "$binary" --demo --demo-page long --demo-shot "$RUNNER_TEMP/zapfast-long-history.png"
+          test -s "$RUNNER_TEMP/zapfast-long-history.png"
       - name: Main-thread background wake test
         run: cargo run --locked --example background_probe
       - name: macOS preview

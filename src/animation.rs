@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 
 use egui::{ColorImage, TextureHandle, TextureOptions};
 
+mod queue;
 mod videotoolbox;
 
 #[cfg(feature = "demo")]
@@ -41,6 +42,7 @@ impl Drop for DecodeSlot {
     }
 }
 
+#[cfg(any(test, feature = "demo"))]
 struct Decoded {
     frames: Vec<(ColorImage, Duration)>,
 }
@@ -52,23 +54,13 @@ struct Playing {
     total: Duration,
     started: Instant,
     last_drawn: Instant,
-}
-
-enum Entry {
-    Decoding,
-    Failed,
-    Ready(Playing),
+    receiver: Option<queue::Receiver>,
+    complete: bool,
+    failed: bool,
 }
 
 #[derive(Clone, Default)]
-struct Cache(Arc<Mutex<HashMap<PathBuf, Entry>>>);
-
-/// Result returned by a decoder thread.
-type Delivery = (PathBuf, Option<Decoded>);
-
-/// Decoded frames waiting for texture upload.
-#[derive(Clone, Default)]
-struct Inbox(Arc<Mutex<Vec<Delivery>>>);
+struct Cache(Arc<Mutex<HashMap<PathBuf, Playing>>>);
 
 fn cache(ctx: &egui::Context) -> Cache {
     ctx.data_mut(|data| {
@@ -77,12 +69,19 @@ fn cache(ctx: &egui::Context) -> Cache {
     })
 }
 
-fn inbox(ctx: &egui::Context) -> Inbox {
-    ctx.data_mut(|data| {
-        data.get_temp_mut_or_default::<Inbox>(egui::Id::new("animation-inbox"))
-            .clone()
-    })
+/// At most eight unpublished preview frames per decoder (3.125 MiB at 320²).
+const QUEUED_FRAMES: usize = 8;
+/// Stop a job shortly after its last visible frame. Completed loops keep the
+/// longer cache lifetime, but invisible work must not monopolize decoder slots.
+const DECODE_IDLE: Duration = Duration::from_secs(1);
+
+enum Update {
+    Frame(ColorImage, Duration),
+    Reset,
+    Complete(bool),
 }
+
+type Sink<'a> = dyn FnMut(Update) -> Option<()> + 'a;
 
 /// Current display state for an animated file.
 pub enum Frame {
@@ -97,158 +96,197 @@ pub enum Frame {
 /// Returns the current frame, starting decoding when needed. Schedules the next repaint.
 pub fn frame(ctx: &egui::Context, path: &Path) -> Frame {
     let cache = cache(ctx);
-    let inbox = inbox(ctx);
     let mut entries = cache.0.lock().unwrap_or_else(|p| p.into_inner());
     let now = Instant::now();
-    receive(&mut entries, &inbox, now);
+    // Refresh before pruning: a busy UI may not have painted for a while.
+    if let Some(playing) = entries.get_mut(path) {
+        playing.last_drawn = now;
+    }
+    receive(&mut entries, now);
     prune(&mut entries, now, MAX_RESIDENT_BYTES);
-    match entries.get_mut(path) {
-        Some(Entry::Ready(playing)) => {
-            playing.last_drawn = now;
-            let elapsed = now.duration_since(playing.started);
-            let mut position =
-                Duration::from_nanos((elapsed.as_nanos() % playing.total.as_nanos()) as u64);
-            let mut chosen = 0;
-            let mut until_next = Duration::from_millis(40);
-            for (index, (_, delay)) in playing.frames.iter().enumerate() {
-                if position < *delay {
-                    chosen = index;
-                    until_next = *delay - position;
+    if !entries.contains_key(path) {
+        // compare/exchange is required because multiple contexts can request
+        // previews; a load followed by an increment could overbook the slots.
+        if DECODING
+            .fetch_update(
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+                |active| (active < MAX_DECODERS).then_some(active + 1),
+            )
+            .is_err()
+        {
+            ctx.request_repaint_after(Duration::from_millis(150));
+            return Frame::Pending;
+        }
+        let slot = DecodeSlot;
+        let (sender, receiver) = queue::channel();
+        let file = path.to_path_buf();
+        let decoder_ctx = ctx.clone();
+        let mut playing = Playing::new(now);
+        playing.receiver = Some(receiver);
+        let spawned = std::thread::Builder::new()
+            .name("animation-decode".into())
+            .spawn(move || {
+                let _slot = slot;
+                let mut emit = |update| {
+                    // A dropped receiver cancels the job, including a producer
+                    // blocked by backpressure. Never hold the cache/UI lock here.
+                    sender.send(update)?;
+                    decoder_ctx.request_repaint();
+                    Some(())
+                };
+                let ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    decode_stream(&file, &mut emit)
+                }))
+                .is_ok_and(|result| result.is_some());
+                let _ = emit(Update::Complete(ok));
+            });
+        if spawned.is_err() {
+            playing.receiver = None;
+            playing.complete = true;
+            playing.failed = true;
+        }
+        entries.insert(path.to_path_buf(), playing);
+    }
+    let playing = entries.get_mut(path).expect("inserted above");
+    if playing.failed {
+        return Frame::Unavailable;
+    }
+    if playing.frames.is_empty() {
+        return Frame::Pending;
+    }
+    let elapsed = now.saturating_duration_since(playing.started);
+    // Until EOF, hold the last available frame instead of looping a partial clip.
+    let mut position = if playing.complete {
+        Duration::from_nanos((elapsed.as_nanos() % playing.total.as_nanos()) as u64)
+    } else {
+        elapsed
+    };
+    let mut chosen = playing.frames.len() - 1;
+    for (index, (_, delay)) in playing.frames.iter().enumerate() {
+        if position < *delay {
+            chosen = index;
+            ctx.request_repaint_after((*delay - position).max(Duration::from_millis(10)));
+            break;
+        }
+        position -= *delay;
+    }
+    match &mut playing.texture {
+        Some((uploaded, texture)) => {
+            if *uploaded != chosen {
+                texture.set(playing.frames[chosen].0.clone(), TextureOptions::LINEAR);
+                *uploaded = chosen;
+            }
+            Frame::Ready(texture.clone())
+        }
+        None => {
+            let texture = ctx.load_texture(
+                path.display().to_string(),
+                playing.frames[chosen].0.clone(),
+                TextureOptions::LINEAR,
+            );
+            playing.texture = Some((chosen, texture.clone()));
+            Frame::Ready(texture)
+        }
+    }
+}
+
+impl Playing {
+    fn new(now: Instant) -> Self {
+        Self {
+            frames: Vec::new(),
+            texture: None,
+            bytes: 0,
+            total: Duration::ZERO,
+            started: now,
+            last_drawn: now,
+            receiver: None,
+            complete: false,
+            failed: false,
+        }
+    }
+
+    fn accept(&mut self, update: Update, now: Instant) {
+        match update {
+            Update::Frame(image, delay) => {
+                if self.frames.is_empty() {
+                    self.started = now;
+                }
+                self.bytes += image.pixels.len() * 4;
+                self.total += delay;
+                self.frames.push((Arc::new(image), delay));
+            }
+            Update::Reset => {
+                self.frames.clear();
+                self.bytes = 0;
+                self.total = Duration::ZERO;
+                if let Some((uploaded, _)) = &mut self.texture {
+                    *uploaded = usize::MAX;
+                }
+            }
+            Update::Complete(ok) => {
+                self.complete = true;
+                self.failed = !ok || self.frames.is_empty();
+                self.receiver = None;
+                if self.failed {
+                    self.frames.clear();
+                    self.texture = None;
+                    self.bytes = 0;
+                }
+            }
+        }
+    }
+}
+
+fn receive(entries: &mut HashMap<PathBuf, Playing>, now: Instant) {
+    for playing in entries.values_mut() {
+        // Bound UI work even if a fast producer keeps replenishing its queue.
+        for _ in 0..=QUEUED_FRAMES {
+            let Some(receiver) = &playing.receiver else {
+                break;
+            };
+            match receiver.try_recv() {
+                Ok(update) => playing.accept(update, now),
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    playing.accept(Update::Complete(false), now);
                     break;
                 }
-                position -= *delay;
             }
-            ctx.request_repaint_after(until_next.max(Duration::from_millis(10)));
-            match &mut playing.texture {
-                Some((uploaded, texture)) => {
-                    if *uploaded != chosen {
-                        texture.set(playing.frames[chosen].0.clone(), TextureOptions::LINEAR);
-                        *uploaded = chosen;
-                    }
-                    Frame::Ready(texture.clone())
-                }
-                None => {
-                    let texture = ctx.load_texture(
-                        path.display().to_string(),
-                        playing.frames[chosen].0.clone(),
-                        TextureOptions::LINEAR,
-                    );
-                    playing.texture = Some((chosen, texture.clone()));
-                    Frame::Ready(texture)
-                }
-            }
-        }
-        Some(Entry::Decoding) => Frame::Pending,
-        Some(Entry::Failed) => Frame::Unavailable,
-        None => {
-            if DECODING.load(std::sync::atomic::Ordering::Acquire) >= MAX_DECODERS {
-                // Retry shortly when all decoder slots are busy.
-                ctx.request_repaint_after(Duration::from_millis(150));
-                return Frame::Pending;
-            }
-            DECODING.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-            let slot = DecodeSlot;
-            entries.insert(path.to_path_buf(), Entry::Decoding);
-            let file = path.to_path_buf();
-            let ctx = ctx.clone();
-            let spawned = std::thread::Builder::new()
-                .name("animation-decode".into())
-                .spawn(move || {
-                    let _slot = slot;
-                    // Convert decoder panics to failed results.
-                    let decoded =
-                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| decode(&file)))
-                            .unwrap_or(None);
-                    inbox
-                        .0
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner())
-                        .push((file, decoded));
-                    ctx.request_repaint();
-                });
-            if spawned.is_err() {
-                entries.insert(path.to_path_buf(), Entry::Failed);
-                return Frame::Unavailable;
-            }
-            Frame::Pending
         }
     }
 }
 
-/// Accept completed decodes even when the current view contains no animation.
-fn receive(entries: &mut HashMap<PathBuf, Entry>, inbox: &Inbox, now: Instant) {
-    let arrived = std::mem::take(&mut *inbox.0.lock().unwrap_or_else(|p| p.into_inner()));
-    for (path, decoded) in arrived {
-        let entry = match decoded {
-            Some(decoded) if !decoded.frames.is_empty() => {
-                let total: Duration = decoded.frames.iter().map(|(_, delay)| *delay).sum();
-                let bytes = decoded
-                    .frames
-                    .iter()
-                    .map(|(image, _)| image.pixels.len() * 4)
-                    .sum();
-                Entry::Ready(Playing {
-                    frames: decoded
-                        .frames
-                        .into_iter()
-                        .map(|(image, delay)| (Arc::new(image), delay))
-                        .collect(),
-                    texture: None,
-                    bytes,
-                    total: total.max(Duration::from_millis(50)),
-                    started: now,
-                    last_drawn: now,
-                })
-            }
-            _ => Entry::Failed,
-        };
-        entries.insert(path, entry);
-    }
-}
-
-fn prune(entries: &mut HashMap<PathBuf, Entry>, now: Instant, budget: usize) {
-    entries.retain(|_, entry| match entry {
-        Entry::Ready(playing) => now.saturating_duration_since(playing.last_drawn) < IDLE,
-        _ => true,
+fn prune(entries: &mut HashMap<PathBuf, Playing>, now: Instant, budget: usize) {
+    entries.retain(|_, playing| {
+        now.saturating_duration_since(playing.last_drawn)
+            < if playing.complete { IDLE } else { DECODE_IDLE }
     });
-    let mut resident: usize = entries
-        .values()
-        .map(|entry| match entry {
-            Entry::Ready(playing) => playing.bytes,
-            _ => 0,
-        })
-        .sum();
+    let mut resident: usize = entries.values().map(|playing| playing.bytes).sum();
     while resident > budget {
         let victim = entries
             .iter()
-            .filter_map(|(path, entry)| match entry {
-                Entry::Ready(playing) => Some((path.clone(), playing.last_drawn, playing.bytes)),
-                _ => None,
-            })
-            .min_by_key(|(_, last, _)| *last);
-        let Some((path, _, bytes)) = victim else {
-            break;
-        };
+            .min_by_key(|(_, playing)| playing.last_drawn)
+            .map(|(path, playing)| (path.clone(), playing.bytes));
+        let Some((path, bytes)) = victim else { break };
+        // Dropping the receiver also releases a blocked producer.
         entries.remove(&path);
         resident -= bytes;
     }
 }
 
-/// Retire offscreen animations even after navigating to a chat with no media.
-/// The final scheduled repaint frees them; an empty cache schedules no timer.
+/// Drain bounded queues and retire invisible decoders, including while headless.
 pub fn maintain(ctx: &egui::Context) {
     let cache = cache(ctx);
     let mut entries = cache.0.lock().unwrap_or_else(|p| p.into_inner());
     let now = Instant::now();
-    receive(&mut entries, &inbox(ctx), now);
+    receive(&mut entries, now);
     prune(&mut entries, now, MAX_RESIDENT_BYTES);
     if let Some(next) = entries
         .values()
-        .filter_map(|entry| match entry {
-            Entry::Ready(playing) => {
-                Some(IDLE.saturating_sub(now.saturating_duration_since(playing.last_drawn)))
-            }
-            _ => None,
+        .map(|playing| {
+            let idle = if playing.complete { IDLE } else { DECODE_IDLE };
+            idle.saturating_sub(now.saturating_duration_since(playing.last_drawn))
         })
         .min()
     {
@@ -274,56 +312,65 @@ fn ffmpeg_present() -> bool {
     })
 }
 
-fn decode(path: &Path) -> Option<Decoded> {
+fn decode_stream(path: &Path, emit: &mut Sink<'_>) -> Option<()> {
     let extension = path
         .extension()
         .and_then(|extension| extension.to_str())
         .map(|extension| extension.to_ascii_lowercase())
         .unwrap_or_default();
     match extension.as_str() {
-        "webp" | "gif" => decode_image(path, &extension),
-        _ => decode_video(path),
+        "webp" | "gif" => decode_image(path, &extension, emit),
+        _ => decode_video(path, emit),
     }
 }
 
 /// Decodes animated GIF with the `image` crate.
-fn decode_image(path: &Path, extension: &str) -> Option<Decoded> {
+fn decode_image(path: &Path, extension: &str, emit: &mut Sink<'_>) -> Option<()> {
     use image::AnimationDecoder;
     if extension != "gif" {
-        return decode_webp(path);
+        return decode_webp(path, emit);
     }
     let file = std::fs::File::open(path).ok()?;
     let reader = std::io::BufReader::new(file);
     let frames = image::codecs::gif::GifDecoder::new(reader)
         .ok()?
         .into_frames();
-    let mut decoded = Vec::new();
     for frame in frames.take(MAX_FRAMES) {
         let frame = frame.ok()?;
         let (numerator, denominator) = frame.delay().numer_denom_ms();
         let delay = Duration::from_millis(u64::from(numerator / denominator.max(1)).max(20));
         let image = frame.into_buffer();
-        decoded.push((to_color_image(&image), delay));
+        emit(Update::Frame(to_color_image(&image), delay))?;
     }
-    Some(Decoded { frames: decoded })
+    Some(())
 }
 
 /// Decodes animated WebP with libwebp. It returns complete canvas frames,
 /// unlike the `image` decoder, which did not apply frame disposal correctly.
-fn decode_webp(path: &Path) -> Option<Decoded> {
+fn decode_webp(path: &Path, emit: &mut Sink<'_>) -> Option<()> {
     let bytes = std::fs::read(path).ok()?;
     let decoder = webp_animation::Decoder::new(&bytes).ok()?;
     let (width, height) = decoder.dimensions();
-    let mut decoded = Vec::new();
+    let mut first = None;
+    let mut count = 0;
     let mut previous = 0i64;
     for frame in decoder.into_iter().take(MAX_FRAMES) {
         let image = image::RgbaImage::from_raw(width, height, frame.data().to_vec())?;
         let delay = (i64::from(frame.timestamp()) - previous).max(20) as u64;
         previous = i64::from(frame.timestamp());
-        decoded.push((to_color_image(&image), Duration::from_millis(delay)));
+        let update = Update::Frame(to_color_image(&image), Duration::from_millis(delay));
+        count += 1;
+        if count == 1 {
+            first = Some(update);
+        } else {
+            if let Some(first) = first.take() {
+                emit(first)?;
+            }
+            emit(update)?;
+        }
     }
-    // Single-frame files use the static-image path.
-    (decoded.len() > 1).then_some(Decoded { frames: decoded })
+    // Do not publish a still WebP as an animation even temporarily.
+    (count > 1).then_some(())
 }
 
 fn to_color_image(image: &image::RgbaImage) -> ColorImage {
@@ -343,17 +390,45 @@ fn to_color_image(image: &image::RgbaImage) -> ColorImage {
     )
 }
 
-/// Decodes MP4 to scaled RGBA frames with `ffmpeg`.
-fn decode_video(path: &Path) -> Option<Decoded> {
-    // Hardware decoding is confined to H.264 previews. The software path stays
-    // available when a format/device cannot create or complete a native session.
-    videotoolbox::decode(path)
-        .or_else(|| decode_mp4(path))
-        .or_else(|| decode_with_ffmpeg(path))
+/// Try each backend, resetting already-published frames before a fallback.
+fn decode_video(path: &Path, emit: &mut Sink<'_>) -> Option<()> {
+    if videotoolbox::stream(path, emit).is_some() {
+        return Some(());
+    }
+    emit(Update::Reset)?;
+    if stream_mp4(path, emit).is_some() {
+        return Some(());
+    }
+    emit(Update::Reset)?;
+    decode_with_ffmpeg(path, emit)
+}
+
+#[cfg(any(test, feature = "demo"))]
+fn collect(run: impl FnOnce(&mut Sink<'_>) -> Option<()>) -> Option<Decoded> {
+    let mut frames = Vec::new();
+    run(&mut |update| {
+        match update {
+            Update::Frame(image, delay) => frames.push((image, delay)),
+            Update::Reset => frames.clear(),
+            Update::Complete(_) => unreachable!("completion belongs to the worker"),
+        }
+        Some(())
+    })?;
+    (!frames.is_empty()).then_some(Decoded { frames })
+}
+
+#[cfg(test)]
+fn decode(path: &Path) -> Option<Decoded> {
+    collect(|emit| decode_stream(path, emit))
+}
+
+#[cfg(any(test, feature = "demo"))]
+fn decode_mp4(path: &Path) -> Option<Decoded> {
+    collect(|emit| stream_mp4(path, emit))
 }
 
 /// Decodes an MP4 video track in-process.
-fn decode_mp4(path: &Path) -> Option<Decoded> {
+fn stream_mp4(path: &Path, emit: &mut Sink<'_>) -> Option<()> {
     let file = std::fs::File::open(path).ok()?;
     let size = file.metadata().ok()?.len();
     let mut mp4 = mp4::Mp4Reader::read_header(std::io::BufReader::new(file), size).ok()?;
@@ -375,7 +450,7 @@ fn decode_mp4(path: &Path) -> Option<Decoded> {
     let mut decoder =
         openh264::decoder::Decoder::with_api_config(openh264::OpenH264API::from_source(), config)
             .ok()?;
-    let mut frames: Vec<(ColorImage, Duration)> = Vec::new();
+    let mut produced = 0;
     let mut delays: std::collections::VecDeque<Duration> = std::collections::VecDeque::new();
     // Send parameter sets and samples to the decoder in Annex B format.
     let mut parameters = Vec::new();
@@ -383,7 +458,7 @@ fn decode_mp4(path: &Path) -> Option<Decoded> {
     push_annex_b(&mut parameters, &pps);
     let _ = decoder.decode(&parameters);
     for sample_id in 1..=count {
-        if frames.len() >= MAX_FRAMES {
+        if produced >= MAX_FRAMES {
             break;
         }
         let Ok(Some(sample)) = mp4.read_sample(track_id, sample_id) else {
@@ -397,32 +472,35 @@ fn decode_mp4(path: &Path) -> Option<Decoded> {
         if let Ok(Some(yuv)) = decoder.decode(&annex_b) {
             let delay = delays.pop_front().unwrap_or(delay);
             if let Some(frame) = frame_of(&yuv, delay) {
-                frames.push(frame);
+                emit(Update::Frame(frame.0, frame.1))?;
+                produced += 1;
             }
         }
     }
     // Mark end-of-stream before flushing. Otherwise OpenH264 keeps the final
     // reorder buffer (commonly two B frames) even after flush_remaining().
-    if frames.len() < MAX_FRAMES
+    if produced < MAX_FRAMES
         && let Ok(Some(yuv)) = decoder.decode(&[])
     {
         let delay = delays.pop_front().unwrap_or(Duration::from_millis(66));
         if let Some(frame) = frame_of(&yuv, delay) {
-            frames.push(frame);
+            emit(Update::Frame(frame.0, frame.1))?;
+            produced += 1;
         }
     }
     if let Ok(rest) = decoder.flush_remaining() {
         for yuv in &rest {
-            if frames.len() >= MAX_FRAMES {
+            if produced >= MAX_FRAMES {
                 break;
             }
             let delay = delays.pop_front().unwrap_or(Duration::from_millis(66));
             if let Some(frame) = frame_of(yuv, delay) {
-                frames.push(frame);
+                emit(Update::Frame(frame.0, frame.1))?;
+                produced += 1;
             }
         }
     }
-    (!frames.is_empty()).then_some(Decoded { frames })
+    (produced > 0).then_some(())
 }
 
 /// Converts and scales one decoded frame.
@@ -461,7 +539,7 @@ fn avcc_to_annex_b(out: &mut Vec<u8>, sample: &[u8]) {
     }
 }
 
-fn decode_with_ffmpeg(path: &Path) -> Option<Decoded> {
+fn decode_with_ffmpeg(path: &Path, emit: &mut Sink<'_>) -> Option<()> {
     if !ffmpeg_present() {
         return None;
     }
@@ -512,21 +590,28 @@ fn decode_with_ffmpeg(path: &Path) -> Option<Decoded> {
         .ok()?;
     let mut stdout = child.stdout.take()?;
     let frame_bytes = (out_width * out_height * 4) as usize;
-    let mut frames = Vec::new();
+    let mut produced = 0;
     let delay = Duration::from_millis(1000 / u64::from(fps));
     let mut buffer = vec![0u8; frame_bytes];
-    while frames.len() < MAX_FRAMES {
+    let mut cancelled = false;
+    while produced < MAX_FRAMES {
         if stdout.read_exact(&mut buffer).is_err() {
             break;
         }
-        frames.push((
+        if emit(Update::Frame(
             ColorImage::from_rgba_unmultiplied([out_width as usize, out_height as usize], &buffer),
             delay,
-        ));
+        ))
+        .is_none()
+        {
+            cancelled = true;
+            break;
+        }
+        produced += 1;
     }
     let _ = child.kill();
     let _ = child.wait();
-    (!frames.is_empty()).then_some(Decoded { frames })
+    (produced > 0 && !cancelled).then_some(())
 }
 
 #[cfg(test)]
@@ -563,15 +648,27 @@ mod tests {
         );
     }
 
+    fn install(ctx: &egui::Context, path: &Path, decoded: Decoded, complete: bool) {
+        let now = Instant::now();
+        let mut playing = Playing::new(now);
+        for (image, delay) in decoded.frames {
+            playing.accept(Update::Frame(image, delay), now);
+        }
+        if complete {
+            playing.accept(Update::Complete(true), now);
+        }
+        cache(ctx)
+            .0
+            .lock()
+            .unwrap()
+            .insert(path.to_owned(), playing);
+    }
+
     #[test]
     fn playback_uploads_one_frame_and_reuses_its_texture() {
         let ctx = egui::Context::default();
         let path = PathBuf::from("test-animation");
-        inbox(&ctx)
-            .0
-            .lock()
-            .unwrap()
-            .push((path.clone(), Some(clip(8))));
+        install(&ctx, &path, clip(8), true);
         let Frame::Ready(first) = frame(&ctx, &path) else {
             panic!("ready")
         };
@@ -584,18 +681,16 @@ mod tests {
                 .count(),
             1
         );
-        first_delta.clear(); // The test inspects uploads instead of handing them to a GPU.
-        // A repaint within the same frame does not upload again.
+        first_delta.clear();
         let _ = frame(&ctx, &path);
         assert!(ctx.tex_manager().write().take_delta().set.is_empty());
-        {
-            let cache = cache(&ctx);
-            let mut entries = cache.0.lock().unwrap();
-            let Entry::Ready(playing) = entries.get_mut(&path).unwrap() else {
-                panic!("ready")
-            };
-            playing.started = Instant::now() - Duration::from_secs(11);
-        }
+        cache(&ctx)
+            .0
+            .lock()
+            .unwrap()
+            .get_mut(&path)
+            .unwrap()
+            .started = Instant::now() - Duration::from_secs(11);
         let Frame::Ready(second) = frame(&ctx, &path) else {
             panic!("ready")
         };
@@ -608,45 +703,148 @@ mod tests {
     }
 
     #[test]
-    fn cache_evicts_by_bytes_and_drains_completed_decodes_without_media_in_view() {
+    fn unfinished_playback_holds_its_last_frame_and_fallback_replaces_pixels() {
         let ctx = egui::Context::default();
-        let path = PathBuf::from("offscreen");
-        inbox(&ctx)
+        let path = PathBuf::from("streaming-animation");
+        install(&ctx, &path, clip(8), false);
+        cache(&ctx)
             .0
             .lock()
             .unwrap()
-            .push((path.clone(), Some(clip(16))));
+            .get_mut(&path)
+            .unwrap()
+            .started = Instant::now() - Duration::from_secs(25);
+        let Frame::Ready(first) = frame(&ctx, &path) else {
+            panic!("first frames play before EOF")
+        };
+        let mut delta = ctx.tex_manager().write().take_delta();
+        let egui::ImageData::Color(image) = &delta.set[&first.id()][0].image;
+        assert_eq!(
+            image.pixels[0],
+            egui::Color32::BLUE,
+            "do not loop before EOF"
+        );
+        delta.clear();
+        {
+            let cache = cache(&ctx);
+            let mut entries = cache.0.lock().unwrap();
+            let playing = entries.get_mut(&path).unwrap();
+            playing.accept(Update::Reset, Instant::now());
+            playing.accept(
+                Update::Frame(
+                    ColorImage::filled([8, 8], egui::Color32::GREEN),
+                    Duration::from_secs(10),
+                ),
+                Instant::now(),
+            );
+            playing.accept(Update::Complete(true), Instant::now());
+            assert_eq!(playing.bytes, 8 * 8 * 4);
+        }
+        let Frame::Ready(second) = frame(&ctx, &path) else {
+            panic!("fallback ready")
+        };
+        assert_eq!(first.id(), second.id(), "fallback also reuses the texture");
+        let mut delta = ctx.tex_manager().write().take_delta();
+        let egui::ImageData::Color(image) = &delta.set[&second.id()][0].image;
+        assert_eq!(image.pixels[0], egui::Color32::GREEN);
+        delta.clear();
+    }
+
+    #[test]
+    fn cache_evicts_by_bytes_and_drains_completed_decodes_without_media_in_view() {
+        let ctx = egui::Context::default();
+        let path = PathBuf::from("offscreen");
+        let (sender, receiver) = queue::channel();
+        let mut playing = Playing::new(Instant::now());
+        playing.receiver = Some(receiver);
+        cache(&ctx).0.lock().unwrap().insert(path.clone(), playing);
+        for (image, delay) in clip(16).frames {
+            sender.send(Update::Frame(image, delay)).unwrap();
+        }
+        sender.send(Update::Complete(true)).unwrap();
         maintain(&ctx);
-        assert!(inbox(&ctx).0.lock().unwrap().is_empty());
         let cache = cache(&ctx);
         let mut entries = cache.0.lock().unwrap();
         let now = Instant::now();
-        let Entry::Ready(playing) = entries.get_mut(&path).unwrap() else {
-            panic!("ready")
-        };
+        let playing = entries.get_mut(&path).unwrap();
+        assert!(playing.complete);
         assert!(playing.texture.is_none(), "offscreen frames never upload");
         playing.last_drawn = now - IDLE;
         drop(entries);
         maintain(&ctx);
         assert!(cache.0.lock().unwrap().is_empty());
-        let deliveries = Inbox::default();
-        let mut entries = HashMap::new();
-        deliveries
-            .0
-            .lock()
-            .unwrap()
-            .push(("old".into(), Some(clip(16))));
-        receive(&mut entries, &deliveries, now - Duration::from_secs(1));
-        deliveries
-            .0
-            .lock()
-            .unwrap()
-            .push(("new".into(), Some(clip(8))));
-        receive(&mut entries, &deliveries, now);
-        // One large clip consumes more bytes than a small clip with equal frames.
+        install(&ctx, Path::new("old"), clip(16), true);
+        install(&ctx, Path::new("new"), clip(8), true);
+        let mut entries = cache.0.lock().unwrap();
         prune(&mut entries, now, 8 * 8 * 4 * 2);
         assert_eq!(entries.len(), 1);
         assert!(entries.contains_key(Path::new("new")));
+    }
+
+    #[test]
+    fn retiring_an_invisible_stream_disconnects_its_producer() {
+        let ctx = egui::Context::default();
+        let (sender, receiver) = queue::channel();
+        let mut playing = Playing::new(Instant::now() - DECODE_IDLE);
+        playing.receiver = Some(receiver);
+        cache(&ctx)
+            .0
+            .lock()
+            .unwrap()
+            .insert("hidden".into(), playing);
+        maintain(&ctx);
+        assert!(sender.send(Update::Reset).is_none());
+        assert!(cache(&ctx).0.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_bounded_stream_delivers_before_eof_and_cancels_a_blocked_decoder() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let path = std::env::temp_dir().join(format!("zapfast-stream-{}.gif", std::process::id()));
+        {
+            let mut encoder =
+                image::codecs::gif::GifEncoder::new(std::fs::File::create(&path).unwrap());
+            for shade in 0..150 {
+                encoder
+                    .encode_frame(image::Frame::from_parts(
+                        image::RgbaImage::from_pixel(8, 8, image::Rgba([shade, 0, 0, 255])),
+                        0,
+                        0,
+                        image::Delay::from_numer_denom_ms(100, 1),
+                    ))
+                    .unwrap();
+            }
+        }
+        let (sender, receiver) = queue::channel();
+        let produced = Arc::new(AtomicUsize::new(0));
+        let count = produced.clone();
+        let file = path.clone();
+        let worker = std::thread::spawn(move || {
+            decode_stream(&file, &mut |update| {
+                sender.send(update)?;
+                count.fetch_add(1, Ordering::Release);
+                Some(())
+            })
+        });
+        let first_update = loop {
+            match receiver.try_recv() {
+                Ok(update) => break update,
+                Err(std::sync::mpsc::TryRecvError::Empty) => std::thread::yield_now(),
+                Err(error) => panic!("{error}"),
+            }
+        };
+        let Update::Frame(first, delay) = first_update else {
+            panic!("first frame before EOF")
+        };
+        assert_eq!(first.size, [8, 8]);
+        assert_eq!(delay, Duration::from_millis(100));
+        assert!(produced.load(Ordering::Acquire) <= QUEUED_FRAMES + 1);
+        drop(receiver);
+        assert!(
+            worker.join().unwrap().is_none(),
+            "cancellation stops before frame 150"
+        );
+        std::fs::remove_file(path).unwrap();
     }
 
     /// Verifies animated WebP frame disposal.

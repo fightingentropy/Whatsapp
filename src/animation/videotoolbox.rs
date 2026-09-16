@@ -26,7 +26,9 @@ use objc2_video_toolbox::{
     VTDecompressionSession, kVTVideoDecoderSpecification_RequireHardwareAcceleratedVideoDecoder,
 };
 
-use super::{Decoded, MAX_FRAMES, to_color_image};
+#[cfg(any(test, feature = "demo"))]
+use super::{Decoded, collect};
+use super::{MAX_FRAMES, Sink, Update, to_color_image};
 
 #[derive(Default)]
 struct Output {
@@ -51,14 +53,19 @@ impl Drop for Session {
 }
 
 /// Returns None on any native decode failure, letting the caller retry software.
+pub(super) fn stream(path: &Path, emit: &mut Sink<'_>) -> Option<()> {
+    decode_impl(path, true, emit)
+}
+
+#[cfg(test)]
 pub(super) fn decode(path: &Path) -> Option<Decoded> {
-    decode_impl(path, true)
+    collect(|emit| stream(path, emit))
 }
 
 /// Benchmarks must exercise hardware even when the normal size policy avoids it.
 #[cfg(feature = "demo")]
 pub(super) fn decode_for_probe(path: &Path) -> Option<Decoded> {
-    decode_impl(path, false)
+    collect(|emit| decode_impl(path, false, emit))
 }
 
 fn hardware_worthwhile(width: u16, height: u16, samples: u32) -> bool {
@@ -67,7 +74,7 @@ fn hardware_worthwhile(width: u16, height: u16, samples: u32) -> bool {
     u32::from(width) * u32::from(height) >= 640 * 360 && samples >= 8
 }
 
-fn decode_impl(path: &Path, apply_size_policy: bool) -> Option<Decoded> {
+fn decode_impl(path: &Path, apply_size_policy: bool, emit: &mut Sink<'_>) -> Option<()> {
     let file = std::fs::File::open(path).ok()?;
     let size = file.metadata().ok()?.len();
     let mut mp4 = mp4::Mp4Reader::read_header(std::io::BufReader::new(file), size).ok()?;
@@ -161,6 +168,21 @@ fn decode_impl(path: &Path, apply_size_policy: bool) -> Option<Decoded> {
         }
     };
 
+    // Know presentation order before publishing. B frames can arrive after a
+    // later P frame; sorting each four-frame callback batch is insufficient.
+    // Keep only timestamps, never a second copy of the compressed clip.
+    let mut expected = Vec::with_capacity(count as usize);
+    for sample_id in 1..=count {
+        let sample = mp4.read_sample(track_id, sample_id).ok()??;
+        expected.push(
+            i64::try_from(sample.start_time)
+                .ok()?
+                .checked_add(i64::from(sample.rendering_offset))?,
+        );
+    }
+    expected.sort_unstable();
+    let mut expected = std::collections::VecDeque::from(expected);
+    let mut pending = Vec::new();
     for sample_id in 1..=count {
         let sample = mp4.read_sample(track_id, sample_id).ok()??;
         if !valid_sample(&sample.bytes, nal_length) {
@@ -190,8 +212,11 @@ fn decode_impl(path: &Path, apply_size_policy: bool) -> Option<Decoded> {
         }
         // Bound work in flight while allowing the hardware pipeline to overlap
         // a few frames. Native decoder buffers are outside the app's CPU cache.
-        if sample_id % 4 == 0 && unsafe { session.inner.wait_for_asynchronous_frames() } != 0 {
-            return None;
+        if sample_id % 4 == 0 {
+            if unsafe { session.inner.wait_for_asynchronous_frames() } != 0 {
+                return None;
+            }
+            drain(&session, &mut pending, &mut expected, emit)?;
         }
     }
     // SAFETY: session and callback storage remain live while delayed B frames
@@ -203,17 +228,34 @@ fn decode_impl(path: &Path, apply_size_policy: bool) -> Option<Decoded> {
             return None;
         }
     }
-    let mut output = session.output.lock().unwrap_or_else(|p| p.into_inner());
-    if output.failed || output.frames.is_empty() {
-        return None;
+    drain(&session, &mut pending, &mut expected, emit)?;
+    (count > 0 && expected.is_empty() && pending.is_empty()).then_some(())
+}
+
+/// Bound the native reorder buffer too. H.264 allows at most 16 reference
+/// frames, plus a four-frame submission batch. Unusual/malformed timing falls
+/// back to software instead of buffering an entire clip behind a missing frame.
+fn drain(
+    session: &Session,
+    pending: &mut Vec<(i64, egui::ColorImage, Duration)>,
+    expected: &mut std::collections::VecDeque<i64>,
+    emit: &mut Sink<'_>,
+) -> Option<()> {
+    {
+        let mut output = session.output.lock().unwrap_or_else(|p| p.into_inner());
+        if output.failed {
+            return None;
+        }
+        pending.append(&mut output.frames);
     }
-    output.frames.sort_by_key(|(pts, _, _)| *pts);
-    Some(Decoded {
-        frames: std::mem::take(&mut output.frames)
-            .into_iter()
-            .map(|(_, image, delay)| (image, delay))
-            .collect(),
-    })
+    pending.sort_by_key(|(pts, _, _)| *pts);
+    while pending.first().map(|frame| frame.0) == expected.front().copied() && !pending.is_empty() {
+        let (_, image, delay) = pending.remove(0);
+        expected.pop_front();
+        // Backpressure happens on the worker, never in a VideoToolbox callback.
+        emit(Update::Frame(image, delay))?;
+    }
+    (pending.len() <= 24).then_some(())
 }
 
 fn time(value: i64, timescale: i32) -> CMTime {
@@ -424,7 +466,7 @@ mod tests {
             // Exercise automatic hardware selection and the fallback separately.
             // This must also pass on CI hosts without hardware decode access.
             for decoded in [
-                super::super::decode_video(&path),
+                collect(|emit| super::super::decode_video(&path, emit)),
                 super::super::decode_mp4(&path),
             ] {
                 let decoded = decoded.expect("H.264 preview");

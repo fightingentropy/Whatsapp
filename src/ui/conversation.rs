@@ -21,6 +21,8 @@ use crate::theme::{self, Icon, Palette};
 
 use super::widgets;
 
+pub mod rows;
+
 /// Maximum automatic attachment download size.
 const AUTO_DOWNLOAD_LIMIT: u64 = 64 * 1024 * 1024;
 /// Group-message avatar size.
@@ -1135,6 +1137,7 @@ struct View<'a> {
     now: i64,
     player: &'a crate::audio::Player,
     copy_rows: &'a std::sync::Mutex<Vec<crate::transcript::Row>>,
+    layout_pending: &'a std::cell::Cell<bool>,
 }
 
 fn messages(app: &mut App, ui: &mut egui::Ui, chat: &Chat) {
@@ -1157,6 +1160,7 @@ fn messages(app: &mut App, ui: &mut egui::Ui, chat: &Chat) {
             avatars.insert(sender, picture);
         }
     }
+    let layout_pending = std::cell::Cell::new(false);
     let names_or = |id: &str, hint: Option<&str>| app.display_name_or(id, hint);
     let mention_names = |id: &str| app.mention_name(id);
     let view = View {
@@ -1176,11 +1180,37 @@ fn messages(app: &mut App, ui: &mut egui::Ui, chat: &Chat) {
         now: crate::util::now(),
         player: &app.player,
         copy_rows: app.copy_rows.as_ref(),
+        layout_pending: &layout_pending,
     };
     let mut actions = Vec::new();
     let mut anchored = false;
     let scroll_to_bottom = app.scroll_to_bottom;
+    #[cfg(feature = "demo")]
+    let benchmark_scroll = ui
+        .ctx()
+        .data(|data| data.get_temp::<bool>(egui::Id::new("benchmark-scroll")))
+        .unwrap_or(false);
+    #[cfg(feature = "demo")]
+    let scroll_to_bottom = scroll_to_bottom && !benchmark_scroll;
     let app_pictures = app.settings.show_sender_pictures;
+    // egui drops cross-widget selections when either endpoint is absent.
+    // Keep all rows registered throughout a drag and until selection is cleared.
+    let selecting = ui
+        .ctx()
+        .plugin::<egui::text_selection::LabelSelectionState>()
+        .lock()
+        .has_selection();
+    #[cfg(any(test, feature = "demo"))]
+    let selecting = selecting
+        || ui.ctx().data(|data| {
+            data.get_temp::<bool>(egui::Id::new("full-message-layout"))
+                .unwrap_or(false)
+        });
+    let preserve_place = !scroll_to_bottom
+        && !app.at_bottom
+        && view.anchor.is_none()
+        && !ui.input(|input| input.pointer.any_down() || input.smooth_scroll_delta.y != 0.0);
+    let contact_names = app.settings.names_from_contacts;
     // Do not animate programmatic scrolling. Pending animations can delay a
     // later request to reach the end.
     let mut edge_scrolled_up = false;
@@ -1193,6 +1223,13 @@ fn messages(app: &mut App, ui: &mut egui::Ui, chat: &Chat) {
             // Scroll while selecting near an edge. `scroll_with_delta` also
             // releases stick-to-bottom; setting the offset directly does not.
             let viewport = ui.clip_rect();
+            #[cfg(feature = "demo")]
+            if benchmark_scroll {
+                ui.scroll_with_delta_animation(
+                    vec2(0.0, 80.0),
+                    egui::style::ScrollAnimation::none(),
+                );
+            }
             *app.selection_view.lock().unwrap_or_else(|p| p.into_inner()) = Some(viewport);
             let held_inside = ui.input(|input| {
                 input.pointer.primary_down()
@@ -1200,6 +1237,7 @@ fn messages(app: &mut App, ui: &mut egui::Ui, chat: &Chat) {
                         viewport.contains(origin) && origin.x < viewport.right() - 16.0
                     })
             });
+            let selecting = selecting || held_inside;
             if held_inside && let Some(pointer) = ui.input(|input| input.pointer.latest_pos()) {
                 let delta = edge_scroll(pointer.y, viewport.top(), viewport.bottom());
                 if delta != 0.0 {
@@ -1219,38 +1257,122 @@ fn messages(app: &mut App, ui: &mut egui::Ui, chat: &Chat) {
                     ui.set_width(ui.available_width());
                     ui.spacing_mut().item_spacing.y = 3.0;
                     top_of_history(ui, &palette, &conversation, chat, &mut actions);
+                    let heights = &mut conversation.row_heights;
+                    heights.prepare(
+                        ui.available_width(),
+                        ui.ctx().pixels_per_point(),
+                        chat.is_group() || app_pictures,
+                        contact_names,
+                    );
+                    let old_anchor = heights.anchor.clone();
+                    let mut first_visible = None;
+                    let mut correction = None;
                     let mut previous: Option<&Message> = None;
+                    let mut laid_out = 0usize;
                     for message in &conversation.messages {
-                        let new_day = previous.is_none_or(|previous| {
-                            crate::util::day_key(previous.timestamp)
-                                != crate::util::day_key(message.timestamp)
-                        });
-                        if new_day {
-                            ui.add_space(8.0);
-                            ui.vertical_centered(|ui| {
-                                widgets::chip(
-                                    ui,
-                                    &palette,
-                                    &crate::util::day_label(message.timestamp),
-                                );
-                            });
-                            ui.add_space(4.0);
+                        let previous_id = previous.map(|row| row.id.as_str());
+                        let top = ui.cursor().top();
+                        layout_pending.set(false);
+                        let cached = heights.get(&message.id, previous_id);
+                        if cached.is_none() {
+                            heights.changed = true;
                         }
-                        let show_sender = (chat.is_group() || app_pictures)
-                            && !message.from_me
-                            && (new_day
-                                || previous.is_none_or(|previous| {
-                                    previous.sender != message.sender || previous.from_me
-                                }));
-                        if let Some(response) =
-                            bubble(ui, &view, message, show_sender, &mut actions)
-                            && view.anchor == Some(message.id.as_str())
+                        if preserve_place
+                            && heights.changed
+                            && let Some((id, y)) = &old_anchor
+                            && id == &message.id
                         {
-                            response.scroll_to_me(Some(Align::Center));
-                            anchored = true;
+                            correction = Some(*y - top);
+                        }
+                        let skip = !selecting
+                            && view.anchor != Some(message.id.as_str())
+                            && cached.is_some_and(|height| {
+                                top + height < viewport.top() - 100.0
+                                    || top > viewport.bottom() + 100.0
+                            });
+                        if skip {
+                            if heights.mark_skipped(&message.id) {
+                                ui.ctx().data_mut(|data| {
+                                    let id = bubble_id(&chat.id, &message.id);
+                                    data.remove::<Rect>(id.with("rect"));
+                                    data.remove::<Rect>(id.with("body"));
+                                });
+                            }
+                            ui.add_space(cached.unwrap());
+                        } else {
+                            // Explicit IDs keep selection endpoints stable even if
+                            // earlier history is inserted during a selection.
+                            ui.scope_builder(
+                                egui::UiBuilder::new()
+                                    .id(bubble_id(&chat.id, &message.id).with("row")),
+                                |ui| {
+                                    laid_out += 1;
+                                    let new_day = previous.is_none_or(|previous| {
+                                        crate::util::day_key(previous.timestamp)
+                                            != crate::util::day_key(message.timestamp)
+                                    });
+                                    if new_day {
+                                        ui.add_space(8.0);
+                                        ui.vertical_centered(|ui| {
+                                            widgets::chip(
+                                                ui,
+                                                &palette,
+                                                &crate::util::day_label(message.timestamp),
+                                            );
+                                        });
+                                        ui.add_space(4.0);
+                                    }
+                                    let show_sender = (chat.is_group() || app_pictures)
+                                        && !message.from_me
+                                        && (new_day
+                                            || previous.is_none_or(|previous| {
+                                                previous.sender != message.sender
+                                                    || previous.from_me
+                                            }));
+                                    if let Some(response) =
+                                        bubble(ui, &view, message, show_sender, &mut actions)
+                                        && view.anchor == Some(message.id.as_str())
+                                    {
+                                        response.scroll_to_me(Some(Align::Center));
+                                        anchored = true;
+                                    }
+                                },
+                            );
+                        }
+                        let bottom = ui.cursor().top();
+                        if !skip {
+                            if layout_pending.get() {
+                                heights.invalidate(&message.id);
+                            } else {
+                                heights.set(&message.id, previous_id, bottom - top);
+                            }
+                        }
+                        if first_visible.is_none()
+                            && bottom > viewport.top()
+                            && top < viewport.bottom()
+                        {
+                            first_visible = Some((message.id.clone(), top));
                         }
                         previous = Some(message);
                     }
+                    if let Some(delta) = correction.filter(|delta| delta.abs() > 0.5) {
+                        ui.scroll_with_delta_animation(
+                            vec2(0.0, delta),
+                            egui::style::ScrollAnimation::none(),
+                        );
+                        ui.ctx().request_repaint();
+                        heights.anchor = old_anchor;
+                    } else {
+                        heights.anchor = first_visible;
+                    }
+                    heights.changed = false;
+                    // Offline performance/regression probes use a count, never message text.
+                    #[cfg(any(test, feature = "demo"))]
+                    ui.ctx().data_mut(|data| {
+                        data.insert_temp(egui::Id::new("message-layout-count"), laid_out)
+                    });
+                    #[cfg(not(any(test, feature = "demo")))]
+                    let _ = laid_out;
                     if !typing.is_empty() {
                         typing_bubble(ui, &view, &typing);
                     }
@@ -1267,6 +1389,13 @@ fn messages(app: &mut App, ui: &mut egui::Ui, chat: &Chat) {
                     }
                 });
         });
+    #[cfg(feature = "demo")]
+    ui.ctx().data_mut(|data| {
+        data.insert_temp(
+            egui::Id::new("message-scroll-offset"),
+            output.state.offset.y,
+        )
+    });
     let at_bottom =
         output.state.offset.y + output.inner_rect.height() >= output.content_size.y - 24.0;
     // Keep the view at the end while initial content expands, until the user
@@ -2834,7 +2963,11 @@ fn picture(
         None => (width.min(PICTURE_WIDTH), PICTURE_HEIGHT),
     };
     if let Some(path) = &media.path {
-        let animated = sticker == Some(true);
+        let animated = sticker == Some(true)
+            && ui.is_rect_visible(Rect::from_min_size(
+                ui.cursor().min,
+                Vec2::splat(STICKER_SIDE),
+            ));
         let playing = animated.then(|| animation::frame(ui.ctx(), path));
         if let Some(animation::Frame::Ready(texture)) = &playing {
             let size = texture.size_vec2();
@@ -2879,6 +3012,7 @@ fn picture(
                 size.x
             }
             Ok(egui::load::TexturePoll::Pending { .. }) => {
+                view.layout_pending.set(true);
                 let size = if sticker.is_some() {
                     Vec2::splat(STICKER_SIDE)
                 } else {
@@ -3034,11 +3168,11 @@ fn video(
     let uri = thumbnail_uri(ui.ctx(), &message.chat, &message.id, thumbnail);
     let size = frame_size(media, Some((16, 9)), width.min(PICTURE_WIDTH));
     // Play downloaded GIFs in place; keep a poster for other videos.
-    let playing = match (&media.path, gif) {
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    let playing = match (&media.path, gif && ui.is_rect_visible(rect)) {
         (Some(path), true) => Some(animation::frame(ui.ctx(), path)),
         _ => None,
     };
-    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     if let Some(animation::Frame::Ready(texture)) = &playing {
         if ui.is_rect_visible(rect) {
             ui.painter().image(

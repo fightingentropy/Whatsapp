@@ -786,6 +786,34 @@ pub fn populate(app: &mut App) {
     app.focus_composer = false;
 }
 
+/// Synthetic loaded history for scrolling probes. Uses no account/archive data.
+pub fn long_history(app: &mut App, count: usize) {
+    let chat = SAMPLES[0].id;
+    let when = crate::util::now() - count as i64 * 60;
+    let messages = (0..count).map(|index| {
+        let body = match index % 4 {
+            0 => format!("Message {index}: a short reply"),
+            1 => format!("Message {index}: *a longer update* with enough words to wrap across multiple lines when the conversation window becomes narrow. 👋"),
+            2 => format!("Message {index}: first line\nSecond line\nThird line"),
+            _ => format!("Message {index}: see https://example.com/notes"),
+        };
+        message(chat, &format!("long-{index}"), index % 2 == 0,
+            when + index as i64 * 60, Content::text(body))
+    }).collect();
+    app.conversations.insert(
+        chat.into(),
+        Conversation {
+            messages,
+            complete: true,
+            phone_exhausted: true,
+            requested: true,
+            ..Default::default()
+        },
+    );
+    app.open_chat = Some(chat.into());
+    app.scroll_to_bottom = true;
+}
+
 /// Applies the UI state selected by `--demo-page`.
 pub fn apply_flags(app: &mut App, page: Option<&str>) {
     let Some(page) = page else {
@@ -794,6 +822,7 @@ pub fn apply_flags(app: &mut App, page: Option<&str>) {
     for part in page.split(',').map(str::trim) {
         match part {
             "chat" | "" => {}
+            "long" => long_history(app, 10_000),
             "empty" => app.open_chat = None,
             "settings" => app.page = Page::Settings,
             "update" => {
@@ -1576,6 +1605,124 @@ mod tests {
     }
 
     #[test]
+    fn long_history_skips_offscreen_layout_and_preserves_search_and_prepend_anchors() {
+        let mut app = app();
+        long_history(&mut app, 1000);
+        let ctx = egui::Context::default();
+        app.attach(&ctx);
+        render(&mut app, &ctx);
+        let count = || {
+            ctx.data(|data| data.get_temp::<usize>(egui::Id::new("message-layout-count")))
+                .unwrap()
+        };
+        assert!(count() < 40, "only visible rows and overscan: {}", count());
+        assert!(app.at_bottom);
+        let viewport = app.selection_view.lock().unwrap().unwrap();
+        let bar = egui::pos2(viewport.right() - 2.0, viewport.center().y);
+        frame_with(
+            &mut app,
+            &ctx,
+            vec![
+                egui::Event::PointerMoved(bar),
+                egui::Event::PointerButton {
+                    pos: bar,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+        assert!(
+            count() < 40,
+            "scrollbar drags must keep offscreen layout skipped"
+        );
+        frame_with(
+            &mut app,
+            &ctx,
+            vec![egui::Event::PointerButton {
+                pos: bar,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        app.actions
+            .push(crate::model::Action::ScrollTo("long-500".into()));
+        render(&mut app, &ctx);
+        render(&mut app, &ctx);
+        let chat = sample_ids()[0];
+        let body = |id: &str| {
+            ctx.data(|data| {
+                data.get_temp::<egui::Rect>(
+                    crate::ui::conversation::bubble_id(chat, id).with("body"),
+                )
+            })
+            .expect("drawn body")
+        };
+        let viewport = app.selection_view.lock().unwrap().unwrap();
+        assert!(
+            viewport.intersects(body("long-500")),
+            "search jump reaches a skipped row"
+        );
+        assert!(app.scroll_anchor.is_none());
+        assert!(!app.at_bottom);
+        let (anchor, _) = app.conversations[chat].row_heights.anchor.clone().unwrap();
+        let before = body(&anchor).top();
+        let conversation = app.conversations.get_mut(chat).unwrap();
+        let mut older = conversation.messages[0].clone();
+        older.id = "prepended".into();
+        older.timestamp -= 60;
+        older.content = Content::text("older\nhistory\nfrom the phone");
+        conversation.messages.insert(0, older);
+        render(&mut app, &ctx);
+        assert!(
+            (body(&anchor).top() - before).abs() < 1.0,
+            "prepending preserves the reader's place"
+        );
+        let conversation = app.conversations.get_mut(chat).unwrap();
+        conversation.message_mut("long-0").unwrap().content =
+            Content::text("edited\ninto\na\nmuch\ntaller\nmessage");
+        render(&mut app, &ctx);
+        assert!(
+            (body(&anchor).top() - before).abs() < 1.0,
+            "an offscreen edit preserves the anchor"
+        );
+        app.settings.sidebar_width += 100.0;
+        render(&mut app, &ctx);
+        assert!(
+            (body(&anchor).top() - before).abs() < 1.0,
+            "width changes remeasure and preserve the anchor"
+        );
+        assert!(count() < 40);
+    }
+
+    #[test]
+    fn cached_rows_match_full_layout_geometry() {
+        let mut app = app();
+        let ctx = egui::Context::default();
+        app.attach(&ctx);
+        render(&mut app, &ctx);
+        // Let initial composer/viewport sizing and the resulting scroll offset settle.
+        render(&mut app, &ctx);
+        let chat = sample_ids()[0];
+        let anchor = app.conversations[chat]
+            .row_heights
+            .anchor
+            .clone()
+            .unwrap()
+            .0;
+        let key = crate::ui::conversation::bubble_id(chat, &anchor).with("body");
+        let before = ctx.data(|data| data.get_temp::<egui::Rect>(key));
+        ctx.data_mut(|data| data.insert_temp(egui::Id::new("full-message-layout"), true));
+        render(&mut app, &ctx);
+        let after = ctx.data(|data| data.get_temp::<egui::Rect>(key));
+        assert_eq!(
+            before, after,
+            "selection fallback must not move visible text"
+        );
+    }
+
+    #[test]
     fn a_paste_is_seen_on_the_key_release() {
         // Platforms may deliver only the Ctrl+V key release for image paste.
         let mut app = app();
@@ -1806,12 +1953,31 @@ mod tests {
     /// Selection continues and scrolls after the pointer leaves the window.
     #[test]
     fn a_drag_out_of_the_window_keeps_selecting() {
+        drag_out_of_window(false);
+    }
+
+    #[test]
+    fn a_drag_out_of_a_long_cached_history_keeps_selecting() {
+        drag_out_of_window(true);
+    }
+
+    fn drag_out_of_window(long: bool) {
         let mut app = app();
+        if long {
+            long_history(&mut app, 1000);
+        }
         let ctx = egui::Context::default();
         app.attach(&ctx);
         render(&mut app, &ctx);
         render(&mut app, &ctx);
+        if long {
+            app.actions
+                .push(crate::model::Action::ScrollTo("long-500".into()));
+            render(&mut app, &ctx);
+            render(&mut app, &ctx);
+        }
         let chat = sample_ids()[0].to_owned();
+        let viewport = app.selection_view.lock().unwrap().unwrap();
         // Scroll away from the end before extending the selection.
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1180.0, 780.0));
         let ids: Vec<String> = app.conversations[&chat]
@@ -1822,7 +1988,7 @@ mod tests {
         let body_of = |ctx: &egui::Context, id: &str| {
             let key = crate::ui::conversation::bubble_id(&chat, id).with("body");
             ctx.data(|data| data.get_temp::<egui::Rect>(key))
-                .filter(|rect| screen.contains_rect(*rect))
+                .filter(|rect| viewport.contains_rect(*rect))
         };
         let sweepable = |content: &crate::model::Content| -> Option<String> {
             match content {
@@ -1842,7 +2008,7 @@ mod tests {
                 Some((rect, text))
             })
             .expect("a swept text body on screen");
-        let from = egui::pos2(start.left() + 4.0, start.center().y);
+        let from = egui::pos2(start.left() + 4.0, start.top() + 3.0);
         let press = |pos, pressed| egui::Event::PointerButton {
             pos,
             button: egui::PointerButton::Primary,

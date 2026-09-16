@@ -51,6 +51,8 @@ const TYPING_TIMEOUT: Duration = Duration::from_secs(12);
 #[derive(Default)]
 pub struct Conversation {
     pub messages: Vec<Message>,
+    /// View-owned layout measurements; never persisted in the message archive.
+    pub row_heights: crate::ui::conversation::rows::Heights,
     /// Whether the local archive has no earlier messages.
     pub complete: bool,
     pub loading_older: bool,
@@ -70,6 +72,11 @@ pub struct Conversation {
 
 impl Conversation {
     fn merge(&mut self, incoming: Vec<Message>, older: bool) {
+        if !older {
+            for message in &incoming {
+                self.invalidate_row(&message.id);
+            }
+        }
         if older {
             let known: HashSet<String> = self.messages.iter().map(|m| m.id.clone()).collect();
             let mut fresh: Vec<Message> = incoming
@@ -90,7 +97,18 @@ impl Conversation {
     }
 
     pub fn message_mut(&mut self, id: &str) -> Option<&mut Message> {
+        self.invalidate_row(id);
         self.messages.iter_mut().find(|message| message.id == id)
+    }
+
+    fn invalidate_row(&mut self, id: &str) {
+        self.row_heights.invalidate(id);
+        // A changed sender/date also changes the next row's grouping.
+        if let Some(index) = self.messages.iter().position(|message| message.id == id)
+            && let Some(next) = self.messages.get(index + 1)
+        {
+            self.row_heights.invalidate(&next.id);
+        }
     }
 
     pub fn message(&self, id: &str) -> Option<&Message> {
@@ -531,6 +549,9 @@ impl App {
 
     /// Initializes a newly created window.
     pub fn attach(&mut self, ctx: &egui::Context) {
+        for conversation in self.conversations.values_mut() {
+            conversation.row_heights = Default::default();
+        }
         // Register transcript copy formatting once per egui context.
         ctx.add_plugin(crate::transcript::CopyAnnotator {
             rows: std::sync::Arc::clone(&self.copy_rows),
@@ -930,11 +951,13 @@ impl App {
             match event {
                 Event::Link(status) => self.handle_link(status),
                 Event::Me { id, name, about } => {
+                    self.invalidate_message_layouts();
                     self.me = Some(id);
                     self.me_name = name;
                     self.me_about = about;
                 }
                 Event::Chats(chats) => {
+                    self.invalidate_message_layouts();
                     for chat in &chats {
                         if chat.unread == 0 {
                             self.notifications.clear(&chat.id);
@@ -1019,6 +1042,7 @@ impl App {
                     }
                 }
                 Event::Contacts(contacts) => {
+                    self.invalidate_message_layouts();
                     for contact in contacts {
                         self.contacts.insert(contact.id.clone(), contact);
                     }
@@ -1078,6 +1102,7 @@ impl App {
                 }
                 Event::MessageDeleted { chat, id } => {
                     if let Some(conversation) = self.conversations.get_mut(&chat) {
+                        conversation.invalidate_row(&id);
                         conversation.messages.retain(|message| message.id != id);
                     }
                     if self.editing.as_deref() == Some(id.as_str()) {
@@ -1171,7 +1196,19 @@ impl App {
         self.link = status;
     }
 
+    fn invalidate_message_layouts(&mut self) {
+        for conversation in self.conversations.values_mut() {
+            conversation.row_heights.clear();
+        }
+    }
+
     fn handle_chat_updated(&mut self, chat: Chat) {
+        if self
+            .chat(&chat.id)
+            .is_none_or(|known| known.name != chat.name)
+        {
+            self.invalidate_message_layouts();
+        }
         let is_open =
             self.open_chat.as_deref() == Some(chat.id.as_str()) && self.page == Page::Chats;
         let mut chat = chat;
@@ -1787,6 +1824,7 @@ impl App {
             Action::DeleteForMe(id) => {
                 if let Some(chat) = self.open_chat.clone() {
                     if let Some(conversation) = self.conversations.get_mut(&chat) {
+                        conversation.invalidate_row(&id);
                         conversation.messages.retain(|message| message.id != id);
                     }
                     self.backend.send(Command::DeleteLocal { chat, id });

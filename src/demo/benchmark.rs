@@ -16,11 +16,18 @@ pub struct Probe {
     cpu_ms: Vec<f64>,
     interval_ms: Vec<f64>,
     done: bool,
+    scroll: bool,
+    first_offset: Option<f32>,
 }
 
 impl Probe {
     /// Creates a probe without touching the live account or saving its data.
-    pub fn new(path: PathBuf, backend: crate::renderer::Backend, launched: Instant) -> Self {
+    pub fn new(
+        path: PathBuf,
+        backend: crate::renderer::Backend,
+        launched: Instant,
+        scroll: bool,
+    ) -> Self {
         Self {
             path,
             backend,
@@ -31,6 +38,8 @@ impl Probe {
             cpu_ms: Vec::new(),
             interval_ms: Vec::new(),
             done: false,
+            scroll,
+            first_offset: None,
         }
     }
 
@@ -44,6 +53,11 @@ impl Probe {
             .get_or_insert_with(|| now.duration_since(self.launched).as_secs_f64() * 1000.0);
         let started = *self.started.get_or_insert(now);
         if now.duration_since(started) >= Duration::from_secs(2) {
+            ctx.data_mut(|data| data.insert_temp(egui::Id::new("benchmark-scroll"), self.scroll));
+            if self.first_offset.is_none() {
+                self.first_offset =
+                    ctx.data(|data| data.get_temp::<f32>(egui::Id::new("message-scroll-offset")));
+            }
             if let Some(cpu) = frame.info().cpu_usage {
                 self.cpu_ms.push(f64::from(cpu) * 1000.0);
             }
@@ -56,8 +70,13 @@ impl Probe {
         if self.cpu_ms.len() >= 240 {
             let report = serde_json::json!({
                 "backend": format!("{:?}", self.backend),
-                "workload": "fixed offline chat, 2 seconds warmup then 240 frames, continuous repaint stress test",
+                "full_message_layout": ctx.data(|data| data.get_temp::<bool>(egui::Id::new("full-message-layout"))).unwrap_or(false),
+                "messages_laid_out": ctx.data(|data| data.get_temp::<usize>(egui::Id::new("message-layout-count"))),
+                "workload": if self.scroll { "offline chat scrolling up 80 points per frame, 2 seconds warmup then 240 frames, continuous repaint stress" }
+                    else { "fixed offline chat, 2 seconds warmup then 240 frames, continuous repaint stress test" },
                 "first_ui_frame_ms": self.first_frame_ms,
+                "first_scroll_offset": self.first_offset,
+                "last_scroll_offset": ctx.data(|data| data.get_temp::<f32>(egui::Id::new("message-scroll-offset"))),
                 "cpu_frame_ms": summary(&self.cpu_ms),
                 "frame_interval_ms": summary(&self.interval_ms),
                 "cpu_samples_ms": self.cpu_ms,

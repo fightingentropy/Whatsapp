@@ -52,6 +52,19 @@ protocol. These notes are for coding agents and new contributors.
   optional and only adds the SIMD paths (the AUR recipes leave it out,
   the build works without it). Frames share one playback texture per clip on the interface
   thread. The CPU frame cache is bounded by bytes and expires unseen clips.
+  Decoders publish ordered frames through an eight-frame mailbox with backpressure.
+  The worker blocks outside native callbacks; dropping the receiver cancels work.
+  A stalled mailbox times out so an abandoned egui context cannot hold a decoder
+  slot forever. Pending streams hold their last frame until more arrive, then
+  loop only after EOF. A failed backend resets published frames before fallback.
+- `src/ui/conversation/rows.rs` caches exact settled row heights. Invalidate a
+  message and its next neighbour when changing content/grouping; use
+  `Conversation::message_mut` rather than mutating an existing message directly.
+  Contact/name changes invalidate layouts too. Unsettled image rows keep measuring.
+  Explicit per-message UI IDs survive prepended history. Skip offscreen rows only
+  while no label selection/drag is active, and preserve the first visible row when
+  earlier content changes height. Never truncate the rows supplied to egui during
+  cross-message selection or copy.
 - `src/renderer.rs` configures the native renderer. OpenGL remains the default;
   `--features metal` adds a Metal-only wgpu backend selected with `--renderer metal`.
   Keep the OpenGL option for comparison/recovery. Both are event-driven; the

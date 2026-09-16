@@ -3,6 +3,52 @@
 use super::{Decoded, decode_mp4, videotoolbox};
 use std::{path::Path, time::Instant};
 
+/// Time to the first ordered CPU frame versus the full clip. The sink consumes
+/// immediately; this isolates decoder startup, not window/GPU presentation.
+pub fn streaming(path: &Path, runs: usize) -> anyhow::Result<serde_json::Value> {
+    anyhow::ensure!(runs > 0, "at least one run is required");
+    let mut samples = Vec::new();
+    for run in 0..=runs {
+        let started = Instant::now();
+        let mut first_ms = None;
+        let mut frames = 0usize;
+        let mut bytes = 0usize;
+        let mut resets = 0usize;
+        let ok = super::decode_stream(path, &mut |update| {
+            match update {
+                super::Update::Frame(image, _) => {
+                    first_ms.get_or_insert_with(|| started.elapsed().as_secs_f64() * 1000.0);
+                    frames += 1;
+                    bytes += image.pixels.len() * 4;
+                }
+                super::Update::Reset => {
+                    first_ms = None;
+                    frames = 0;
+                    bytes = 0;
+                    resets += 1;
+                }
+                super::Update::Complete(_) => unreachable!(),
+            }
+            Some(())
+        });
+        anyhow::ensure!(ok.is_some() && frames > 0, "stream decode failed");
+        if run > 0 {
+            samples.push(serde_json::json!({
+                "first_ordered_cpu_frame_ms": first_ms,
+                "complete_ms": started.elapsed().as_secs_f64() * 1000.0,
+                "frames": frames, "retained_loop_pixel_bytes": bytes,
+                "fallback_resets": resets,
+            }));
+        }
+    }
+    Ok(serde_json::json!({
+        "runs": samples,
+        "queued_frames_per_decoder": super::QUEUED_FRAMES,
+        "max_queued_pixel_bytes_per_decoder": super::QUEUED_FRAMES * super::MAX_WIDTH as usize * super::MAX_WIDTH as usize * 4,
+        "note": "ordered decoder output, immediate consumer; excludes UI scheduling and GPU upload",
+    }))
+}
+
 /// Decodes the same file with both implementations, alternating order. Fails if
 /// hardware is unavailable; the probe must not silently benchmark software twice.
 pub fn compare(path: &Path, runs: usize) -> anyhow::Result<serde_json::Value> {
