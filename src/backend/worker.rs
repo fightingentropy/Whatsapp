@@ -1523,6 +1523,7 @@ impl Worker {
             messages: vec![stored],
             older: false,
             complete: false,
+            requested: false,
         });
         self.emit_chat(&chat);
         if let Some(message) = incoming {
@@ -1896,6 +1897,7 @@ impl Worker {
                         messages,
                         older: true,
                         complete: false,
+                        requested: false,
                     })
                 }
                 Err(error) => log::warn!("could not read older messages: {error}"),
@@ -2746,9 +2748,14 @@ impl Worker {
                     messages,
                     older: before.is_some(),
                     complete,
+                    requested: true,
                 });
             }
-            Err(error) => self.emit(Event::Error(format!("Could not read the chat: {error}"))),
+            Err(error) => self.emit(Event::ChatLoadFailed {
+                chat: chat.clone(),
+                initial: before.is_none(),
+                error: format!("Could not read the chat: {error}"),
+            }),
         }
         if before.is_none() && ChatKind::from_id(&chat) == ChatKind::Group {
             // Force group metadata when opening a group.
@@ -3295,6 +3302,7 @@ impl Worker {
                 messages: Vec::new(),
                 older: true,
                 complete: false,
+                requested: true,
             });
             self.emit(Event::Error(
                 "This message is not stored on this computer".to_owned(),
@@ -3314,9 +3322,14 @@ impl Worker {
                     messages,
                     older: true,
                     complete: false,
+                    requested: true,
                 });
             }
-            Err(error) => self.emit(Event::Error(format!("Could not read the chat: {error}"))),
+            Err(error) => self.emit(Event::ChatLoadFailed {
+                chat,
+                initial: false,
+                error: format!("Could not read the chat: {error}"),
+            }),
         }
     }
 
@@ -5273,6 +5286,49 @@ mod receipt_tests {
             status: Delivery::None,
             ..own_message(id, timestamp)
         }
+    }
+
+    #[test]
+    fn local_page_responses_are_distinct_from_durable_live_updates() {
+        let (mut worker, events, _inbox, _wa) = worker();
+        worker.store_message(incoming("first", 100), Some(vec![1, 2, 3]), None);
+        assert!(worker.archive.message(PEER, "first").unwrap().is_some());
+        assert!(events.try_iter().any(|event| matches!(
+            event,
+            Event::Messages {
+                requested: false,
+                older: false,
+                ..
+            }
+        )));
+        worker.load_chat(PEER.into(), None);
+        assert!(events.try_iter().any(|event| matches!(
+            event,
+            Event::Messages {
+                requested: true,
+                older: false,
+                complete: true,
+                ..
+            }
+        )));
+        worker.load_chat(PEER.into(), Some((200, "later".into())));
+        assert!(events.try_iter().any(|event| matches!(
+            event,
+            Event::Messages {
+                requested: true,
+                older: true,
+                ..
+            }
+        )));
+        worker.load_until(PEER.into(), "first".into(), (200, "later".into()));
+        assert!(events.try_iter().any(|event| matches!(
+            event,
+            Event::Messages {
+                requested: true,
+                older: true,
+                ..
+            }
+        )));
     }
 
     #[test]

@@ -339,6 +339,14 @@ pub enum Event {
         messages: Vec<Message>,
         older: bool,
         complete: bool,
+        /// Completes a local LoadChat/LoadUntil query, not a live or phone-sync event.
+        requested: bool,
+    },
+    /// A local query failed; release its loading state so reopening can retry.
+    ChatLoadFailed {
+        chat: ChatId,
+        initial: bool,
+        error: String,
     },
     MessageUpdated(Box<Message>),
     /// Files selected for the composer.
