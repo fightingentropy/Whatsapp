@@ -28,6 +28,17 @@ protocol. These notes are for coding agents and new contributors.
   privacy-id mappings. WhatsApp replays history once, at link time, so the
   archive is the only copy. It keeps each message's raw protobuf because
   the keys to fetch an attachment live in it.
+- `src/app/cache.rs` limits inactive conversation payloads to eight chats and
+  approximately 32 MiB of owned messages/layouts. The selected chat, dialog source
+  and active local/phone loads, sends and downloads are protected. Eviction keeps
+  lightweight phone-history exhaustion/backoff state and drafts, resets local
+  paging, and releases egui thumbnails and unshared file images without deleting
+  files. Unopened/evicted chats do not absorb background message payloads; the
+  worker has already archived them. `Event::Messages.requested` distinguishes
+  local query replies from live/phone events, so a live message cannot complete
+  an outstanding first-page query. Local read failures clear their loading flags
+  and allow reopening/reconnection to retry. `Conversation::message_mut` also
+  invalidates cached memory size and pending-operation state.
 - `src/model.rs` holds the app's own types. Views never touch a protobuf;
   the worker translates in `classify()` and `parse_conversation()`.
 - Chat ids are canonical strings: a chat behind a privacy id (`@lid`) is

@@ -1,5 +1,57 @@
 # Apple Silicon performance work
 
+## Inactive conversation memory: 16 September 2026
+
+Inactive histories now retain at most eight chats within an estimated 32 MiB
+message/layout budget, evicting the least recently visited first. The open chat,
+dialog source and active local/phone loads, sends and downloads are protected
+and can exceed the budget. Eviction releases message vectors, row measurements,
+registered thumbnails and unshared file-image caches. Downloaded files and
+SQLite history remain on disk; drafts and phone-history exhaustion/backoff stay
+in memory. Reopening an evicted chat loads a fresh page from SQLite.
+
+On the Apple M4 Pro, macOS 27.0 (26A428), pinned Rust 1.98.0, release/M1 baseline:
+
+- Median final process RSS: **109.672 MiB → 19.891 MiB**, about **82% lower**.
+- Retained conversation histories: **96 → 9** (one open plus eight inactive).
+- Retained messages: **28,800 → 2,700**.
+- Retained text and thumbnail payload: **84.375 MiB → 7.910 MiB**.
+
+Five alternating fresh-process runs per build visited 96 synthetic chats with
+300 messages each. Each message had 1,024 bytes of text/caption; every fourth
+had an 8,192-byte thumbnail. The baseline is `9b9ac99` with the identical
+`memory_probe` fixture added. No compilation ran during measurement. Raw
+samples, build details and source hashes are in
+[the memory measurement file](benchmarks/apple-silicon-memory-2026-09-16.json).
+
+This measures headless application state: no native window, fonts, renderer,
+GPU, codecs, network, linked account or archive. It is not a whole-app memory
+or energy comparison. The estimated cache budget includes owned capacities,
+but allocator overhead, image-loader memory, renderer/codec allocations and
+protected chats remain outside it. Lightweight metadata stays for visited chats.
+
+Background messages are archived before the UI event and do not refill unopened
+or evicted histories. A local first-page response is distinguished from a live
+update, preventing premature completion of an outstanding load. Failed local
+queries clear their loading flags so reopening or reconnecting can retry.
+
+Formatting, both strict Clippy variants and warnings-denied rustdoc passed.
+Default features passed **202 tests**; all features passed **204 tests**
+(203 library + 1 binary), with seven explicit skips in each suite. New tests
+cover LRU/byte eviction, protected work, draft and phone-state preservation,
+thumbnail re-registration, shared-image retention, durable live events,
+SQLite reload after edits/deletion, and failed-query retries. Live account,
+sleep/wake and energy tests remain separate validation work.
+
+Reproduce without a linked account:
+
+```sh
+cargo run --locked --release --features demo --example memory_probe > memory.json
+```
+
+For the baseline, use commit `9b9ac99` in a separate checkout with the same
+example file and its `Cargo.toml` example registration.
+
 ## Sidebar copies: 16 September 2026
 
 The main and archived lists already draw only the rows in the viewport, but

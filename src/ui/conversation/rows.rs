@@ -22,6 +22,17 @@ struct Row {
 }
 
 impl Heights {
+    /// Owned allocations only; hash-table control/allocator overhead is approximate.
+    pub fn estimated_bytes(&self) -> usize {
+        self.rows.capacity() * (std::mem::size_of::<(String, Row)>() + 1)
+            + self
+                .rows
+                .iter()
+                .map(|(id, row)| id.capacity() + row.previous.as_ref().map_or(0, String::capacity))
+                .sum::<usize>()
+            + self.anchor.as_ref().map_or(0, |(id, _)| id.capacity())
+    }
+
     pub fn clear(&mut self) {
         self.rows.clear();
         self.changed = true;

@@ -2878,14 +2878,55 @@ fn preview_card(
 #[derive(Clone, Default)]
 struct Thumbnails(Arc<Mutex<HashSet<String>>>);
 
-fn thumbnail_uri(ctx: &egui::Context, chat: &str, id: &str, bytes: &[u8]) -> String {
-    let uri = format!(
+fn thumbnail_key(chat: &str, id: &str) -> String {
+    format!(
         "bytes://thumb-{}-{}",
         chat.chars()
             .filter(char::is_ascii_alphanumeric)
             .collect::<String>(),
         id
-    );
+    )
+}
+
+/// Release row hit regions and image-loader allocations when history leaves RAM.
+/// Downloaded files remain on disk and are loaded again when the chat opens.
+pub(crate) fn forget_cached_messages(
+    ctx: &egui::Context,
+    chat: &str,
+    messages: &[Message],
+    retained_paths: &HashSet<&Path>,
+) {
+    let known = ctx.data(|data| data.get_temp::<Thumbnails>(egui::Id::new("thumbnails")));
+    for message in messages {
+        let id = bubble_id(chat, &message.id);
+        ctx.data_mut(|data| {
+            for part in ["rect", "body", "quote", "preview", "card"] {
+                data.remove::<Rect>(id.with(part));
+            }
+        });
+        let uri = thumbnail_key(chat, &message.id);
+        if known.as_ref().is_some_and(|known| {
+            known
+                .0
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .remove(&uri)
+        }) {
+            ctx.forget_image(&uri);
+        }
+        if let Some(path) = message
+            .content
+            .media()
+            .and_then(|media| media.path.as_deref())
+            && !retained_paths.contains(path)
+        {
+            ctx.forget_image(&file_uri(path));
+        }
+    }
+}
+
+fn thumbnail_uri(ctx: &egui::Context, chat: &str, id: &str, bytes: &[u8]) -> String {
+    let uri = thumbnail_key(chat, id);
     let known: Thumbnails = ctx.data_mut(|data| {
         data.get_temp_mut_or_default::<Thumbnails>(egui::Id::new("thumbnails"))
             .clone()
@@ -3652,6 +3693,56 @@ mod tests {
             path: None,
             state: MediaState::Idle,
         }
+    }
+
+    #[test]
+    fn evicted_rows_release_thumbnails_and_only_unshared_file_images() {
+        let ctx = egui::Context::default();
+        let path = std::path::PathBuf::from("/synthetic/shared.jpg");
+        let mut attachment = media(Some(64), Some(48));
+        attachment.path = Some(path.clone());
+        let message = Message {
+            id: "image".into(),
+            chat: "cache".into(),
+            sender: "synthetic@lid".into(),
+            sender_name: None,
+            from_me: false,
+            timestamp: 0,
+            content: Content::Image {
+                caption: None,
+                media: attachment,
+            },
+            status: crate::model::Delivery::None,
+            delivered_at: None,
+            read_at: None,
+            quoted: None,
+            reactions: Vec::new(),
+            edited: false,
+            mentions: Vec::new(),
+            forwarded: false,
+            thumbnail: Some(vec![1, 2, 3]),
+        };
+        let uri = thumbnail_uri(&ctx, "cache", "image", &[1, 2, 3]);
+        let file = file_uri(&path);
+        ctx.include_bytes(file.clone(), vec![4, 5, 6]);
+        let body = bubble_id("cache", "image").with("body");
+        ctx.data_mut(|data| data.insert_temp(body, Rect::ZERO));
+        assert!(ctx.try_load_bytes(&uri).is_ok());
+        let retained = HashSet::from([path.as_path()]);
+        forget_cached_messages(&ctx, "cache", std::slice::from_ref(&message), &retained);
+        assert!(ctx.try_load_bytes(&uri).is_err());
+        assert!(
+            ctx.try_load_bytes(&file).is_ok(),
+            "another chat still uses this file"
+        );
+        assert!(ctx.data(|data| data.get_temp::<Rect>(body)).is_none());
+        thumbnail_uri(&ctx, "cache", "image", &[1, 2, 3]);
+        assert!(
+            ctx.try_load_bytes(&uri).is_ok(),
+            "reopening registers the thumbnail again"
+        );
+        forget_cached_messages(&ctx, "cache", &[message], &HashSet::new());
+        assert!(ctx.try_load_bytes(&file).is_err());
     }
 
     #[test]

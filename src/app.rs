@@ -19,6 +19,8 @@ use crate::single_instance::{ControlCommand, Guard};
 use crate::theme::Palette;
 use crate::tray::{TrayCommand, TrayService};
 
+mod cache;
+
 /// Initial and incremental message-page size.
 pub const PAGE: usize = 60;
 /// Minimum delay between phone history requests.
@@ -58,6 +60,14 @@ pub struct Conversation {
     pub loading_older: bool,
     /// Whether the initial page was requested.
     pub requested: bool,
+    /// A local first-page query is outstanding; live messages do not finish it.
+    pub loading_initial: bool,
+    /// Most recent explicit visit, used to evict inactive history first.
+    pub last_viewed: Option<Instant>,
+    /// Estimated owned message/layout allocations, invalidated by mutations.
+    pub cached_bytes: Option<usize>,
+    /// Whether a message send/download is active, cached between mutations.
+    pub cached_busy: Option<bool>,
     /// Whether a phone history request is active.
     pub fetching_phone: bool,
     /// Whether phone history is exhausted or unavailable.
@@ -72,6 +82,8 @@ pub struct Conversation {
 
 impl Conversation {
     fn merge(&mut self, incoming: Vec<Message>, older: bool) {
+        self.cached_bytes = None;
+        self.cached_busy = None;
         if !older {
             for message in &incoming {
                 self.invalidate_row(&message.id);
@@ -102,6 +114,8 @@ impl Conversation {
     }
 
     fn invalidate_row(&mut self, id: &str) {
+        self.cached_bytes = None;
+        self.cached_busy = None;
         self.row_heights.invalidate(id);
         // A changed sender/date also changes the next row's grouping.
         if let Some(index) = self.messages.iter().position(|message| message.id == id)
@@ -145,6 +159,7 @@ pub struct App {
     pub chats: Vec<Chat>,
     pub contacts: HashMap<String, Contact>,
     pub conversations: HashMap<ChatId, Conversation>,
+    conversations_dirty: bool,
     pub open_chat: Option<ChatId>,
     /// Chat row to reveal after keyboard navigation.
     pub scroll_chat_into_view: Option<ChatId>,
@@ -360,6 +375,7 @@ impl App {
             chats: Vec::new(),
             contacts: HashMap::new(),
             conversations: HashMap::new(),
+            conversations_dirty: true,
             open_chat,
             scroll_chat_into_view: None,
             drafts: HashMap::new(),
@@ -551,6 +567,7 @@ impl App {
     pub fn attach(&mut self, ctx: &egui::Context) {
         for conversation in self.conversations.values_mut() {
             conversation.row_heights = Default::default();
+            conversation.cached_bytes = None;
         }
         // Register transcript copy formatting once per egui context.
         ctx.add_plugin(crate::transcript::CopyAnnotator {
@@ -960,6 +977,7 @@ impl App {
 
     fn handle_events(&mut self) {
         for event in self.backend.poll() {
+            self.conversations_dirty = true;
             match event {
                 Event::Link(status) => self.handle_link(status),
                 Event::Me { id, name, about } => {
@@ -991,14 +1009,27 @@ impl App {
                     messages,
                     older,
                     complete,
+                    requested,
                 } => {
-                    let conversation = self.conversations.entry(chat.clone()).or_default();
+                    // Every row is already durable in SQLite. Do not recreate
+                    // an evicted/unopened history for a background update.
+                    let Some(conversation) =
+                        self.conversations.get_mut(&chat).filter(|conversation| {
+                            conversation.requested
+                                || self.open_chat.as_deref() == Some(chat.as_str())
+                        })
+                    else {
+                        continue;
+                    };
                     let was_empty = conversation.messages.is_empty();
                     if older && !messages.is_empty() {
                         conversation.phone_delivered = true;
                     }
                     conversation.merge(messages, older);
-                    if older {
+                    if requested && !older {
+                        conversation.loading_initial = false;
+                        conversation.complete = complete;
+                    } else if older {
                         conversation.loading_older = false;
                         conversation.complete = complete;
                     } else if was_empty {
@@ -1029,6 +1060,21 @@ impl App {
                             });
                         }
                     }
+                }
+                Event::ChatLoadFailed {
+                    chat,
+                    initial,
+                    error,
+                } => {
+                    if let Some(conversation) = self.conversations.get_mut(&chat) {
+                        if initial {
+                            conversation.loading_initial = false;
+                            conversation.requested = false;
+                        } else {
+                            conversation.loading_older = false;
+                        }
+                    }
+                    self.toast_error(error);
                 }
                 Event::SearchHits { query, messages } => {
                     if query == self.search.trim() {
@@ -1209,8 +1255,10 @@ impl App {
     }
 
     fn invalidate_message_layouts(&mut self) {
+        self.conversations_dirty = true;
         for conversation in self.conversations.values_mut() {
             conversation.row_heights.clear();
+            conversation.cached_bytes = None;
         }
     }
 
@@ -1269,9 +1317,14 @@ impl App {
     }
 
     fn ensure_loaded(&mut self, chat: &str) {
+        self.conversations_dirty = true;
         let conversation = self.conversations.entry(chat.to_owned()).or_default();
+        conversation.last_viewed = Some(Instant::now());
+        // The next view can add layout allocations even without message edits.
+        conversation.cached_bytes = None;
         if !conversation.requested {
             conversation.requested = true;
+            conversation.loading_initial = true;
             self.backend.send(Command::LoadChat {
                 chat: chat.to_owned(),
                 before: None,
@@ -1345,6 +1398,10 @@ impl App {
     fn open_chat(&mut self, id: ChatId) {
         if self.open_chat.as_deref() != Some(id.as_str()) {
             if let Some(previous) = self.open_chat.take() {
+                if let Some(conversation) = self.conversations.get_mut(&previous) {
+                    // Its view may have added row measurements since the last visit.
+                    conversation.cached_bytes = None;
+                }
                 let draft = std::mem::take(&mut self.composer);
                 // Discard an unfinished edit instead of keeping it as a draft.
                 if self.editing.take().is_some() || draft.trim().is_empty() {
@@ -1669,12 +1726,14 @@ impl App {
 
     fn apply_actions(&mut self, ctx: &egui::Context) {
         let mut actions = std::mem::take(&mut self.actions);
+        self.conversations_dirty |= !actions.is_empty();
         while !actions.is_empty() {
             for action in actions.drain(..) {
                 self.apply(action, ctx);
             }
             actions = std::mem::take(&mut self.actions);
         }
+        self.trim_conversations(ctx);
     }
 
     fn apply(&mut self, action: Action, ctx: &egui::Context) {

@@ -1,0 +1,735 @@
+{
+  "measured_at": "2026-09-16T21:13:45.447516+00:00",
+  "machine": "Apple M4 Pro",
+  "os": "ProductName:\t\tmacOS\nProductVersion:\t\t27.0\nBuildVersion:\t\t26A428",
+  "toolchain": "Rust 1.98.0, release thin LTO, aarch64-apple-darwin, M1 baseline",
+  "baseline_commit": "9b9ac99c36b730fa1b2390115e42a0e03de0dd0c",
+  "baseline_note": "Baseline implementation with the identical memory_probe fixture added before the cache implementation; release executable preserved for alternating measurements.",
+  "methodology": "Five alternating fresh-process runs per build, visiting 96 synthetic conversations with 300 messages each. Every message has 1024 bytes of text/caption; every fourth includes an 8192-byte thumbnail. RSS sampled using ps; no compilation during measurement.",
+  "limitations": "Headless model state only. No window, fonts, renderer, GPU, codecs, network, account, or archive. Not a whole-app memory or energy comparison. SQLite eviction/reload correctness is tested separately. Protected conversations are outside the budget.",
+  "source_sha256": {
+    "examples/memory_probe.rs": "55d458674d7c24271c9ce3acd2a231bb90d5c5589a4969e0a9b437959469c1da",
+    "src/app.rs": "2548145ab53610c70e0e26b168c46958a503a072edfb5445f2b7f4772c3733fc",
+    "src/app/cache.rs": "646cd7de931e85605a28c9f555d143069c60bf592390bedde7b750101eaa48cc",
+    "src/backend.rs": "a4932f25f66eb0454858205a21abe13e8b4dc6262642f64e24a1600411f5c521",
+    "src/backend/worker.rs": "6a218b6dcd906108c80208c16d82ed022e2d9a7ddcd5e5b0e3794ac9fb892d21",
+    "src/ui/conversation.rs": "4c9679d3d8c0b7e1f3bfc7ae42664612b54dc53343d6c0dcf67ece340a3f8d55",
+    "src/ui/conversation/rows.rs": "98698add2fe4ad6fc8f6c17a726ca161f7000315f1cbdb1327da01f9bdeb7e2f"
+  },
+  "binary_sha256": {
+    "before": "b119887c7b6b42b1a64d094c843305a73d8b18ebc10aa6e6088904b5da189697",
+    "after": "3f856a5a1944ae5a827f49c5083a7e79a05a6e48769e53cea105e6c31161efa8"
+  },
+  "summary": {
+    "before": {
+      "median_final_resident_kib": 112304,
+      "median_initial_resident_kib": 7888,
+      "cached_conversations": 96,
+      "cached_messages": 28800,
+      "retained_text_thumbnail_bytes": 88473600
+    },
+    "after": {
+      "median_final_resident_kib": 20368,
+      "median_initial_resident_kib": 7968,
+      "cached_conversations": 9,
+      "cached_messages": 2700,
+      "retained_text_thumbnail_bytes": 8294400
+    }
+  },
+  "runs": {
+    "before": [
+      {
+        "note": "headless application state only; no renderer, fonts, real account or archive; cache reload correctness is covered separately by SQLite regression tests",
+        "samples": [
+          {
+            "cached_conversations": 0,
+            "cached_messages": 0,
+            "resident_kib": 7904,
+            "retained_text_thumbnail_bytes": 0,
+            "visited_chats": 0
+          },
+          {
+            "cached_conversations": 12,
+            "cached_messages": 3600,
+            "resident_kib": 21184,
+            "retained_text_thumbnail_bytes": 11059200,
+            "visited_chats": 12
+          },
+          {
+            "cached_conversations": 24,
+            "cached_messages": 7200,
+            "resident_kib": 34240,
+            "retained_text_thumbnail_bytes": 22118400,
+            "visited_chats": 24
+          },
+          {
+            "cached_conversations": 36,
+            "cached_messages": 10800,
+            "resident_kib": 47264,
+            "retained_text_thumbnail_bytes": 33177600,
+            "visited_chats": 36
+          },
+          {
+            "cached_conversations": 48,
+            "cached_messages": 14400,
+            "resident_kib": 60256,
+            "retained_text_thumbnail_bytes": 44236800,
+            "visited_chats": 48
+          },
+          {
+            "cached_conversations": 60,
+            "cached_messages": 18000,
+            "resident_kib": 73296,
+            "retained_text_thumbnail_bytes": 55296000,
+            "visited_chats": 60
+          },
+          {
+            "cached_conversations": 72,
+            "cached_messages": 21600,
+            "resident_kib": 86288,
+            "retained_text_thumbnail_bytes": 66355200,
+            "visited_chats": 72
+          },
+          {
+            "cached_conversations": 84,
+            "cached_messages": 25200,
+            "resident_kib": 99312,
+            "retained_text_thumbnail_bytes": 77414400,
+            "visited_chats": 84
+          },
+          {
+            "cached_conversations": 96,
+            "cached_messages": 28800,
+            "resident_kib": 112336,
+            "retained_text_thumbnail_bytes": 88473600,
+            "visited_chats": 96
+          }
+        ],
+        "workload": "visit 96 synthetic conversations with 300 messages each; 1024-byte text/caption per message and an 8192-byte thumbnail every fourth message"
+      },
+      {
+        "note": "headless application state only; no renderer, fonts, real account or archive; cache reload correctness is covered separately by SQLite regression tests",
+        "samples": [
+          {
+            "cached_conversations": 0,
+            "cached_messages": 0,
+            "resident_kib": 7888,
+            "retained_text_thumbnail_bytes": 0,
+            "visited_chats": 0
+          },
+          {
+            "cached_conversations": 12,
+            "cached_messages": 3600,
+            "resident_kib": 21152,
+            "retained_text_thumbnail_bytes": 11059200,
+            "visited_chats": 12
+          },
+          {
+            "cached_conversations": 24,
+            "cached_messages": 7200,
+            "resident_kib": 34208,
+            "retained_text_thumbnail_bytes": 22118400,
+            "visited_chats": 24
+          },
+          {
+            "cached_conversations": 36,
+            "cached_messages": 10800,
+            "resident_kib": 47232,
+            "retained_text_thumbnail_bytes": 33177600,
+            "visited_chats": 36
+          },
+          {
+            "cached_conversations": 48,
+            "cached_messages": 14400,
+            "resident_kib": 60304,
+            "retained_text_thumbnail_bytes": 44236800,
+            "visited_chats": 48
+          },
+          {
+            "cached_conversations": 60,
+            "cached_messages": 18000,
+            "resident_kib": 73360,
+            "retained_text_thumbnail_bytes": 55296000,
+            "visited_chats": 60
+          },
+          {
+            "cached_conversations": 72,
+            "cached_messages": 21600,
+            "resident_kib": 86320,
+            "retained_text_thumbnail_bytes": 66355200,
+            "visited_chats": 72
+          },
+          {
+            "cached_conversations": 84,
+            "cached_messages": 25200,
+            "resident_kib": 99328,
+            "retained_text_thumbnail_bytes": 77414400,
+            "visited_chats": 84
+          },
+          {
+            "cached_conversations": 96,
+            "cached_messages": 28800,
+            "resident_kib": 112320,
+            "retained_text_thumbnail_bytes": 88473600,
+            "visited_chats": 96
+          }
+        ],
+        "workload": "visit 96 synthetic conversations with 300 messages each; 1024-byte text/caption per message and an 8192-byte thumbnail every fourth message"
+      },
+      {
+        "note": "headless application state only; no renderer, fonts, real account or archive; cache reload correctness is covered separately by SQLite regression tests",
+        "samples": [
+          {
+            "cached_conversations": 0,
+            "cached_messages": 0,
+            "resident_kib": 7888,
+            "retained_text_thumbnail_bytes": 0,
+            "visited_chats": 0
+          },
+          {
+            "cached_conversations": 12,
+            "cached_messages": 3600,
+            "resident_kib": 21152,
+            "retained_text_thumbnail_bytes": 11059200,
+            "visited_chats": 12
+          },
+          {
+            "cached_conversations": 24,
+            "cached_messages": 7200,
+            "resident_kib": 34192,
+            "retained_text_thumbnail_bytes": 22118400,
+            "visited_chats": 24
+          },
+          {
+            "cached_conversations": 36,
+            "cached_messages": 10800,
+            "resident_kib": 47232,
+            "retained_text_thumbnail_bytes": 33177600,
+            "visited_chats": 36
+          },
+          {
+            "cached_conversations": 48,
+            "cached_messages": 14400,
+            "resident_kib": 60208,
+            "retained_text_thumbnail_bytes": 44236800,
+            "visited_chats": 48
+          },
+          {
+            "cached_conversations": 60,
+            "cached_messages": 18000,
+            "resident_kib": 73248,
+            "retained_text_thumbnail_bytes": 55296000,
+            "visited_chats": 60
+          },
+          {
+            "cached_conversations": 72,
+            "cached_messages": 21600,
+            "resident_kib": 86240,
+            "retained_text_thumbnail_bytes": 66355200,
+            "visited_chats": 72
+          },
+          {
+            "cached_conversations": 84,
+            "cached_messages": 25200,
+            "resident_kib": 99232,
+            "retained_text_thumbnail_bytes": 77414400,
+            "visited_chats": 84
+          },
+          {
+            "cached_conversations": 96,
+            "cached_messages": 28800,
+            "resident_kib": 112224,
+            "retained_text_thumbnail_bytes": 88473600,
+            "visited_chats": 96
+          }
+        ],
+        "workload": "visit 96 synthetic conversations with 300 messages each; 1024-byte text/caption per message and an 8192-byte thumbnail every fourth message"
+      },
+      {
+        "note": "headless application state only; no renderer, fonts, real account or archive; cache reload correctness is covered separately by SQLite regression tests",
+        "samples": [
+          {
+            "cached_conversations": 0,
+            "cached_messages": 0,
+            "resident_kib": 7888,
+            "retained_text_thumbnail_bytes": 0,
+            "visited_chats": 0
+          },
+          {
+            "cached_conversations": 12,
+            "cached_messages": 3600,
+            "resident_kib": 21200,
+            "retained_text_thumbnail_bytes": 11059200,
+            "visited_chats": 12
+          },
+          {
+            "cached_conversations": 24,
+            "cached_messages": 7200,
+            "resident_kib": 34272,
+            "retained_text_thumbnail_bytes": 22118400,
+            "visited_chats": 24
+          },
+          {
+            "cached_conversations": 36,
+            "cached_messages": 10800,
+            "resident_kib": 47280,
+            "retained_text_thumbnail_bytes": 33177600,
+            "visited_chats": 36
+          },
+          {
+            "cached_conversations": 48,
+            "cached_messages": 14400,
+            "resident_kib": 60288,
+            "retained_text_thumbnail_bytes": 44236800,
+            "visited_chats": 48
+          },
+          {
+            "cached_conversations": 60,
+            "cached_messages": 18000,
+            "resident_kib": 73312,
+            "retained_text_thumbnail_bytes": 55296000,
+            "visited_chats": 60
+          },
+          {
+            "cached_conversations": 72,
+            "cached_messages": 21600,
+            "resident_kib": 86304,
+            "retained_text_thumbnail_bytes": 66355200,
+            "visited_chats": 72
+          },
+          {
+            "cached_conversations": 84,
+            "cached_messages": 25200,
+            "resident_kib": 99280,
+            "retained_text_thumbnail_bytes": 77414400,
+            "visited_chats": 84
+          },
+          {
+            "cached_conversations": 96,
+            "cached_messages": 28800,
+            "resident_kib": 112304,
+            "retained_text_thumbnail_bytes": 88473600,
+            "visited_chats": 96
+          }
+        ],
+        "workload": "visit 96 synthetic conversations with 300 messages each; 1024-byte text/caption per message and an 8192-byte thumbnail every fourth message"
+      },
+      {
+        "note": "headless application state only; no renderer, fonts, real account or archive; cache reload correctness is covered separately by SQLite regression tests",
+        "samples": [
+          {
+            "cached_conversations": 0,
+            "cached_messages": 0,
+            "resident_kib": 7872,
+            "retained_text_thumbnail_bytes": 0,
+            "visited_chats": 0
+          },
+          {
+            "cached_conversations": 12,
+            "cached_messages": 3600,
+            "resident_kib": 21152,
+            "retained_text_thumbnail_bytes": 11059200,
+            "visited_chats": 12
+          },
+          {
+            "cached_conversations": 24,
+            "cached_messages": 7200,
+            "resident_kib": 34272,
+            "retained_text_thumbnail_bytes": 22118400,
+            "visited_chats": 24
+          },
+          {
+            "cached_conversations": 36,
+            "cached_messages": 10800,
+            "resident_kib": 47280,
+            "retained_text_thumbnail_bytes": 33177600,
+            "visited_chats": 36
+          },
+          {
+            "cached_conversations": 48,
+            "cached_messages": 14400,
+            "resident_kib": 60320,
+            "retained_text_thumbnail_bytes": 44236800,
+            "visited_chats": 48
+          },
+          {
+            "cached_conversations": 60,
+            "cached_messages": 18000,
+            "resident_kib": 73296,
+            "retained_text_thumbnail_bytes": 55296000,
+            "visited_chats": 60
+          },
+          {
+            "cached_conversations": 72,
+            "cached_messages": 21600,
+            "resident_kib": 86304,
+            "retained_text_thumbnail_bytes": 66355200,
+            "visited_chats": 72
+          },
+          {
+            "cached_conversations": 84,
+            "cached_messages": 25200,
+            "resident_kib": 99296,
+            "retained_text_thumbnail_bytes": 77414400,
+            "visited_chats": 84
+          },
+          {
+            "cached_conversations": 96,
+            "cached_messages": 28800,
+            "resident_kib": 112288,
+            "retained_text_thumbnail_bytes": 88473600,
+            "visited_chats": 96
+          }
+        ],
+        "workload": "visit 96 synthetic conversations with 300 messages each; 1024-byte text/caption per message and an 8192-byte thumbnail every fourth message"
+      }
+    ],
+    "after": [
+      {
+        "note": "headless application state only; no renderer, fonts, real account or archive; cache reload correctness is covered separately by SQLite regression tests",
+        "samples": [
+          {
+            "cached_conversations": 0,
+            "cached_messages": 0,
+            "resident_kib": 7952,
+            "retained_text_thumbnail_bytes": 0,
+            "visited_chats": 0
+          },
+          {
+            "cached_conversations": 9,
+            "cached_messages": 2700,
+            "resident_kib": 19136,
+            "retained_text_thumbnail_bytes": 8294400,
+            "visited_chats": 12
+          },
+          {
+            "cached_conversations": 9,
+            "cached_messages": 2700,
+            "resident_kib": 19248,
+            "retained_text_thumbnail_bytes": 8294400,
+            "visited_chats": 24
+          },
+          {
+            "cached_conversations": 9,
+            "cached_messages": 2700,
+            "resident_kib": 19296,
+            "retained_text_thumbnail_bytes": 8294400,
+            "visited_chats": 36
+          },
+          {
+            "cached_conversations": 9,
+            "cached_messages": 2700,
+            "resident_kib": 19328,
+            "retained_text_thumbnail_bytes": 8294400,
+            "visited_chats": 48
+          },
+          {
+            "cached_conversations": 9,
+            "cached_messages": 2700,
+            "resident_kib": 19376,
+            "retained_text_thumbnail_bytes": 8294400,
+            "visited_chats": 60
+          },
+          {
+            "cached_conversations": 9,
+            "cached_messages": 2700,
+            "resident_kib": 19392,
+            "retained_text_thumbnail_bytes": 8294400,
+            "visited_chats": 72
+          },
+          {
+            "cached_conversations": 9,
+            "cached_messages": 2700,
+            "resident_kib": 19424,
+            "retained_text_thumbnail_bytes": 8294400,
+            "visited_chats": 84
+          },
+          {
+            "cached_conversations": 9,
+            "cached_messages": 2700,
+            "resident_kib": 19440,
+            "retained_text_thumbnail_bytes": 8294400,
+            "visited_chats": 96
+          }
+        ],
+        "workload": "visit 96 synthetic conversations with 300 messages each; 1024-byte text/caption per message and an 8192-byte thumbnail every fourth message"
+      },
+      {
+        "note": "headless application state only; no renderer, fonts, real account or archive; cache reload correctness is covered separately by SQLite regression tests",
+        "samples": [
+          {
+            "cached_conversations": 0,
+            "cached_messages": 0,
+            "resident_kib": 8000,
+            "retained_text_thumbnail_bytes": 0,
+            "visited_chats": 0
+          },
+          {
+            "cached_conversations": 9,
+            "cached_messages": 2700,
+            "resident_kib": 19216,
+            "retained_text_thumbnail_bytes": 8294400,
+            "visited_chats": 12
+          },
+          {
+            "cached_conversations": 9,
+            "cached_messages": 2700,
+            "resident_kib": 20848,
+            "retained_text_thumbnail_bytes": 8294400,
+            "visited_chats": 24
+          },
+          {
+            "cached_conversations": 9,
+            "cached_messages": 2700,
+            "resident_kib": 20880,
+            "retained_text_thumbnail_bytes": 8294400,
+            "visited_chats": 36
+          },
+          {
+            "cached_conversations": 9,
+            "cached_messages": 2700,
+            "resident_kib": 20896,
+            "retained_text_thumbnail_bytes": 8294400,
+            "visited_chats": 48
+          },
+          {
+            "cached_conversations": 9,
+            "cached_messages": 2700,
+            "resident_kib": 20928,
+            "retained_text_thumbnail_bytes": 8294400,
+            "visited_chats": 60
+          },
+          {
+            "cached_conversations": 9,
+            "cached_messages": 2700,
+            "resident_kib": 20960,
+            "retained_text_thumbnail_bytes": 8294400,
+            "visited_chats": 72
+          },
+          {
+            "cached_conversations": 9,
+            "cached_messages": 2700,
+            "resident_kib": 20960,
+            "retained_text_thumbnail_bytes": 8294400,
+            "visited_chats": 84
+          },
+          {
+            "cached_conversations": 9,
+            "cached_messages": 2700,
+            "resident_kib": 20976,
+            "retained_text_thumbnail_bytes": 8294400,
+            "visited_chats": 96
+          }
+        ],
+        "workload": "visit 96 synthetic conversations with 300 messages each; 1024-byte text/caption per message and an 8192-byte thumbnail every fourth message"
+      },
+      {
+        "note": "headless application state only; no renderer, fonts, real account or archive; cache reload correctness is covered separately by SQLite regression tests",
+        "samples": [
+          {
+            "cached_conversations": 0,
+            "cached_messages": 0,
+            "resident_kib": 7968,
+            "retained_text_thumbnail_bytes": 0,
+            "visited_chats": 0
+          },
+          {
+            "cached_conversations": 9,
+            "cached_messages": 2700,
+            "resident_kib": 19152,
+            "retained_text_thumbnail_bytes": 8294400,
+            "visited_chats": 12
+          },
+          {
+            "cached_conversations": 9,
+            "cached_messages": 2700,
+            "resident_kib": 19296,
+            "retained_text_thumbnail_bytes": 8294400,
+            "visited_chats": 24
+          },
+          {
+            "cached_conversations": 9,
+            "cached_messages": 2700,
+            "resident_kib": 19328,
+            "retained_text_thumbnail_bytes": 8294400,
+            "visited_chats": 36
+          },
+          {
+            "cached_conversations": 9,
+            "cached_messages": 2700,
+            "resident_kib": 19792,
+            "retained_text_thumbnail_bytes": 8294400,
+            "visited_chats": 48
+          },
+          {
+            "cached_conversations": 9,
+            "cached_messages": 2700,
+            "resident_kib": 20320,
+            "retained_text_thumbnail_bytes": 8294400,
+            "visited_chats": 60
+          },
+          {
+            "cached_conversations": 9,
+            "cached_messages": 2700,
+            "resident_kib": 20336,
+            "retained_text_thumbnail_bytes": 8294400,
+            "visited_chats": 72
+          },
+          {
+            "cached_conversations": 9,
+            "cached_messages": 2700,
+            "resident_kib": 20352,
+            "retained_text_thumbnail_bytes": 8294400,
+            "visited_chats": 84
+          },
+          {
+            "cached_conversations": 9,
+            "cached_messages": 2700,
+            "resident_kib": 20368,
+            "retained_text_thumbnail_bytes": 8294400,
+            "visited_chats": 96
+          }
+        ],
+        "workload": "visit 96 synthetic conversations with 300 messages each; 1024-byte text/caption per message and an 8192-byte thumbnail every fourth message"
+      },
+      {
+        "note": "headless application state only; no renderer, fonts, real account or archive; cache reload correctness is covered separately by SQLite regression tests",
+        "samples": [
+          {
+            "cached_conversations": 0,
+            "cached_messages": 0,
+            "resident_kib": 7968,
+            "retained_text_thumbnail_bytes": 0,
+            "visited_chats": 0
+          },
+          {
+            "cached_conversations": 9,
+            "cached_messages": 2700,
+            "resident_kib": 19216,
+            "retained_text_thumbnail_bytes": 8294400,
+            "visited_chats": 12
+          },
+          {
+            "cached_conversations": 9,
+            "cached_messages": 2700,
+            "resident_kib": 19344,
+            "retained_text_thumbnail_bytes": 8294400,
+            "visited_chats": 24
+          },
+          {
+            "cached_conversations": 9,
+            "cached_messages": 2700,
+            "resident_kib": 19376,
+            "retained_text_thumbnail_bytes": 8294400,
+            "visited_chats": 36
+          },
+          {
+            "cached_conversations": 9,
+            "cached_messages": 2700,
+            "resident_kib": 19696,
+            "retained_text_thumbnail_bytes": 8294400,
+            "visited_chats": 48
+          },
+          {
+            "cached_conversations": 9,
+            "cached_messages": 2700,
+            "resident_kib": 19728,
+            "retained_text_thumbnail_bytes": 8294400,
+            "visited_chats": 60
+          },
+          {
+            "cached_conversations": 9,
+            "cached_messages": 2700,
+            "resident_kib": 19760,
+            "retained_text_thumbnail_bytes": 8294400,
+            "visited_chats": 72
+          },
+          {
+            "cached_conversations": 9,
+            "cached_messages": 2700,
+            "resident_kib": 19792,
+            "retained_text_thumbnail_bytes": 8294400,
+            "visited_chats": 84
+          },
+          {
+            "cached_conversations": 9,
+            "cached_messages": 2700,
+            "resident_kib": 19840,
+            "retained_text_thumbnail_bytes": 8294400,
+            "visited_chats": 96
+          }
+        ],
+        "workload": "visit 96 synthetic conversations with 300 messages each; 1024-byte text/caption per message and an 8192-byte thumbnail every fourth message"
+      },
+      {
+        "note": "headless application state only; no renderer, fonts, real account or archive; cache reload correctness is covered separately by SQLite regression tests",
+        "samples": [
+          {
+            "cached_conversations": 0,
+            "cached_messages": 0,
+            "resident_kib": 8000,
+            "retained_text_thumbnail_bytes": 0,
+            "visited_chats": 0
+          },
+          {
+            "cached_conversations": 9,
+            "cached_messages": 2700,
+            "resident_kib": 19232,
+            "retained_text_thumbnail_bytes": 8294400,
+            "visited_chats": 12
+          },
+          {
+            "cached_conversations": 9,
+            "cached_messages": 2700,
+            "resident_kib": 19360,
+            "retained_text_thumbnail_bytes": 8294400,
+            "visited_chats": 24
+          },
+          {
+            "cached_conversations": 9,
+            "cached_messages": 2700,
+            "resident_kib": 19408,
+            "retained_text_thumbnail_bytes": 8294400,
+            "visited_chats": 36
+          },
+          {
+            "cached_conversations": 9,
+            "cached_messages": 2700,
+            "resident_kib": 20864,
+            "retained_text_thumbnail_bytes": 8294400,
+            "visited_chats": 48
+          },
+          {
+            "cached_conversations": 9,
+            "cached_messages": 2700,
+            "resident_kib": 20896,
+            "retained_text_thumbnail_bytes": 8294400,
+            "visited_chats": 60
+          },
+          {
+            "cached_conversations": 9,
+            "cached_messages": 2700,
+            "resident_kib": 20928,
+            "retained_text_thumbnail_bytes": 8294400,
+            "visited_chats": 72
+          },
+          {
+            "cached_conversations": 9,
+            "cached_messages": 2700,
+            "resident_kib": 20976,
+            "retained_text_thumbnail_bytes": 8294400,
+            "visited_chats": 84
+          },
+          {
+            "cached_conversations": 9,
+            "cached_messages": 2700,
+            "resident_kib": 20992,
+            "retained_text_thumbnail_bytes": 8294400,
+            "visited_chats": 96
+          }
+        ],
+        "workload": "visit 96 synthetic conversations with 300 messages each; 1024-byte text/caption per message and an 8192-byte thumbnail every fourth message"
+      }
+    ]
+  }
+}

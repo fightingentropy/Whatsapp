@@ -33,6 +33,12 @@ Upstream releases and performance numbers describe the upstream app, not this fo
   the full message range registered for cross-message copying.
 - The main and archived chat lists copy only visible rows for drawing, avoiding
   repeated copies of offscreen chat previews and group membership on every repaint.
+- Inactive conversation history keeps up to eight chats within an estimated
+  32 MiB message/layout budget. Open chats and active loads, sends and downloads
+  are protected and can exceed that budget. Evicted histories reload from SQLite;
+  drafts and phone-history backoff survive. Associated thumbnail and unshared
+  image-loader allocations are released, while downloaded files stay on disk.
+  Renderer, codec and protected-chat allocations are additional memory.
 - Animated media keeps one GPU texture per clip and uploads the current frame
   as needed. Decoded pixels have a 128 MiB cache budget, unseen clips expire
   after 20 seconds, and preview width and height are bounded at 320 pixels.
