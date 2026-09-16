@@ -814,6 +814,41 @@ pub fn long_history(app: &mut App, count: usize) {
     app.scroll_to_bottom = true;
 }
 
+/// Synthetic large chat list for sidebar probes. Half of the added chats are
+/// groups with 64 members; no account or archive data is used.
+pub fn many_chats(app: &mut App, count: usize) {
+    for index in app.chats.len()..count {
+        let group = index % 2 == 0;
+        let mut chat = Chat::new(
+            if group {
+                format!("120363000{index:06}@g.us")
+            } else {
+                format!("155500{index:05}@s.whatsapp.net")
+            },
+            format!(
+                "{} {index:05}",
+                if group { "Project group" } else { "Contact" }
+            ),
+        );
+        chat.last_activity = 1_750_000_000 - index as i64 * 60;
+        chat.archived = index % 11 == 0;
+        chat.unread = u32::from(index % 7 == 0);
+        chat.last = Some(crate::model::LastMessage {
+            from_me: false,
+            sender: "15550002222@s.whatsapp.net".into(),
+            sender_name: Some("Sam".into()),
+            summary: "The project notes are ready. See https://example.com/notes 👋".into(),
+            status: Delivery::None,
+        });
+        if group {
+            chat.participants = (0..64)
+                .map(|member| format!("155501{member:05}@s.whatsapp.net"))
+                .collect();
+        }
+        app.chats.push(chat);
+    }
+}
+
 /// Applies the UI state selected by `--demo-page`.
 pub fn apply_flags(app: &mut App, page: Option<&str>) {
     let Some(page) = page else {
@@ -823,6 +858,7 @@ pub fn apply_flags(app: &mut App, page: Option<&str>) {
         match part {
             "chat" | "" => {}
             "long" => long_history(app, 10_000),
+            "many-chats" => many_chats(app, 10_000),
             "empty" => app.open_chat = None,
             "settings" => app.page = Page::Settings,
             "update" => {
@@ -1189,6 +1225,7 @@ mod tests {
             render(&mut app, &ctx);
         }
         for page in [
+            "many-chats",
             "empty",
             "settings",
             "update",

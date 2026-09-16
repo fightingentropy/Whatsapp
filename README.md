@@ -31,6 +31,8 @@ Upstream releases and performance numbers describe the upstream app, not this fo
   Search jumps, history insertion, edits and resizing preserve the reading position.
   Rows are remeasured when their content or layout changes; text selection keeps
   the full message range registered for cross-message copying.
+- The main and archived chat lists copy only visible rows for drawing, avoiding
+  repeated copies of offscreen chat previews and group membership on every repaint.
 - Animated media keeps one GPU texture per clip and uploads the current frame
   as needed. Decoded pixels have a 128 MiB cache budget, unseen clips expire
   after 20 seconds, and preview width and height are bounded at 320 pixels.

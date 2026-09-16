@@ -1,5 +1,53 @@
 # Apple Silicon performance work
 
+## Sidebar copies: 16 September 2026
+
+The main and archived lists already draw only the rows in the viewport, but
+previously cloned every matching `Chat` first, including every group member ID.
+They now sort lightweight indices and clone only the rows requested by egui.
+Ordering is still recomputed from current state; no invalidation cache was added.
+Pinned order, archive filtering, search matching and keyboard reveal are preserved.
+The separate search-results view is unchanged.
+
+On the Apple M4 Pro, macOS 27.0 (26A428), pinned Rust 1.98.0, release/M1 baseline:
+
+- **1,000 chats:** median UI pass **0.612 ms → 0.093 ms**; median run p95
+  **0.671 ms → 0.118 ms**.
+- **10,000 chats:** median UI pass **5.549 ms → 0.134 ms**; median run p95
+  **5.821 ms → 0.166 ms**.
+
+Five runs per size/build used identical synthetic data: the usual demo chats,
+then alternating direct chats and groups with 64 members, with every eleventh
+added chat archived. Each run used an 1180×780-point view at two pixels/point,
+eight warmup passes and 240 unchanged passes. The baseline was `916c198` with
+the same fixture/probe added, measured before the changed build. Builds did not
+run during measurement; before/after runs were not interleaved. Raw samples and
+source hashes are in [the sidebar measurement file](benchmarks/apple-silicon-sidebar-2026-09-16.json).
+
+These are whole-demo headless egui UI-pass CPU timings, excluding native rendering,
+tessellation, GPU work and presentation. The app remains event-driven and does
+not continuously repaint while idle. The measurements show lower work per repaint
+in this synthetic workload, not a whole-app speedup, energy saving or RSS reduction.
+Filtering, sorting and archive counting still visit all chats; this is not a
+chat-order cache or an inactive-conversation eviction policy.
+
+Formatting, both strict Clippy variants and rustdoc passed locally. Default
+features passed **194 tests**, all features **196 tests** (195 library + 1 binary),
+with 7 explicitly ignored in each suite. Regression coverage includes clicking
+the correct group after reordering/archiving, stable pinned/timestamp order,
+case-insensitive and phone search, and keyboard navigation to offscreen rows.
+The large-chat demo is included in headless layout coverage and the native macOS
+CI screenshot smoke test.
+
+Reproduce the current workload with no linked account:
+
+```sh
+cargo run --locked --release --features demo --example sidebar_probe > sidebar.json
+```
+
+For the baseline, use the same fixture/probe with `src/app.rs` and
+`src/ui/chats.rs` from `916c198` in a separate checkout.
+
 ## Scrolling and streaming: 16 September 2026
 
 Apple M4 Pro, macOS 27.0 (26A428), pinned Rust 1.98.0, release profile with
