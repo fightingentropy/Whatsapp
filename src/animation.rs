@@ -800,7 +800,7 @@ mod tests {
     #[test]
     fn a_bounded_stream_delivers_before_eof_and_cancels_a_blocked_decoder() {
         use std::sync::atomic::{AtomicUsize, Ordering};
-        let path = std::env::temp_dir().join(format!("zapfast-stream-{}.gif", std::process::id()));
+        let path = std::env::temp_dir().join(format!("whatsapp-stream-{}.gif", std::process::id()));
         {
             let mut encoder =
                 image::codecs::gif::GifEncoder::new(std::fs::File::create(&path).unwrap());
@@ -870,7 +870,7 @@ mod tests {
             .add_frame(&square(40, 40, [0, 255, 0, 255]), 100)
             .expect("frame");
         let webp = encoder.finalize(200).expect("finalizes");
-        let dir = std::env::temp_dir().join(format!("zapfast-ghost-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("whatsapp-ghost-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("dir");
         let path = dir.join("moving.webp");
         std::fs::write(&path, &webp).expect("writes");
@@ -887,7 +887,7 @@ mod tests {
     #[test]
     fn animated_webp_decodes_into_frames() {
         // Two frames 100 ms apart.
-        let dir = std::env::temp_dir().join(format!("zapfast-anim-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("whatsapp-anim-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("dir");
         let path = dir.join("two.gif");
         {
@@ -917,7 +917,7 @@ mod tests {
         if !can_play_video() {
             return;
         }
-        let dir = std::env::temp_dir().join(format!("zapfast-mp4-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("whatsapp-mp4-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("dir");
         let path = dir.join("clip.mp4");
         let made = Command::new("ffmpeg")
@@ -948,7 +948,7 @@ mod tests {
 
     #[test]
     fn a_still_webp_is_not_an_animation() {
-        let dir = std::env::temp_dir().join(format!("zapfast-still-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("whatsapp-still-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("dir");
         let path = dir.join("still.webp");
         image::RgbaImage::from_pixel(4, 4, image::Rgba([1, 2, 3, 255]))

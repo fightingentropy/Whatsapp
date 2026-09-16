@@ -97,10 +97,10 @@ fn deliver(
     }
     let mut notification = notify_rust::Notification::new();
     notification
-        .appname("ZapFast Silicon")
+        .appname("Whatsapp")
         .summary(title)
         .body(body)
-        .icon("zapfast")
+        .icon("whatsapp")
         .action("default", "Open");
     if let Some(picture) = picture {
         notification.image_path(&picture.to_string_lossy());
@@ -152,10 +152,7 @@ fn deliver(
         return;
     }
     let mut notification = notify_rust::Notification::new();
-    notification
-        .appname("ZapFast Silicon")
-        .summary(title)
-        .body(body);
+    notification.appname("Whatsapp").summary(title).body(body);
     // Windows uses the image; macOS always uses the app icon.
     if let Some(picture) = picture {
         notification.image_path(&picture.to_string_lossy());
@@ -214,7 +211,7 @@ mod tests {
         let mut notifications = Notifications::default();
         notifications.show(
             "Ada Lovelace".into(),
-            "A test from ZapFast, with a picture".into(),
+            "A test from Whatsapp, with a picture".into(),
             picture,
             "test".into(),
             Default::default(),

@@ -2,7 +2,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
-use zapfast::background::{wait, wake};
+use whatsapp::background::{wait, wake};
 
 fn main() {
     // A signal before source creation must not disappear.

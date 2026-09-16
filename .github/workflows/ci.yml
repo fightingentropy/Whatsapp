@@ -49,22 +49,26 @@ jobs:
         timeout-minutes: 3
         run: |
           cargo build --locked --features demo
-          binary=target/aarch64-apple-darwin/debug/zapfast
+          binary=target/aarch64-apple-darwin/debug/whatsapp
           test "$(lipo -archs "$binary")" = arm64
-          "$binary" --demo --demo-shot "$RUNNER_TEMP/zapfast-content.png"
-          test -s "$RUNNER_TEMP/zapfast-content.png"
-          "$binary" --demo --demo-page video --demo-shot "$RUNNER_TEMP/zapfast-video.png"
-          test -s "$RUNNER_TEMP/zapfast-video.png"
-          "$binary" --demo --demo-page long --demo-shot "$RUNNER_TEMP/zapfast-long-history.png"
-          test -s "$RUNNER_TEMP/zapfast-long-history.png"
-          "$binary" --demo --demo-page many-chats --demo-shot "$RUNNER_TEMP/zapfast-many-chats.png"
-          test -s "$RUNNER_TEMP/zapfast-many-chats.png"
-          "$binary" --demo --demo-page login-expired --demo-shot "$RUNNER_TEMP/zapfast-login-expired.png"
-          test -s "$RUNNER_TEMP/zapfast-login-expired.png"
+          "$binary" --demo --demo-macos --demo-shot "$RUNNER_TEMP/whatsapp-content.png"
+          test -s "$RUNNER_TEMP/whatsapp-content.png"
+          "$binary" --demo --demo-macos --demo-page video --demo-shot "$RUNNER_TEMP/whatsapp-video.png"
+          test -s "$RUNNER_TEMP/whatsapp-video.png"
+          "$binary" --demo --demo-macos --demo-page long --demo-shot "$RUNNER_TEMP/whatsapp-long-history.png"
+          test -s "$RUNNER_TEMP/whatsapp-long-history.png"
+          "$binary" --demo --demo-macos --demo-page many-chats --demo-shot "$RUNNER_TEMP/whatsapp-many-chats.png"
+          test -s "$RUNNER_TEMP/whatsapp-many-chats.png"
+          "$binary" --demo --demo-macos --demo-page login-expired --demo-shot "$RUNNER_TEMP/whatsapp-login-expired.png"
+          test -s "$RUNNER_TEMP/whatsapp-login-expired.png"
+          "$binary" --demo --demo-macos --demo-page login --demo-size 720x480 --demo-shot "$RUNNER_TEMP/whatsapp-login-compact.png"
+          test -s "$RUNNER_TEMP/whatsapp-login-compact.png"
+          "$binary" --demo --demo-macos --demo-page about --demo-shot "$RUNNER_TEMP/whatsapp-about.png"
+          test -s "$RUNNER_TEMP/whatsapp-about.png"
       - name: Main-thread background wake test
         run: cargo run --locked --example background_probe
       - name: macOS preview
         uses: actions/upload-artifact@v7
         with:
           name: macos-preview
-          path: ${{ runner.temp }}/zapfast-*.png
+          path: ${{ runner.temp }}/whatsapp-*.png

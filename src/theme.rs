@@ -39,25 +39,25 @@ impl Palette {
     pub fn dark() -> Self {
         Self {
             dark: true,
-            window: Color32::from_rgb(0x0b, 0x14, 0x1a),
-            panel: Color32::from_rgb(0x11, 0x1b, 0x21),
-            surface: Color32::from_rgb(0x20, 0x2c, 0x33),
-            surface_hover: Color32::from_rgb(0x2a, 0x39, 0x42),
-            surface_active: Color32::from_rgb(0x35, 0x44, 0x4d),
-            outline: Color32::from_rgb(0x22, 0x2d, 0x34),
-            text: Color32::from_rgb(0xe9, 0xed, 0xef),
-            secondary: Color32::from_rgb(0x86, 0x96, 0xa0),
-            dim: Color32::from_rgb(0x66, 0x77, 0x81),
-            accent: Color32::from_rgb(0x00, 0xa8, 0x84),
-            accent_hover: Color32::from_rgb(0x06, 0xcf, 0x9c),
-            on_accent: Color32::from_rgb(0x0b, 0x14, 0x1a),
+            window: Color32::from_rgb(0x12, 0x14, 0x16),
+            panel: Color32::from_rgb(0x1b, 0x1e, 0x21),
+            surface: Color32::from_rgb(0x26, 0x2a, 0x2d),
+            surface_hover: Color32::from_rgb(0x30, 0x35, 0x38),
+            surface_active: Color32::from_rgb(0x39, 0x40, 0x43),
+            outline: Color32::from_rgb(0x2c, 0x31, 0x34),
+            text: Color32::from_rgb(0xed, 0xef, 0xf0),
+            secondary: Color32::from_rgb(0x9a, 0xa3, 0xa9),
+            dim: Color32::from_rgb(0x77, 0x82, 0x89),
+            accent: Color32::from_rgb(0x46, 0xd6, 0x8a),
+            accent_hover: Color32::from_rgb(0x64, 0xe3, 0xa0),
+            on_accent: Color32::from_rgb(0x12, 0x14, 0x16),
             danger: Color32::from_rgb(0xf1, 0x5c, 0x6d),
             warning: Color32::from_rgb(0xff, 0xd2, 0x79),
-            overlay: Color32::from_rgb(0x23, 0x31, 0x38),
+            overlay: Color32::from_rgb(0x26, 0x2b, 0x2e),
             shadow: Color32::from_black_alpha(140),
-            chat: Color32::from_rgb(0x0b, 0x14, 0x1a),
-            bubble_in: Color32::from_rgb(0x20, 0x2c, 0x33),
-            bubble_out: Color32::from_rgb(0x00, 0x5c, 0x4b),
+            chat: Color32::from_rgb(0x12, 0x14, 0x16),
+            bubble_in: Color32::from_rgb(0x26, 0x2a, 0x2d),
+            bubble_out: Color32::from_rgb(0x16, 0x4c, 0x3a),
             link: Color32::from_rgb(0x53, 0xbd, 0xeb),
             read: Color32::from_rgb(0x53, 0xbd, 0xeb),
         }
@@ -322,7 +322,7 @@ macro_rules! icons {
     ($($variant:ident => $file:literal),* $(,)?) => {
         &[$((
             Icon::$variant,
-            concat!("bytes://zapfast-icon-", $file, ".svg"),
+            concat!("bytes://whatsapp-icon-", $file, ".svg"),
             include_bytes!(concat!("../assets/icons/", $file, ".svg")).as_slice(),
         )),*]
     };
@@ -561,17 +561,13 @@ pub fn circle_button(
 }
 
 /// Draws the app logo.
-pub fn logo(ui: &egui::Ui, center: egui::Pos2, diameter: f32, disc: Color32, glyph: Color32) {
-    ui.painter().circle_filled(center, diameter / 2.0, disc);
-    // Match `packaging/icons/zapfast.svg`.
-    let icon_size = diameter * 0.56;
-    let icon_rect = egui::Rect::from_center_size(
-        center - Vec2::new(0.0, diameter * 0.02),
-        Vec2::splat(icon_size),
-    );
-    Icon::MessageCircle
-        .image(glyph, icon_size)
-        .paint_at(ui, icon_rect);
+pub fn logo(ui: &egui::Ui, center: egui::Pos2, diameter: f32) {
+    egui::Image::new(egui::include_image!("../packaging/macos/icon-1024.png"))
+        .fit_to_exact_size(Vec2::splat(diameter))
+        .paint_at(
+            ui,
+            egui::Rect::from_center_size(center, Vec2::splat(diameter)),
+        );
 }
 
 /// A pill-shaped text button: filled for the primary action, outlined otherwise.

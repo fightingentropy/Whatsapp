@@ -1,4 +1,4 @@
-//! Where ZapFast keeps its files.
+//! Where Whatsapp keeps its files.
 //!
 //! Configuration, session state, and caches use separate standard platform
 //! directories. Clearing a cache does not remove device keys.
@@ -16,14 +16,14 @@ pub struct AppDirs {
 
 impl AppDirs {
     pub fn discover() -> Self {
-        match Self::of("zapfast-silicon") {
+        match Self::of("whatsapp") {
             Some(dirs) => dirs,
             None => {
                 let fallback = std::env::current_dir().unwrap_or_default();
                 Self {
-                    config: fallback.join("zapfast-silicon-config"),
-                    state: fallback.join("zapfast-silicon-state"),
-                    cache: fallback.join("zapfast-silicon-cache"),
+                    config: fallback.join("whatsapp-config"),
+                    state: fallback.join("whatsapp-state"),
+                    cache: fallback.join("whatsapp-cache"),
                 }
             }
         }
@@ -42,18 +42,18 @@ impl AppDirs {
         })
     }
 
-    /// Adopts earlier names, newest first, without replacing existing data.
+    /// Moves this app's previous identity without replacing existing data.
+    /// Never adopts an upstream ZapFast or FastSapp account.
     /// Call only after acquiring the instance guard, and never for demo runs.
     pub fn adopt_previous_names(&self) -> std::io::Result<()> {
-        for name in ["fastsapp", "fastwhatsapp"] {
-            if let Some(old) = Self::of(name) {
-                self.adopt(&old)?;
-            }
-            if let (Some(from), Some(to)) =
-                (eframe::storage_dir(name), eframe::storage_dir("zapfast"))
-            {
-                adopt_directory(&from, &to)?;
-            }
+        if let Some(old) = Self::of("zapfast-silicon") {
+            self.adopt(&old)?;
+        }
+        if let (Some(from), Some(to)) = (
+            eframe::storage_dir("zapfast-silicon"),
+            eframe::storage_dir("whatsapp"),
+        ) {
+            adopt_directory(&from, &to)?;
         }
         Ok(())
     }
@@ -95,7 +95,7 @@ impl AppDirs {
 
     /// Current-run log, replaced at startup.
     pub fn log_file(&self) -> PathBuf {
-        self.state.join("zapfast.log")
+        self.state.join("whatsapp.log")
     }
 
     /// Panic log written before process exit.
@@ -159,7 +159,7 @@ mod tests {
 
     fn root(name: &str) -> PathBuf {
         let root =
-            std::env::temp_dir().join(format!("zapfast-paths-{name}-{}", std::process::id()));
+            std::env::temp_dir().join(format!("whatsapp-paths-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         root
@@ -167,10 +167,10 @@ mod tests {
 
     #[test]
     fn rename_preserves_session_archive_settings_and_cached_files() {
-        for name in ["fastsapp", "fastwhatsapp"] {
+        for name in ["zapfast-silicon"] {
             let root = root(name);
             let old = AppDirs::under(&root.join(name));
-            let new = AppDirs::under(&root.join("zapfast"));
+            let new = AppDirs::under(&root.join("whatsapp"));
             old.ensure().unwrap();
             for path in [
                 old.settings_file(),
@@ -207,9 +207,9 @@ mod tests {
     #[test]
     fn newest_data_wins_without_merging_archives() {
         let root = root("precedence");
-        let new = AppDirs::under(&root.join("zapfast"));
-        let recent = AppDirs::under(&root.join("fastsapp"));
-        let oldest = AppDirs::under(&root.join("fastwhatsapp"));
+        let new = AppDirs::under(&root.join("whatsapp"));
+        let recent = AppDirs::under(&root.join("zapfast-silicon"));
+        let oldest = AppDirs::under(&root.join("unrelated"));
         recent.ensure().unwrap();
         oldest.ensure().unwrap();
         std::fs::create_dir_all(&new.config).unwrap();

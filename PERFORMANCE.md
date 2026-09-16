@@ -1,5 +1,8 @@
 # Apple Silicon performance work
 
+The project is now named **Whatsapp**. Historical runs below retain the name,
+commit and artifact paths used at measurement time.
+
 ## Inactive conversation memory: 16 September 2026
 
 Inactive histories now retain at most eight chats within an estimated 32 MiB

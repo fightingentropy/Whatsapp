@@ -2,17 +2,21 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use zapfast::{app, backend, paths, settings, single_instance};
+use whatsapp::{app, backend, paths, settings, single_instance};
 
 use clap::Parser;
 
+// env_logger uses target prefixes: `whatsapp=info` also matches the protocol
+// crate `whatsapp_rust`. Keep its potentially sensitive diagnostics at warn.
+const DEFAULT_LOG_FILTER: &str = "warn,whatsapp=info,whatsapp_rust=warn";
+
 /// A fast, native WhatsApp client.
 #[derive(Debug, Parser)]
-#[command(name = "zapfast", version, about)]
+#[command(name = "whatsapp", version, about)]
 struct Cli {
     /// Native rendering backend (Metal requires a build with --features metal).
     #[arg(long, value_enum, default_value = "open-gl")]
-    renderer: zapfast::renderer::Backend,
+    renderer: whatsapp::renderer::Backend,
     /// Log more from the WhatsApp library.
     #[arg(short, long)]
     verbose: bool,
@@ -94,27 +98,35 @@ fn main() -> eframe::Result<()> {
         match single_instance::acquire(&waker) {
             single_instance::Outcome::Only(guard) => Some(guard),
             single_instance::Outcome::Surfaced => {
-                eprintln!("ZapFast Silicon is already running; asked it to show its window");
+                eprintln!("Whatsapp is already running; asked it to show its window");
                 return Ok(());
             }
         }
     };
     let default_filter = if cli.verbose {
-        "info,zapfast=debug,whatsapp_rust=debug,wacore=debug"
+        "info,whatsapp=debug,whatsapp_rust=debug,wacore=debug"
     } else {
-        "warn,zapfast=info"
+        DEFAULT_LOG_FILTER
     };
     // Keep offline demos separate from the fork's linked account and settings.
     let dirs = if demo {
         paths::AppDirs::under(&std::env::temp_dir().join(format!(
-            "zapfast-demo-{}-{}",
+            "whatsapp-demo-{}-{}",
             std::process::id(),
             jiff::Timestamp::now().as_millisecond(),
         )))
     } else {
         paths::AppDirs::discover()
     };
-    let dirs_ready = dirs.ensure();
+    // Move the whole previous profile before creating any new directories, so
+    // session keys, archive and SQLite WAL files stay together. Fail closed if
+    // migration cannot finish instead of silently starting an empty account.
+    if !demo {
+        dirs.adopt_previous_names()
+            .map_err(|error| eframe::Error::AppCreation(Box::new(error)))?;
+    }
+    dirs.ensure()
+        .map_err(|error| eframe::Error::AppCreation(Box::new(error)))?;
     let mut logger =
         env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(default_filter));
     // Write desktop-session logs to disk. Demo runs use stderr so they do not
@@ -128,9 +140,6 @@ fn main() -> eframe::Result<()> {
         }
     }
     logger.init();
-    if let Err(error) = dirs_ready {
-        log::warn!("unable to create the application directories: {error}");
-    }
     log_panics(dirs.panic_log());
     let settings = settings::Settings::load(&dirs.settings_file());
     let demo_persistence = demo.then(|| dirs.state.join("window.ron"));
@@ -146,10 +155,10 @@ fn main() -> eframe::Result<()> {
     }
     #[cfg(feature = "demo")]
     if demo {
-        zapfast::demo::populate(&mut app);
-        zapfast::demo::apply_flags(&mut app, cli.demo_page.as_deref());
+        whatsapp::demo::populate(&mut app);
+        whatsapp::demo::apply_flags(&mut app, cli.demo_page.as_deref());
         if cli.demo_tour {
-            zapfast::demo::tour::prepare(&mut app);
+            whatsapp::demo::tour::prepare(&mut app);
         }
     }
     #[cfg(feature = "demo")]
@@ -172,7 +181,7 @@ fn main() -> eframe::Result<()> {
         #[cfg(feature = "demo")]
         let benchmark_path = cli.demo_benchmark.clone();
         eframe::run_native(
-            "ZapFast Silicon",
+            "Whatsapp",
             native_options(demo_persistence.clone(), cli.renderer),
             Box::new(move |cc| {
                 #[cfg(feature = "metal")]
@@ -193,7 +202,7 @@ fn main() -> eframe::Result<()> {
                 });
                 #[cfg(feature = "demo")]
                 if cli.demo_macos {
-                    zapfast::theme::preview_macos(&cc.egui_ctx);
+                    whatsapp::theme::preview_macos(&cc.egui_ctx);
                 }
                 Ok(Box::new(Shell {
                     app: Some(app),
@@ -202,7 +211,7 @@ fn main() -> eframe::Result<()> {
                     shot: creator_shot,
                     #[cfg(feature = "demo")]
                     benchmark: benchmark_path.map(|path| {
-                        zapfast::demo::benchmark::Probe::new(
+                        whatsapp::demo::benchmark::Probe::new(
                             path,
                             cli.renderer,
                             launched,
@@ -211,7 +220,7 @@ fn main() -> eframe::Result<()> {
                     }),
                     #[cfg(feature = "demo")]
                     tour: cli.demo_tour.then(|| {
-                        zapfast::demo::tour::Tour::new(
+                        whatsapp::demo::tour::Tour::new(
                             cli.demo_tour_delay.map(std::time::Duration::from_millis),
                             creator_tour_events,
                         )
@@ -247,7 +256,7 @@ fn main() -> eframe::Result<()> {
                 }
                 app.background_wait()
             };
-            zapfast::tray::idle(delay);
+            whatsapp::tray::idle(delay);
         }
         let quit = slot
             .lock()
@@ -290,7 +299,7 @@ fn log_panics(path: std::path::PathBuf) {
         previous(info);
         let thread = std::thread::current();
         let entry = format!(
-            "{} zapfast {} on thread {:?}: {info}\n",
+            "{} whatsapp {} on thread {:?}: {info}\n",
             jiff::Timestamp::now(),
             env!("CARGO_PKG_VERSION"),
             thread.name().unwrap_or("unnamed"),
@@ -317,21 +326,13 @@ fn demo_size_arg() -> Option<[f32; 2]> {
 
 fn native_options(
     demo_persistence: Option<std::path::PathBuf>,
-    renderer: zapfast::renderer::Backend,
+    renderer: whatsapp::renderer::Backend,
 ) -> eframe::NativeOptions {
     let demo_size = demo_size_arg().unwrap_or([1180.0, 780.0]);
     let demo = demo_persistence.is_some();
     let viewport = egui::ViewportBuilder::default()
-        .with_title(if demo {
-            "ZapFast Silicon Demo"
-        } else {
-            "ZapFast Silicon"
-        })
-        .with_app_id(if demo {
-            "zapfast-silicon-demo"
-        } else {
-            "zapfast-silicon"
-        })
+        .with_title(if demo { "Whatsapp Demo" } else { "Whatsapp" })
+        .with_app_id(if demo { "whatsapp-demo" } else { "whatsapp" })
         .with_inner_size(demo_size)
         .with_min_inner_size([720.0, 480.0])
         .with_icon(app_icon())
@@ -357,9 +358,9 @@ struct Shell {
     #[cfg(feature = "demo")]
     shot: Option<Shot>,
     #[cfg(feature = "demo")]
-    tour: Option<zapfast::demo::tour::Tour>,
+    tour: Option<whatsapp::demo::tour::Tour>,
     #[cfg(feature = "demo")]
-    benchmark: Option<zapfast::demo::benchmark::Probe>,
+    benchmark: Option<whatsapp::demo::benchmark::Probe>,
 }
 
 impl Drop for Shell {
@@ -437,7 +438,7 @@ impl eframe::App for Shell {
             }
             app.background_frame(ctx);
             #[cfg(target_os = "macos")]
-            zapfast::macos::update_window(_frame, ctx, app.is_linked());
+            whatsapp::macos::update_window(_frame, ctx, app.is_linked());
         }
         #[cfg(feature = "demo")]
         {
@@ -493,26 +494,46 @@ fn app_icon() -> egui::IconData {
     {
         const SIZE: usize = 128;
         egui::IconData {
-            rgba: zapfast::util::app_icon_rgba(SIZE),
+            rgba: whatsapp::util::app_icon_rgba(SIZE),
             width: SIZE as u32,
             height: SIZE as u32,
         }
     }
 }
 
-#[cfg(all(test, feature = "demo"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
+    fn app_rename_does_not_enable_protocol_info_logs() {
+        let logger = env_logger::Builder::new()
+            .parse_filters(DEFAULT_LOG_FILTER)
+            .build();
+        let enabled = |target| {
+            log::Log::enabled(
+                &logger,
+                &log::Metadata::builder()
+                    .target(target)
+                    .level(log::Level::Info)
+                    .build(),
+            )
+        };
+        assert!(enabled("whatsapp::backend::worker"));
+        assert!(!enabled("whatsapp_rust::client"));
+        assert!(!enabled("wacore::pair"));
+    }
+
+    #[test]
+    #[cfg(feature = "demo")]
     fn tour_cli_accepts_manual_and_delayed_starts() {
-        let cli = Cli::try_parse_from(["zapfast", "--demo-tour"]).unwrap();
+        let cli = Cli::try_parse_from(["whatsapp", "--demo-tour"]).unwrap();
         assert!(cli.demo_tour);
         assert!(cli.demo_tour_delay.is_none());
         let cli =
-            Cli::try_parse_from(["zapfast", "--demo-tour", "--demo-tour-delay", "5000"]).unwrap();
+            Cli::try_parse_from(["whatsapp", "--demo-tour", "--demo-tour-delay", "5000"]).unwrap();
         assert_eq!(cli.demo_tour_delay, Some(5000));
-        assert!(Cli::try_parse_from(["zapfast", "--demo-tour-delay", "5000"]).is_err());
-        assert!(Cli::try_parse_from(["zapfast", "--demo-tour", "--demo-page", "login",]).is_err());
+        assert!(Cli::try_parse_from(["whatsapp", "--demo-tour-delay", "5000"]).is_err());
+        assert!(Cli::try_parse_from(["whatsapp", "--demo-tour", "--demo-page", "login",]).is_err());
     }
 }

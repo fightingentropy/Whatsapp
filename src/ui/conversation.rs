@@ -50,17 +50,11 @@ fn empty(app: &mut App, ui: &mut egui::Ui) {
     let palette = app.palette;
     let rect = ui.max_rect();
     let center = rect.center() - vec2(0.0, 30.0);
-    theme::logo(
-        ui,
-        center - vec2(0.0, 60.0),
-        72.0,
-        palette.surface,
-        palette.dim,
-    );
+    theme::logo(ui, center - vec2(0.0, 60.0), 88.0);
     ui.painter().text(
         center,
         Align2::CENTER_CENTER,
-        "ZapFast Silicon",
+        "Whatsapp",
         theme::bold(24.0),
         palette.text,
     );
@@ -79,7 +73,7 @@ fn empty(app: &mut App, ui: &mut egui::Ui) {
         ui.painter().text(
             center + vec2(0.0, 56.0),
             Align2::CENTER_CENTER,
-            "Ctrl+K to search · Ctrl+/ for shortcuts",
+            super::keys::label("Ctrl+K to search · Ctrl+/ for shortcuts"),
             theme::regular(12.5),
             palette.dim,
         );
@@ -117,7 +111,7 @@ fn header(app: &mut App, ui: &mut egui::Ui, chat: &Chat) {
                         18.0,
                         palette.secondary,
                         palette.text,
-                        "Show the chat list (Ctrl+B)",
+                        &super::keys::label("Show the chat list (Ctrl+B)"),
                     )
                     .clicked()
                 {
@@ -1706,7 +1700,7 @@ impl SelectionLeash {
 
 impl egui::plugin::Plugin for SelectionLeash {
     fn debug_name(&self) -> &'static str {
-        "zapfast-selection-leash"
+        "whatsapp-selection-leash"
     }
 
     fn input_hook(&mut self, _ctx: &egui::Context, input: &mut egui::RawInput) {

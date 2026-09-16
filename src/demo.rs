@@ -397,7 +397,7 @@ pub fn populate(app: &mut App) {
     app.settings.auto_download = false;
     app.link = LinkStatus::Connected;
     app.me = Some(ME.to_owned());
-    app.me_name = Some("Carmine".to_owned());
+    app.me_name = Some("Alex".to_owned());
     app.chats.clear();
     app.conversations.clear();
     let now = crate::util::now();
@@ -579,15 +579,18 @@ pub fn populate(app: &mut App) {
                 true,
                 base + 150,
                 Content::Text {
-                    text: "btw I made my own Spotify app from scratch! https://spotifast.rocks/".into(),
+                    text: "The new Mac app is ready: https://github.com/fightingentropy/Whatsapp"
+                        .into(),
                     preview: Some(LinkPreview {
-                        url: "https://spotifast.rocks/".into(),
-                        title: Some("spotifast.rocks".into()),
-                        description: Some("Spotify, native and fast. A lightweight Spotify client written in Rust with egui.".into()),
+                        url: "https://github.com/fightingentropy/Whatsapp".into(),
+                        title: Some("Whatsapp".into()),
+                        description: Some(
+                            "A small native WhatsApp companion for Apple Silicon Macs.".into(),
+                        ),
                     }),
                 },
             );
-            row.thumbnail = Some(sample_thumbnail(3));
+            row.thumbnail = Some(include_bytes!("../packaging/macos/icon-1024.png").to_vec());
             row
         },
     ];
@@ -864,7 +867,7 @@ pub fn apply_flags(app: &mut App, page: Option<&str>) {
             "update" => {
                 app.update = Some(crate::updates::Release {
                     version: "99.0.0".to_owned(),
-                    url: "https://github.com/crmne/zapfast/releases/latest".to_owned(),
+                    url: "https://github.com/fightingentropy/Whatsapp/releases/latest".to_owned(),
                 });
             }
             "shortcuts" => app.dialog = Some(Dialog::Shortcuts),
@@ -1153,7 +1156,7 @@ mod tests {
 
     pub(super) fn app() -> App {
         let root = std::env::temp_dir().join(format!(
-            "zapfast-demo-{}-{:?}",
+            "whatsapp-demo-{}-{:?}",
             std::process::id(),
             std::thread::current().id()
         ));

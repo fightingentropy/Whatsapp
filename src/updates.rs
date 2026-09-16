@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 
 const LATEST_RELEASE_URL: &str =
-    "https://api.github.com/repos/fightingentropy/zapfast/releases/latest";
+    "https://api.github.com/repos/fightingentropy/Whatsapp/releases/latest";
 
 /// Update-check interval.
 pub const CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
@@ -29,7 +29,10 @@ struct LatestRelease {
 pub fn newer_release() -> Result<Option<Release>> {
     let mut response = ureq::get(LATEST_RELEASE_URL)
         .header("Accept", "application/vnd.github+json")
-        .header("User-Agent", concat!("ZapFast/", env!("CARGO_PKG_VERSION")))
+        .header(
+            "User-Agent",
+            concat!("Whatsapp/", env!("CARGO_PKG_VERSION")),
+        )
         .call()?;
     let body = response
         .body_mut()

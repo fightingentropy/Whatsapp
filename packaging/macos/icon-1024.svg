@@ -1,16 +1,19 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
   <defs>
     <linearGradient id="face" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#08b494"/>
-      <stop offset="1" stop-color="#00a884"/>
+      <stop offset="0" stop-color="#292e31"/>
+      <stop offset="1" stop-color="#131719"/>
     </linearGradient>
-    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
-      <feGaussianBlur stdDeviation="24"/>
+    <filter id="shadow" x="-15%" y="-15%" width="130%" height="140%">
+      <feGaussianBlur stdDeviation="14"/>
     </filter>
   </defs>
-  <rect x="104" y="126" width="816" height="816" rx="188" fill="#001a15" opacity=".28" filter="url(#shadow)"/>
-  <rect x="104" y="82" width="816" height="816" rx="188" fill="url(#face)"/>
-  <g transform="translate(224 204) scale(24)" fill="none" stroke="#fff" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/>
-  </g>
+  <rect x="100" y="118" width="824" height="824" rx="188" fill="#000000" opacity=".22" filter="url(#shadow)"/>
+  <rect x="100" y="100" width="824" height="824" rx="188" fill="url(#face)"/>
+  <rect x="102" y="102" width="820" height="820" rx="186" fill="none" stroke="#ffffff" stroke-opacity=".08" stroke-width="2"/>
+  <svg xmlns="http://www.w3.org/2000/svg" x="242" y="236" width="540" height="540" viewBox="0 0 64 64">
+  <path d="M32 6C17.6 6 6 17.4 6 31.5c0 4.7 1.3 9.1 3.6 12.9L6 58l14-3.7a26.5 26.5 0 0 0 12 2.8c14.4 0 26-11.4 26-25.6S46.4 6 32 6Z" fill="none" stroke="#46d68a" stroke-width="4.3" stroke-linejoin="round"/>
+  <path d="M23.2 17.6c-.6-1.4-1.2-1.4-1.8-1.4h-1.6c-.6 0-1.5.3-2.3 1.2-2.5 2.6-2.7 6.3-.8 10.1 2.8 5.7 7.8 11.4 14.4 14.7 4.8 2.4 9.1 3.1 11.8 1.4 1.5-1 3-3.3 3.2-5 .2-1.1.1-1.6-.5-1.9l-6.4-3.1c-.8-.4-1.3-.3-1.8.4l-2.7 3.3c-.5.6-1 .7-1.8.3-4.4-2-7.8-5.3-10-9.3-.4-.7-.2-1.1.3-1.6l1.8-2.2c.5-.6.6-1.2.3-1.9Z" fill="#46d68a"/>
+</svg>
+
 </svg>

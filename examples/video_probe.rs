@@ -5,11 +5,11 @@ fn main() -> anyhow::Result<()> {
     let path = std::env::args_os()
         .nth(1)
         .ok_or_else(|| anyhow::anyhow!("provide a synthetic MP4 fixture"))?;
-    let mut report = zapfast::animation::diagnostics::compare(std::path::Path::new(&path), 5)?;
+    let mut report = whatsapp::animation::diagnostics::compare(std::path::Path::new(&path), 5)?;
     report["streaming"] =
-        zapfast::animation::diagnostics::streaming(std::path::Path::new(&path), 5)?;
+        whatsapp::animation::diagnostics::streaming(std::path::Path::new(&path), 5)?;
     if let Some(directory) = std::env::args_os().nth(2) {
-        zapfast::animation::diagnostics::save_first_frames(
+        whatsapp::animation::diagnostics::save_first_frames(
             std::path::Path::new(&path),
             std::path::Path::new(&directory),
         )?;

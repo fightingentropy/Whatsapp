@@ -12,8 +12,11 @@ use std::time::Duration;
 const INSTANCE_PORT: u16 = 47_120;
 
 /// Independent wire identity: a fork launch must never control upstream.
-const PREFIX: &str = "zapfast-silicon:";
-const OK_REPLY: &str = "zapfast-silicon:ok";
+const PREFIX: &str = "whatsapp:";
+const OK_REPLY: &str = "whatsapp:ok";
+// Share the guard with our previous app while a user is upgrading. Never
+// contact or accept the upstream client's protocol or port.
+const PREVIOUS_PREFIX: &str = "zapfast-silicon:";
 
 pub enum Outcome {
     /// This process owns the instance guard.
@@ -42,24 +45,28 @@ impl Guard {
     }
 }
 
-/// Sends one request and verifies the ZapFast reply prefix.
+/// Sends one request and verifies the Whatsapp reply prefix.
 pub fn send(verb: &str) -> std::io::Result<()> {
     send_to(INSTANCE_PORT, verb)
 }
 
 fn send_to(port: u16, verb: &str) -> std::io::Result<()> {
+    send_with_prefix(port, verb, PREFIX).or_else(|_| send_with_prefix(port, verb, PREVIOUS_PREFIX))
+}
+
+fn send_with_prefix(port: u16, verb: &str, prefix: &str) -> std::io::Result<()> {
     let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port))?;
     stream.set_read_timeout(Some(Duration::from_secs(2)))?;
-    stream.write_all(format!("{PREFIX}{verb}\n").as_bytes())?;
+    stream.write_all(format!("{prefix}{verb}\n").as_bytes())?;
     // Read the one-line reply until the connection closes.
     let mut reply = String::new();
     stream.read_to_string(&mut reply)?;
-    if reply.lines().next() == Some(OK_REPLY) {
+    if reply.lines().next() == Some(format!("{prefix}ok").as_str()) {
         Ok(())
     } else {
         Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            "the port is held by something other than ZapFast",
+            "the port is held by something other than Whatsapp",
         ))
     }
 }
@@ -68,11 +75,11 @@ pub fn acquire(waker: &crate::backend::Waker) -> Outcome {
     let listener = match TcpListener::bind((Ipv4Addr::LOCALHOST, INSTANCE_PORT)) {
         Ok(listener) => listener,
         Err(_) => {
-            // If the port is held, continue only when it is not ZapFast.
+            // If the port is held, continue only when it is not Whatsapp.
             if send("show").is_ok() {
                 return Outcome::Surfaced;
             }
-            log::warn!("port {INSTANCE_PORT} is busy but not with ZapFast; running unguarded");
+            log::warn!("port {INSTANCE_PORT} is busy but not with Whatsapp; running unguarded");
             return Outcome::Only(Guard {
                 commands: Default::default(),
             });
@@ -84,7 +91,7 @@ pub fn acquire(waker: &crate::backend::Waker) -> Outcome {
     let commands = Arc::clone(&guard.commands);
     let waker = waker.clone();
     let spawned = std::thread::Builder::new()
-        .name("zapfast-instance".to_owned())
+        .name("whatsapp-instance".to_owned())
         .spawn(move || serve(listener, &commands, &waker));
     if let Err(error) = spawned {
         log::warn!("cannot listen for other launches: {error}");
@@ -103,9 +110,14 @@ fn serve(
         let Some(line) = read_line(&mut stream) else {
             continue;
         };
-        // Ignore clients without the ZapFast prefix.
+        // Ignore clients without the Whatsapp prefix.
         if let Some(command) = parse(&line) {
-            let _ = stream.write_all(format!("{OK_REPLY}\n").as_bytes());
+            let reply = if line.starts_with(PREVIOUS_PREFIX) {
+                "zapfast-silicon:ok"
+            } else {
+                OK_REPLY
+            };
+            let _ = stream.write_all(format!("{reply}\n").as_bytes());
             commands
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
@@ -116,7 +128,11 @@ fn serve(
 }
 
 fn parse(line: &str) -> Option<ControlCommand> {
-    match line.trim_end().strip_prefix(PREFIX)? {
+    let line = line.trim_end();
+    match line
+        .strip_prefix(PREFIX)
+        .or_else(|| line.strip_prefix(PREVIOUS_PREFIX))?
+    {
         "show" => Some(ControlCommand::Show),
         _ => None,
     }
@@ -151,11 +167,14 @@ mod tests {
 
     #[test]
     fn only_our_own_show_is_understood() {
-        assert_eq!(parse("zapfast-silicon:show\n"), Some(ControlCommand::Show));
-        assert_eq!(parse("zapfast-silicon:show"), Some(ControlCommand::Show));
+        assert_eq!(parse("whatsapp:show\n"), Some(ControlCommand::Show));
+        assert_eq!(parse("whatsapp:show"), Some(ControlCommand::Show));
         assert_eq!(parse("GET / HTTP/1.1"), None);
-        assert_eq!(parse("zapfast-silicon:frobnicate"), None);
+        assert_eq!(parse("whatsapp:frobnicate"), None);
         assert_eq!(parse(""), None);
+        assert_eq!(parse("zapfast-silicon:show"), Some(ControlCommand::Show));
+        assert_eq!(parse("zapfast:show"), None);
+        assert_eq!(parse("fastsapp:show"), None);
     }
 
     /// Verifies a request crosses the socket into the app queue.
@@ -170,14 +189,37 @@ mod tests {
             std::thread::spawn(move || serve(listener, &commands, &waker))
         };
 
-        send_to(port, "show").expect("answered as ZapFast");
+        send_to(port, "show").expect("answered as Whatsapp");
+        send_with_prefix(port, "show", PREVIOUS_PREFIX)
+            .expect("the previous app can surface Whatsapp during an upgrade");
         // Unknown verbs close the connection without a reply.
         assert!(send_to(port, "frobnicate").is_err());
 
         assert_eq!(
             *commands.lock().expect("the queue"),
-            vec![ControlCommand::Show]
+            vec![ControlCommand::Show, ControlCommand::Show]
         );
         drop(served);
+    }
+
+    #[test]
+    fn an_upgrade_surfaces_the_previous_app_before_moving_its_data() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let served = std::thread::spawn(move || {
+            // The previous release rejects the new prefix, then accepts the
+            // fallback. It must retain sole ownership of its open databases.
+            let (mut first, _) = listener.accept().unwrap();
+            assert_eq!(read_line(&mut first).as_deref(), Some("whatsapp:show"));
+            drop(first);
+            let (mut second, _) = listener.accept().unwrap();
+            assert_eq!(
+                read_line(&mut second).as_deref(),
+                Some("zapfast-silicon:show")
+            );
+            second.write_all(b"zapfast-silicon:ok\n").unwrap();
+        });
+        send_to(port, "show").unwrap();
+        served.join().unwrap();
     }
 }

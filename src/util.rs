@@ -229,12 +229,16 @@ pub fn hue(seed: &str) -> f32 {
 }
 
 /// Embedded SVG app logo used across platform surfaces.
-const MARK: &[u8] = include_bytes!("../packaging/icons/zapfast.svg");
+const MARK: &[u8] = include_bytes!("../packaging/macos/icon-1024.svg");
 
 /// Rasterizes the logo to straight-alpha RGBA.
 pub fn app_icon_rgba(size: usize) -> Vec<u8> {
+    rasterize_icon(MARK, size)
+}
+
+fn rasterize_icon(svg: &[u8], size: usize) -> Vec<u8> {
     let side = size.max(1) as u32;
-    let rendered = resvg::usvg::Tree::from_data(MARK, &resvg::usvg::Options::default())
+    let rendered = resvg::usvg::Tree::from_data(svg, &resvg::usvg::Options::default())
         .ok()
         .and_then(|tree| {
             let mut pixmap = resvg::tiny_skia::Pixmap::new(side, side)?;
@@ -283,11 +287,8 @@ fn plain_disc(size: usize) -> Vec<u8> {
 
 /// Converts the logo to a monochrome macOS menu-bar template.
 pub fn tray_template_rgba(size: usize) -> Vec<u8> {
-    let mut rgba = app_icon_rgba(size);
+    let mut rgba = rasterize_icon(include_bytes!("../assets/brand/whatsapp-mark.svg"), size);
     for pixel in rgba.as_chunks_mut::<4>().0 {
-        if pixel[0] > 200 && pixel[1] > 200 && pixel[2] > 200 {
-            pixel[3] = 0;
-        }
         pixel[0] = 0;
         pixel[1] = 0;
         pixel[2] = 0;
@@ -357,5 +358,16 @@ mod tests {
         assert_eq!(icon[3], 0);
         let middle = (16 * 32 + 16) * 4;
         assert_eq!(icon[middle + 3], 255);
+    }
+
+    #[test]
+    fn menu_bar_icon_keeps_the_mark_and_transparent_background() {
+        let icon = tray_template_rgba(32);
+        let pixels = icon.as_chunks::<4>().0;
+        assert!(pixels.iter().all(|pixel| pixel[..3] == [0, 0, 0]));
+        let visible = pixels.iter().filter(|pixel| pixel[3] > 128).count();
+        assert!(visible > 100, "the handset/chat mark must be visible");
+        assert!(visible < 512, "the template must not become a solid tile");
+        assert_eq!(pixels[0][3], 0);
     }
 }

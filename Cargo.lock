@@ -2733,7 +2733,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "36c791ecdf977c99f45f23280405d7723727470f6689a5e6dbf513ac547ae10d"
 dependencies = [
  "serde",
- "toml 0.9.12+spec-1.1.0",
+ "toml",
 ]
 
 [[package]]
@@ -4967,21 +4967,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "toml"
-version = "1.1.4+spec-1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3aace63f4bbcdfc2c965b059de67119c89c4017a70d633be6c104910f67056f5"
-dependencies = [
- "indexmap",
- "serde_core",
- "serde_spanned",
- "toml_datetime 1.1.1+spec-1.1.0",
- "toml_parser",
- "toml_writer",
- "winnow 1.0.4",
-]
-
-[[package]]
 name = "toml_datetime"
 version = "0.7.5+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5019,12 +5004,6 @@ checksum = "1d38ac1cf9b95face32296c0a3ede1fdc270627c9d9c02a7274dd6d960dc4d56"
 dependencies = [
  "winnow 1.0.4",
 ]
-
-[[package]]
-name = "toml_writer"
-version = "1.1.2+spec-1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7d56353a2a665ad0f41a421187180aab746c8c325620617ad883a99a1cbe66d2"
 
 [[package]]
 name = "tracing"
@@ -5843,6 +5822,65 @@ dependencies = [
 ]
 
 [[package]]
+name = "whatsapp"
+version = "0.13.1"
+dependencies = [
+ "aes",
+ "anyhow",
+ "arboard",
+ "cbc",
+ "clap",
+ "core-foundation-sys",
+ "directories",
+ "eframe",
+ "egui",
+ "egui_extras",
+ "emojis",
+ "env_logger",
+ "hkdf",
+ "hmac",
+ "image",
+ "jiff",
+ "ksni",
+ "log",
+ "memmap2",
+ "mime_guess2",
+ "mp4",
+ "notify-rust",
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
+ "objc2-core-foundation",
+ "objc2-core-media",
+ "objc2-core-video",
+ "objc2-foundation 0.3.2",
+ "objc2-video-toolbox",
+ "ogg",
+ "open",
+ "openh264",
+ "opus",
+ "png 0.18.1",
+ "qrcode",
+ "raw-window-handle",
+ "resvg",
+ "rfd",
+ "rodio",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "skrifa",
+ "tokio",
+ "tray-icon",
+ "unicode-segmentation",
+ "ureq",
+ "webp-animation",
+ "wgpu",
+ "whatsapp-rust",
+ "windows-sys 0.60.2",
+ "zip",
+]
+
+[[package]]
 name = "whatsapp-rust"
 version = "0.7.0"
 source = "git+https://github.com/oxidezap/whatsapp-rust?rev=1ace865716726daec8d0f00335453fcb8de35d1b#1ace865716726daec8d0f00335453fcb8de35d1b"
@@ -6363,16 +6401,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "winresource"
-version = "0.1.31"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0986a8b1d586b7d3e4fe3d9ea39fb451ae22869dcea4aa109d287a374d866087"
-dependencies = [
- "toml 1.1.4+spec-1.1.0",
- "version_check",
-]
-
-[[package]]
 name = "writeable"
 version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6464,66 +6492,6 @@ dependencies = [
  "quote",
  "syn 2.0.119",
  "synstructure",
-]
-
-[[package]]
-name = "zapfast"
-version = "0.13.1"
-dependencies = [
- "aes",
- "anyhow",
- "arboard",
- "cbc",
- "clap",
- "core-foundation-sys",
- "directories",
- "eframe",
- "egui",
- "egui_extras",
- "emojis",
- "env_logger",
- "hkdf",
- "hmac",
- "image",
- "jiff",
- "ksni",
- "log",
- "memmap2",
- "mime_guess2",
- "mp4",
- "notify-rust",
- "objc2 0.6.4",
- "objc2-app-kit 0.3.2",
- "objc2-core-foundation",
- "objc2-core-media",
- "objc2-core-video",
- "objc2-foundation 0.3.2",
- "objc2-video-toolbox",
- "ogg",
- "open",
- "openh264",
- "opus",
- "png 0.18.1",
- "qrcode",
- "raw-window-handle",
- "resvg",
- "rfd",
- "rodio",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2",
- "skrifa",
- "tokio",
- "tray-icon",
- "unicode-segmentation",
- "ureq",
- "webp-animation",
- "wgpu",
- "whatsapp-rust",
- "windows-sys 0.60.2",
- "winresource",
- "zip",
 ]
 
 [[package]]
