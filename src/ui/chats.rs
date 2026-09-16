@@ -224,7 +224,7 @@ fn list(app: &mut App, ui: &mut egui::Ui) {
         results(app, ui);
         return;
     }
-    let chats: Vec<Chat> = app.visible_chats().into_iter().cloned().collect();
+    let chats = app.visible_chat_indices();
     let archived = app.archived_count();
     let show_archive_row = !app.show_archived && archived > 0;
     if chats.is_empty() && !show_archive_row {
@@ -249,7 +249,7 @@ fn list(app: &mut App, ui: &mut egui::Ui) {
     let target_row = app.scroll_chat_into_view.as_ref().and_then(|target| {
         chats
             .iter()
-            .position(|chat| chat.id == *target)
+            .position(|index| app.chats[*index].id == *target)
             .map(|index| index + usize::from(show_archive_row))
     });
     if let Some(target_row) = target_row {
@@ -274,9 +274,11 @@ fn list(app: &mut App, ui: &mut egui::Ui) {
                 archive_row(app, ui, archived);
                 continue;
             }
-            let chat = &chats[index - usize::from(show_archive_row)];
+            // Group membership and previews can be large. Snapshot only the
+            // rows egui will draw, rather than every chat on each repaint.
+            let chat = app.chats[chats[index - usize::from(show_archive_row)]].clone();
             // Key by chat so an open menu survives list reordering.
-            ui.push_id(("chat", &chat.id), |ui| row(app, ui, chat));
+            ui.push_id(("chat", &chat.id), |ui| row(app, ui, &chat));
         }
     });
 }
@@ -781,6 +783,90 @@ mod tests {
     use super::*;
     use crate::paths::AppDirs;
     use crate::settings::Settings;
+
+    #[test]
+    fn clicks_follow_chat_ids_after_reordering_and_archiving() {
+        let root = std::env::temp_dir().join(format!(
+            "zapfast-chat-clicks-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let (mut app, _events) = App::headless(AppDirs::under(&root), Settings::default());
+        app.chats = (0..100)
+            .map(|index| {
+                let mut chat = Chat::new(format!("{index}@g.us"), format!("Group {index:03}"));
+                chat.last_activity = 100 - index;
+                chat.participants = (0..64).map(|member| format!("{member}@lid")).collect();
+                chat
+            })
+            .collect();
+        let ctx = egui::Context::default();
+        app.attach(&ctx);
+        let frame = |app: &mut App, events| {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(360.0, 240.0))),
+                    events,
+                    ..Default::default()
+                },
+                |ui| list(app, ui),
+            );
+            output.textures_delta.clear();
+            output
+        };
+        frame(&mut app, vec![]);
+        // Move a previously offscreen group to the top; indices change too.
+        app.chats.reverse();
+        app.chats
+            .iter_mut()
+            .find(|chat| chat.id == "99@g.us")
+            .unwrap()
+            .pinned = true;
+        app.chats
+            .iter_mut()
+            .find(|chat| chat.id == "0@g.us")
+            .unwrap()
+            .archived = true;
+        for archived in [false, true] {
+            app.show_archived = archived;
+            let (name, id) = if archived {
+                ("Group 000", "0@g.us")
+            } else {
+                ("Group 099", "99@g.us")
+            };
+            frame(&mut app, vec![]);
+            let output = frame(&mut app, vec![]);
+            let pos = output
+                .shapes
+                .iter()
+                .find_map(|clipped| {
+                    if let egui::Shape::Text(text) = &clipped.shape
+                        && text.galley.job.text == name
+                    {
+                        Some(text.pos + text.galley.size() / 2.0)
+                    } else {
+                        None
+                    }
+                })
+                .expect("destination is visible");
+            for pressed in [true, false] {
+                frame(
+                    &mut app,
+                    vec![
+                        egui::Event::PointerMoved(pos),
+                        egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                );
+            }
+            assert_eq!(app.actions, vec![Action::OpenChat(id.into())]);
+            app.actions.clear();
+        }
+    }
 
     #[test]
     fn alt_navigation_scrolls_the_destination_chat_into_view() {

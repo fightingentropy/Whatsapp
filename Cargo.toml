@@ -26,6 +26,10 @@ required-features = ["demo"]
 name = "conversation_probe"
 required-features = ["demo"]
 
+[[example]]
+name = "sidebar_probe"
+required-features = ["demo"]
+
 [dependencies]
 anyhow = "1"
 # Hashes saved stickers by content. Already included through wacore.

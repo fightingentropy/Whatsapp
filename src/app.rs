@@ -814,12 +814,22 @@ impl App {
 
     /// Visible chats filtered by search and archive state, with pinned first.
     pub fn visible_chats(&self) -> Vec<&Chat> {
+        self.visible_chat_indices()
+            .into_iter()
+            .map(|index| &self.chats[index])
+            .collect()
+    }
+
+    /// Indices into `chats` in display order. Only valid until the next state
+    /// update; views apply actions after drawing and clone only the rows needed.
+    pub fn visible_chat_indices(&self) -> Vec<usize> {
         let needle = self.search.trim().to_lowercase();
-        let mut chats: Vec<&Chat> = self
+        let mut chats: Vec<usize> = self
             .chats
             .iter()
-            .filter(|chat| chat.archived == self.show_archived || !needle.is_empty())
-            .filter(|chat| {
+            .enumerate()
+            .filter(|(_, chat)| chat.archived == self.show_archived || !needle.is_empty())
+            .filter(|(_, chat)| {
                 needle.is_empty()
                     || chat.name.to_lowercase().contains(&needle)
                     || chat.phone().is_some_and(|phone| phone.contains(&needle))
@@ -828,8 +838,10 @@ impl App {
                         .as_ref()
                         .is_some_and(|last| last.summary.to_lowercase().contains(&needle))
             })
+            .map(|(index, _)| index)
             .collect();
         chats.sort_by(|a, b| {
+            let (a, b) = (&self.chats[*a], &self.chats[*b]);
             b.pinned
                 .cmp(&a.pinned)
                 .then(b.last_activity.cmp(&a.last_activity))
@@ -2909,6 +2921,29 @@ mod tests {
             .map(|chat| chat.name.as_str())
             .collect();
         assert_eq!(names, vec!["Ada"]);
+        app.search.clear();
+        app.show_archived = true;
+        assert_eq!(app.visible_chat_indices(), vec![3]);
+        app.search = "dEe".into();
+        app.show_archived = false;
+        assert_eq!(
+            app.visible_chat_indices(),
+            vec![3],
+            "search includes archived chats"
+        );
+        app.search = "2".into();
+        assert_eq!(
+            app.visible_chat_indices(),
+            vec![0],
+            "phone search is preserved"
+        );
+        app.search.clear();
+        app.chats[1].last_activity = 20;
+        assert_eq!(
+            app.visible_chat_indices(),
+            vec![2, 0, 1],
+            "equal timestamps keep their order"
+        );
     }
 
     #[test]
