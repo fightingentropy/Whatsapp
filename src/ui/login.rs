@@ -125,7 +125,16 @@ fn body(app: &mut App, ui: &mut egui::Ui) {
             } else if let Some(qr) = qr {
                 qr_view(app, ui, &qr);
             } else {
-                busy(ui, palette.accent, "Waiting for a code from WhatsApp…");
+                theme::paragraph(
+                    ui,
+                    "No QR code is available. Request a fresh code to link this computer.",
+                    theme::regular(14.0),
+                    palette.text,
+                );
+                ui.add_space(8.0);
+                if theme::pill_button(ui, &palette, "Get a new QR code", true).clicked() {
+                    app.actions.push(Action::Reconnect);
+                }
             }
         }
     }
@@ -254,4 +263,79 @@ fn pair_code_view(app: &mut App, ui: &mut egui::Ui, code: &str, phone: Option<&s
             app.actions.push(Action::CopyText(code.to_owned()));
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::Command;
+    use crate::paths::AppDirs;
+    use crate::settings::Settings;
+
+    fn frame(app: &mut App, ctx: &egui::Context, events: Vec<egui::Event>) -> egui::FullOutput {
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1024.0, 680.0),
+                )),
+                events,
+                ..Default::default()
+            },
+            |ui| show(app, ui),
+        );
+        output.textures_delta.clear();
+        output
+    }
+
+    #[test]
+    fn a_missing_qr_has_a_working_retry_control() {
+        let root = std::env::temp_dir().join(format!("zapfast-login-test-{}", std::process::id()));
+        let (mut app, _events) = App::headless(AppDirs::under(&root), Settings::default());
+        app.link = LinkStatus::Unlinked {
+            qr: None,
+            pair_code: None,
+            pairing_phone: None,
+        };
+        app.backend.record_demo_commands();
+        let ctx = egui::Context::default();
+        app.attach(&ctx);
+        for _ in 0..2 {
+            frame(&mut app, &ctx, Vec::new());
+        }
+        let output = frame(&mut app, &ctx, Vec::new());
+        let button = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == "Get a new QR code" => {
+                    Some(text.pos + text.galley.size() / 2.0)
+                }
+                _ => None,
+            })
+            .expect("the empty QR screen must offer recovery");
+        assert!(app.actions.is_empty());
+        for pressed in [true, false] {
+            frame(
+                &mut app,
+                &ctx,
+                vec![
+                    egui::Event::PointerMoved(button),
+                    egui::Event::PointerButton {
+                        pos: button,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+        }
+        app.background_frame(&ctx);
+        assert!(
+            app.backend
+                .take_demo_commands()
+                .iter()
+                .any(|command| matches!(command, Command::Reconnect))
+        );
+    }
 }

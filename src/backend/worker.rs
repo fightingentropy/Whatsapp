@@ -55,6 +55,13 @@ const THUMBNAIL_SIDE: u32 = 96;
 /// Sticker download batch size for the picker.
 const STICKER_FETCH_LIMIT: usize = 40;
 
+/// A stopped bot may still deliver queued callbacks. Keep them out of its
+/// replacement's pairing and connection state.
+struct BotEvent {
+    generation: u64,
+    event: Arc<wa_events::Event>,
+}
+
 fn account_allows_receipts(
     settings: &whatsapp_rust::wacore::iq::privacy::PrivacySettingsResponse,
 ) -> bool {
@@ -175,6 +182,7 @@ pub async fn run(
         client: None,
         handle: None,
         wa_sender,
+        bot_generation: 0,
         me_pn: None,
         me_lid: None,
         me_name: None,
@@ -214,7 +222,7 @@ pub async fn run(
                     Some(command) => worker.handle_command(command).await,
                 }
             }
-            Some(event) = wa_events.recv() => worker.handle_wa_event(event).await,
+            Some(event) = wa_events.recv() => worker.handle_bot_event(event).await,
             _ = async {
                 match deadline {
                     Some(deadline) => tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await,
@@ -246,7 +254,8 @@ struct Worker {
     archive: Archive,
     client: Option<Arc<Client>>,
     handle: Option<BotHandle>,
-    wa_sender: mpsc::UnboundedSender<Arc<wa_events::Event>>,
+    wa_sender: mpsc::UnboundedSender<BotEvent>,
+    bot_generation: u64,
     me_pn: Option<String>,
     me_lid: Option<String>,
     me_name: Option<String>,
@@ -534,6 +543,10 @@ impl Worker {
     }
 
     async fn start_bot(&mut self) {
+        self.bot_generation = self.bot_generation.wrapping_add(1);
+        self.qr = None;
+        self.pair_code = None;
+        self.pairing_phone = None;
         let path = self.dirs.session_db();
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
@@ -548,6 +561,7 @@ impl Worker {
             }
         };
         let sender = self.wa_sender.clone();
+        let generation = self.bot_generation;
         let bot = Bot::builder()
             .with_backend(store)
             // WhatsApp reads the linked-device name, version, and icon at pairing.
@@ -560,7 +574,7 @@ impl Worker {
             .on_event(move |event, _client| {
                 let sender = sender.clone();
                 async move {
-                    let _ = sender.send(event);
+                    let _ = sender.send(BotEvent { generation, event });
                 }
             })
             .build()
@@ -587,6 +601,13 @@ impl Worker {
         {
             log::warn!("the WhatsApp connection did not stop in time");
         }
+    }
+
+    async fn restart_bot(&mut self) {
+        self.set_status(LinkStatus::Connecting);
+        self.stop_bot().await;
+        // Reuse the device store. Restarting is not unlinking or deleting data.
+        self.start_bot().await;
     }
 
     // --- ids -------------------------------------------------------------
@@ -894,6 +915,12 @@ impl Worker {
 
     // --- WhatsApp events -------------------------------------------------
 
+    async fn handle_bot_event(&mut self, event: BotEvent) {
+        if event.generation == self.bot_generation {
+            self.handle_wa_event(event.event).await;
+        }
+    }
+
     async fn handle_wa_event(&mut self, event: Arc<wa_events::Event>) {
         use wa_events::Event as E;
         match &*event {
@@ -917,14 +944,19 @@ impl Worker {
                 let status = self.unlinked();
                 self.set_status(status);
             }
-            E::PairingQrCodesExhausted(exhausted) => {
+            E::PairingQrCodesExhausted(exhausted)
+                if matches!(self.status, LinkStatus::Unlinked { .. }) =>
+            {
                 self.qr = None;
                 let status = self.unlinked();
                 self.set_status(status);
-                if exhausted.disconnected
-                    && let Some(client) = self.client.clone()
-                {
-                    tokio::spawn(async move { client.reconnect_immediately().await });
+                if exhausted.disconnected {
+                    // The library calls disconnect(), which permanently ends
+                    // this Client. reconnect_immediately() cannot revive it.
+                    // Queue recovery so a completed pairing can supersede it.
+                    let _ = self.commands.send(Command::RestartPairing {
+                        generation: self.bot_generation,
+                    });
                 }
             }
             E::PairSuccess(pair) => {
@@ -2350,6 +2382,7 @@ impl Worker {
                 let status = self.unlinked();
                 self.set_status(status);
                 let commands = self.commands.clone();
+                let generation = self.bot_generation;
                 tokio::spawn(async move {
                     let result = client
                         .pair_with_code(PairCodeOptions {
@@ -2358,10 +2391,11 @@ impl Worker {
                         })
                         .await
                         .map_err(|error| error.to_string());
-                    let _ = commands.send(Command::PairCode { result });
+                    let _ = commands.send(Command::PairCode { generation, result });
                 });
             }
-            Command::PairCode { result } => match result {
+            Command::PairCode { generation, .. } if generation != self.bot_generation => {}
+            Command::PairCode { result, .. } => match result {
                 Ok(code) => {
                     self.pair_code = Some(code);
                     let status = self.unlinked();
@@ -2384,10 +2418,33 @@ impl Worker {
                 }
             }
             Command::Reconnect => {
-                if let Some(client) = self.client.clone() {
+                if self
+                    .client
+                    .as_ref()
+                    .is_none_or(|client| client.shutdown_signal().is_fired())
+                    || matches!(
+                        self.status,
+                        LinkStatus::Unlinked {
+                            qr: None,
+                            pair_code: None,
+                            pairing_phone: None
+                        }
+                    )
+                {
+                    self.restart_bot().await;
+                } else if let Some(client) = self.client.clone() {
                     tokio::spawn(async move { client.reconnect_immediately().await });
-                } else {
-                    self.start_bot().await;
+                }
+            }
+            Command::RestartPairing { generation } => {
+                if generation == self.bot_generation
+                    && matches!(self.status, LinkStatus::Unlinked { .. })
+                    && !self
+                        .client
+                        .as_ref()
+                        .is_some_and(|client| client.is_logged_in())
+                {
+                    self.restart_bot().await;
                 }
             }
             Command::Shutdown => {}
@@ -5085,7 +5142,7 @@ mod receipt_tests {
         Worker,
         std::sync::mpsc::Receiver<Event>,
         mpsc::UnboundedReceiver<Command>,
-        mpsc::UnboundedReceiver<Arc<wa_events::Event>>,
+        mpsc::UnboundedReceiver<BotEvent>,
     ) {
         let (events, events_rx) = std::sync::mpsc::channel();
         let (commands, inbox) = mpsc::unbounded_channel();
@@ -5100,6 +5157,7 @@ mod receipt_tests {
             client: None,
             handle: None,
             wa_sender,
+            bot_generation: 0,
             me_pn: Some(ME.to_owned()),
             me_lid: None,
             me_name: None,
@@ -5125,6 +5183,103 @@ mod receipt_tests {
             read_syncs: HashMap::new(),
         };
         (worker, events_rx, inbox, wa_events)
+    }
+
+    #[tokio::test]
+    async fn qr_exhaustion_restarts_only_the_expired_qr_session() {
+        for disconnected in [true, false] {
+            let (mut worker, _events, mut inbox, _wa) = worker();
+            worker.qr = Some("synthetic-qr".into());
+            if !disconnected {
+                worker.pair_code = Some("TEST1234".into());
+                worker.pairing_phone = Some("synthetic-phone".into());
+            }
+            worker.status = worker.unlinked();
+            worker
+                .handle_bot_event(BotEvent {
+                    generation: worker.bot_generation,
+                    event: Arc::new(wa_events::Event::PairingQrCodesExhausted(
+                        wa_events::PairingQrCodesExhausted::builder()
+                            .disconnected(disconnected)
+                            .build(),
+                    )),
+                })
+                .await;
+            assert!(worker.qr.is_none());
+            if disconnected {
+                assert!(matches!(
+                    inbox.try_recv(),
+                    Ok(Command::RestartPairing { generation: 0 })
+                ));
+            } else {
+                assert!(inbox.try_recv().is_err());
+                assert_eq!(worker.pair_code.as_deref(), Some("TEST1234"));
+                assert_eq!(worker.pairing_phone.as_deref(), Some("synthetic-phone"));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn stopped_bot_callbacks_and_pair_codes_cannot_replace_the_current_qr() {
+        let (mut worker, _events, mut inbox, _wa) = worker();
+        worker.bot_generation = 2;
+        worker.qr = Some("current-qr".into());
+        worker.status = worker.unlinked();
+        worker
+            .handle_bot_event(BotEvent {
+                generation: 1,
+                event: Arc::new(wa_events::Event::PairingQrCodesExhausted(
+                    wa_events::PairingQrCodesExhausted::builder()
+                        .disconnected(true)
+                        .build(),
+                )),
+            })
+            .await;
+        worker
+            .handle_command(Command::PairCode {
+                generation: 1,
+                result: Ok("old-code".into()),
+            })
+            .await;
+        worker
+            .handle_command(Command::RestartPairing { generation: 1 })
+            .await;
+        assert_eq!(worker.qr.as_deref(), Some("current-qr"));
+        assert!(worker.pair_code.is_none());
+        assert!(inbox.try_recv().is_err());
+        worker
+            .handle_bot_event(BotEvent {
+                generation: 2,
+                event: Arc::new(wa_events::Event::PairingQrCode(
+                    wa_events::PairingQrCode::builder()
+                        .code("fresh-qr".into())
+                        .timeout(Duration::from_secs(60))
+                        .build(),
+                )),
+            })
+            .await;
+        assert_eq!(worker.qr.as_deref(), Some("fresh-qr"));
+    }
+
+    #[tokio::test]
+    async fn completed_pairing_supersedes_a_queued_qr_restart() {
+        let (mut worker, _events, mut inbox, _wa) = worker();
+        worker
+            .handle_command(Command::RestartPairing { generation: 0 })
+            .await;
+        worker
+            .handle_bot_event(BotEvent {
+                generation: 0,
+                event: Arc::new(wa_events::Event::PairingQrCodesExhausted(
+                    wa_events::PairingQrCodesExhausted::builder()
+                        .disconnected(true)
+                        .build(),
+                )),
+            })
+            .await;
+        assert_eq!(worker.status, LinkStatus::Connected);
+        assert_eq!(worker.bot_generation, 0);
+        assert!(inbox.try_recv().is_err());
     }
 
     fn own_message(id: &str, timestamp: i64) -> Message {

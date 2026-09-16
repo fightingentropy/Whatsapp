@@ -899,6 +899,14 @@ pub fn apply_flags(app: &mut App, page: Option<&str>) {
                     pairing_phone: Some("15550001111".into()),
                 };
             }
+            "login-expired" => {
+                unlink(app);
+                app.link = LinkStatus::Unlinked {
+                    qr: None,
+                    pair_code: None,
+                    pairing_phone: None,
+                };
+            }
             "phone" => {
                 unlink(app);
                 app.link = LinkStatus::Unlinked {
@@ -1259,7 +1267,7 @@ mod tests {
             apply_flags(&mut app, Some(page));
             render(&mut app, &ctx);
         }
-        for page in ["login", "pair", "phone"] {
+        for page in ["login", "login-expired", "pair", "phone"] {
             let mut app = self::app();
             apply_flags(&mut app, Some(page));
             render(&mut app, &ctx);

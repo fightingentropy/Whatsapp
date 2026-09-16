@@ -59,6 +59,8 @@ jobs:
           test -s "$RUNNER_TEMP/zapfast-long-history.png"
           "$binary" --demo --demo-page many-chats --demo-shot "$RUNNER_TEMP/zapfast-many-chats.png"
           test -s "$RUNNER_TEMP/zapfast-many-chats.png"
+          "$binary" --demo --demo-page login-expired --demo-shot "$RUNNER_TEMP/zapfast-login-expired.png"
+          test -s "$RUNNER_TEMP/zapfast-login-expired.png"
       - name: Main-thread background wake test
         run: cargo run --locked --example background_probe
       - name: macOS preview

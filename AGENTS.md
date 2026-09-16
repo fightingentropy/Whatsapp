@@ -179,6 +179,12 @@ protocol. These notes are for coding agents and new contributors.
   `DevicePropsOverride` in `start_bot` (`os` is the name shown, the
   platform type picks the icon); WhatsApp reads them at pairing only, so a
   change shows after unlinking and linking again.
+- QR exhaustion with `disconnected == true` ends whatsapp-rust's client
+  permanently. Restart the bot over the same device store; reconnecting that
+  client cannot revive it. Scope callbacks and queued pairing work to the bot
+  generation, and preserve an outstanding phone-code flow when exhaustion leaves
+  its socket open. `LinkStatus`'s debug formatter deliberately omits all payloads
+  because status transitions are logged at info level.
 - Older history comes from the phone on demand (`Command::FetchOlder` →
   `Client::fetch_message_history` → a `HistorySync` chunk with
   `sync_type == ON_DEMAND`); the archive is paged first, the phone only

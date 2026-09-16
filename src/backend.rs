@@ -17,7 +17,7 @@ pub(crate) mod sticker_import;
 mod worker;
 
 /// Phone-link state.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub enum LinkStatus {
     Starting,
     /// Waiting for QR scanning or pairing-code acceptance.
@@ -35,6 +35,22 @@ pub enum LinkStatus {
     /// Device unlinked by the phone.
     LoggedOut,
     Failed(String),
+}
+
+// Status transitions ship in the log. Never format QR payloads, pairing codes,
+// phone numbers or server-provided error details into that log.
+impl std::fmt::Debug for LinkStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Starting => "Starting",
+            Self::Unlinked { .. } => "Unlinked",
+            Self::Connecting => "Connecting",
+            Self::Connected => "Connected",
+            Self::Disconnected { .. } => "Disconnected",
+            Self::LoggedOut => "LoggedOut",
+            Self::Failed(_) => "Failed",
+        })
+    }
 }
 
 impl LinkStatus {
@@ -244,6 +260,10 @@ pub enum Command {
     /// Unlinks the device remotely and locally.
     Unlink,
     Reconnect,
+    /// Internal QR-expiry recovery, scoped to the client that ran out of codes.
+    RestartPairing {
+        generation: u64,
+    },
     Shutdown,
     /// Internal send result.
     Sent {
@@ -310,6 +330,7 @@ pub enum Command {
     },
     /// Internal pairing-code result.
     PairCode {
+        generation: u64,
         result: Result<String, String>,
     },
     /// Internal account read-receipt setting.
@@ -574,5 +595,33 @@ impl Backend {
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
+    }
+}
+
+#[cfg(test)]
+mod status_tests {
+    use super::LinkStatus;
+
+    #[test]
+    fn logged_statuses_never_include_pairing_payloads_or_error_details() {
+        let status = LinkStatus::Unlinked {
+            qr: Some("private-qr-payload".into()),
+            pair_code: Some("secret-code".into()),
+            pairing_phone: Some("private-phone".into()),
+        };
+        assert_eq!(format!("link: {status:?}"), "link: Unlinked");
+        assert_eq!(
+            format!("{:?}", LinkStatus::Failed("private server detail".into())),
+            "Failed"
+        );
+        assert_eq!(
+            format!(
+                "{:?}",
+                LinkStatus::Disconnected {
+                    reason: "private detail".into()
+                }
+            ),
+            "Disconnected"
+        );
     }
 }
