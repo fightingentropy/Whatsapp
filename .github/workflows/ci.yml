@@ -53,6 +53,8 @@ jobs:
           test "$(lipo -archs "$binary")" = arm64
           "$binary" --demo --demo-shot "$RUNNER_TEMP/zapfast-content.png"
           test -s "$RUNNER_TEMP/zapfast-content.png"
+          "$binary" --demo --demo-page video --demo-shot "$RUNNER_TEMP/zapfast-video.png"
+          test -s "$RUNNER_TEMP/zapfast-video.png"
       - name: Main-thread background wake test
         run: cargo run --locked --example background_probe
       - name: macOS preview

@@ -10,6 +10,9 @@ use clap::Parser;
 #[derive(Debug, Parser)]
 #[command(name = "zapfast", version, about)]
 struct Cli {
+    /// Native rendering backend (Metal requires a build with --features metal).
+    #[arg(long, value_enum, default_value = "open-gl")]
+    renderer: zapfast::renderer::Backend,
     /// Log more from the WhatsApp library.
     #[arg(short, long)]
     verbose: bool,
@@ -40,7 +43,7 @@ struct Cli {
     demo_macos: bool,
 
     /// Demo view: `chat`, `empty`, `settings`, `login`,
-    /// `pair`, `shortcuts`, `about`, `info`, `mention`, `light`, or a comma-separated
+    /// `pair`, `shortcuts`, `about`, `info`, `mention`, `light`, `video`, or a comma-separated
     /// mix such as `chat,light`.
     #[cfg(feature = "demo")]
     #[arg(long)]
@@ -50,6 +53,11 @@ struct Cli {
     #[cfg(feature = "demo")]
     #[arg(long, value_name = "PATH")]
     demo_shot: Option<std::path::PathBuf>,
+
+    /// Measure continuous repaint of the offline demo, save JSON and exit.
+    #[cfg(feature = "demo")]
+    #[arg(long, value_name = "PATH", conflicts_with_all = ["demo_shot", "demo_tour"])]
+    demo_benchmark: Option<std::path::PathBuf>,
     /// Screenshot window size as WxH logical points.
     #[arg(long, value_name = "WxH")]
     demo_size: Option<String>,
@@ -61,10 +69,12 @@ struct Cli {
 }
 
 fn main() -> eframe::Result<()> {
+    #[cfg(feature = "demo")]
+    let launched = std::time::Instant::now();
     let cli = Cli::parse();
     let waker = backend::Waker::default();
     #[cfg(feature = "demo")]
-    let demo = cli.demo || cli.demo_shot.is_some() || cli.demo_tour;
+    let demo = cli.demo || cli.demo_shot.is_some() || cli.demo_tour || cli.demo_benchmark.is_some();
     #[cfg(not(feature = "demo"))]
     let demo = false;
     // Keep one linked instance. Demo runs do not participate.
@@ -149,10 +159,17 @@ fn main() -> eframe::Result<()> {
         let creator_shot = shot.clone();
         #[cfg(feature = "demo")]
         let creator_tour_events = cli.demo_tour_events.clone();
+        #[cfg(feature = "demo")]
+        let benchmark_path = cli.demo_benchmark.clone();
         eframe::run_native(
             "ZapFast Silicon",
-            native_options(demo_persistence.clone()),
+            native_options(demo_persistence.clone(), cli.renderer),
             Box::new(move |cc| {
+                #[cfg(feature = "metal")]
+                if let Some(state) = &cc.wgpu_render_state {
+                    let info = state.adapter.get_info();
+                    log::info!("renderer: {:?}, adapter: {}", info.backend, info.name);
+                }
                 creator_waker.attach(&cc.egui_ctx);
                 let mut app = creator_slot
                     .lock()
@@ -169,6 +186,10 @@ fn main() -> eframe::Result<()> {
                     slot: std::sync::Arc::clone(&creator_slot),
                     #[cfg(feature = "demo")]
                     shot: creator_shot,
+                    #[cfg(feature = "demo")]
+                    benchmark: benchmark_path.map(|path| {
+                        zapfast::demo::benchmark::Probe::new(path, cli.renderer, launched)
+                    }),
                     #[cfg(feature = "demo")]
                     tour: cli.demo_tour.then(|| {
                         zapfast::demo::tour::Tour::new(
@@ -275,7 +296,10 @@ fn demo_size_arg() -> Option<[f32; 2]> {
     Some([w.parse::<f32>().ok()?, h.parse::<f32>().ok()?])
 }
 
-fn native_options(demo_persistence: Option<std::path::PathBuf>) -> eframe::NativeOptions {
+fn native_options(
+    demo_persistence: Option<std::path::PathBuf>,
+    renderer: zapfast::renderer::Backend,
+) -> eframe::NativeOptions {
     let demo_size = demo_size_arg().unwrap_or([1180.0, 780.0]);
     let demo = demo_persistence.is_some();
     let viewport = egui::ViewportBuilder::default()
@@ -296,19 +320,15 @@ fn native_options(demo_persistence: Option<std::path::PathBuf>) -> eframe::Nativ
         .with_fullsize_content_view(true)
         .with_titlebar_shown(false)
         .with_title_shown(false);
-    eframe::NativeOptions {
+    let mut options = eframe::NativeOptions {
         viewport,
         persistence_path: demo_persistence,
         // Do not restore window size during fixed-size screenshot runs.
         persist_window: !demo,
-        // Disable vsync because hidden Wayland windows may stop receiving frame
-        // callbacks and block the event loop. Repainting is event-driven.
-        glow_options: eframe::egui_glow::GlowConfiguration {
-            vsync: false,
-            ..Default::default()
-        },
         ..Default::default()
-    }
+    };
+    renderer.configure(&mut options);
+    options
 }
 
 /// eframe adapter that returns the long-lived [`app::App`] when a window closes.
@@ -319,6 +339,8 @@ struct Shell {
     shot: Option<Shot>,
     #[cfg(feature = "demo")]
     tour: Option<zapfast::demo::tour::Tour>,
+    #[cfg(feature = "demo")]
+    benchmark: Option<zapfast::demo::benchmark::Probe>,
 }
 
 impl Drop for Shell {
@@ -420,6 +442,10 @@ impl eframe::App for Shell {
             if let Some(tour) = self.tour.as_mut() {
                 tour.observe(app, ui.ctx());
             }
+        }
+        #[cfg(feature = "demo")]
+        if let Some(probe) = &mut self.benchmark {
+            probe.frame(ui.ctx(), _frame);
         }
     }
 

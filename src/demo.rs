@@ -1,5 +1,7 @@
 //! Offline sample data for screenshots, recorded tours, and headless UI tests.
 
+#[cfg(feature = "demo")]
+pub mod benchmark;
 pub mod tour;
 
 use std::collections::HashMap;
@@ -909,6 +911,34 @@ pub fn apply_flags(app: &mut App, page: Option<&str>) {
                 hits.sort_by_key(|message| std::cmp::Reverse(message.timestamp));
                 app.search_hits = hits;
             }
+            "video" => {
+                let path = app.dirs.media_cache_dir().join("demo-h264.mp4");
+                let _ = std::fs::create_dir_all(app.dirs.media_cache_dir());
+                let bytes = include_bytes!("../tests/fixtures/h264-preview.mp4");
+                let _ = std::fs::write(&path, bytes);
+                let mut media = media("video/mp4", bytes.len() as u64, Some(640), Some(360));
+                media.path = Some(path);
+                let chat = SAMPLES[0].id;
+                let mut row = message(
+                    chat,
+                    "demo-h264",
+                    false,
+                    jiff::Timestamp::now().as_second(),
+                    Content::Video {
+                        media,
+                        caption: Some("Animated MP4 preview".into()),
+                        seconds: Some(1),
+                        gif: true,
+                    },
+                );
+                row.thumbnail = Some(sample_thumbnail(1));
+                if let Some(conversation) = app.conversations.get_mut(chat) {
+                    conversation.messages.retain(|row| row.id != "demo-h264");
+                    conversation.messages.push(row);
+                }
+                app.open_chat = Some(chat.into());
+                app.scroll_to_bottom = true;
+            }
             "voice" => {
                 // Use a valid clip for playback tests.
                 let tone: Vec<f32> = (0..crate::voice::RATE * 6)
@@ -1108,6 +1138,15 @@ mod tests {
         assert!(avatar.is_file());
         apply_flags(&mut app, Some("voice"));
         assert!(app.dirs.media_cache_dir().join("demo-voice.ogg").is_file());
+        apply_flags(&mut app, Some("video"));
+        assert!(app.dirs.media_cache_dir().join("demo-h264.mp4").is_file());
+        assert!(
+            app.conversations[SAMPLES[0].id]
+                .message("demo-h264")
+                .unwrap()
+                .thumbnail
+                .is_some()
+        );
     }
 
     #[test]
@@ -1145,6 +1184,7 @@ mod tests {
             "staged",
             "compose-emoji",
             "voice",
+            "video",
             "recording",
             "gifs",
             "gifs-badkey",
