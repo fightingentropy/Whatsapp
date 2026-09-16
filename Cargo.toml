@@ -22,6 +22,10 @@ path = "src/main.rs"
 name = "video_probe"
 required-features = ["demo"]
 
+[[example]]
+name = "conversation_probe"
+required-features = ["demo"]
+
 [dependencies]
 anyhow = "1"
 # Hashes saved stickers by content. Already included through wacore.

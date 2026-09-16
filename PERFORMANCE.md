@@ -1,6 +1,91 @@
 # Apple Silicon performance work
 
-## Rendering and video: 16 September 2026
+## Scrolling and streaming: 16 September 2026
+
+Apple M4 Pro, macOS 27.0 (26A428), pinned Rust 1.98.0, release profile with
+thin LTO and the M1 baseline. Raw samples are in
+[the scrolling/streaming measurement file](benchmarks/apple-silicon-scrolling-streaming-2026-09-16.json).
+All data is synthetic; these measurements do not touch a linked account.
+
+### Long conversation layout
+
+Five alternating runs per mode used the same executable and 10,000 loaded
+synthetic messages (short, wrapping, multiline, links and emoji). Each run used
+an 1180×780-point view at two pixels/point, eight warmup passes, then 240 passes
+scrolling upward by 80 points per pass. The probe verifies the scroll offset
+really changes. The comparison disables only offscreen row skipping in the
+same build; it is not a timing of a separate upstream executable.
+
+- Median UI pass: full layout **67.658 ms**, cached rows **0.541 ms**.
+- Median of each run's 95th percentile: **72.159 ms** versus **1.204 ms**.
+- Rows laid out in the final pass: **10,000** versus **20** (visible + overscan).
+- The measured layout cost is about **125× lower** in this workload.
+
+These are headless egui UI-pass CPU timings. They exclude native rendering,
+tessellation, GPU work and presentation; they are not FPS or battery results.
+Both the previous and current native benchmark executables stopped repainting
+in the current desktop session, so no new native renderer timing is reported.
+
+The cache uses exact settled heights, never guesses. New/edited rows, changed
+names, image-size completion and width/zoom changes trigger measurement.
+The first visible message anchors history insertion and earlier height changes.
+Explicit message IDs keep interactions stable. Text selection/dragging registers
+the entire conversation, preserving offscreen endpoints and transcript copies;
+scrollbar drags retain row skipping. Initial measurement, resizing and active
+text selection still cost more, and the inexpensive height scan is still O(n).
+This is not yet a prefix-sum index or a cache of selected text layouts.
+
+### Time to the first ordered animation frame
+
+The video fixtures contain 60 H.264 frames at 30 fps, with the same synthetic
+`testsrc2` generation settings as the earlier media comparison. One warmup and
+five measured decodes per clip used the automatic backend policy. The consumer
+accepts frames immediately; timings include demux/session setup and conversion,
+but exclude UI scheduling and texture upload. Medians:
+
+- 320×180, software: first frame **0.994 ms**, full clip **17.790 ms**.
+- 640×360, hardware: first frame **3.941 ms**, full clip **25.631 ms**.
+- 1920×1080, hardware: first frame **9.576 ms**, full clip **92.751 ms**.
+
+Previously playback waited for the complete decoded clip. GIF, WebP, OpenH264,
+VideoToolbox and ffmpeg now publish frames incrementally. VideoToolbox drains
+in presentation order, including delayed B frames; callbacks never block on
+UI backpressure. A failed backend resets its published frames before fallback.
+A still WebP remains a static image. Until EOF, playback holds the last available
+frame if it catches the producer, then loops once the clip is complete.
+
+Each of the two decoder jobs has at most eight unpublished frames: **3.125 MiB
+per queue** at the maximum 320×320 RGBA size. A condition variable sleeps while
+full. Dropping a receiver cancels its job; offscreen unfinished jobs expire after
+one second, and a stalled receiver times out after five seconds to release an
+abandoned window context. Native reordered output is separately bounded.
+Completed clips keep the existing 150-frame/128 MiB decoded-pixel loop cache and
+one texture per clip. This reduces startup buffering; it does not replace the
+loop cache with a small playback ring. Codec/native buffers and GPU allocations
+remain outside the cache budget, and no whole-process RSS reduction is claimed.
+
+### Validation for this batch
+
+- Default features: **193 tests passed**, 7 explicitly ignored.
+- All features: **195 tests passed** (194 library + 1 binary), 7 ignored.
+- Formatting, both strict Clippy variants and rustdoc passed on Apple Silicon.
+- New regressions cover long-history selection/copy, scrollbar dragging, search
+  jumps, prepend/edit/resize anchors, cached/full layout geometry, first-frame
+  delivery before EOF, backpressure/cancellation, abandoned-window cleanup,
+  partial playback, fallback replacement, texture reuse and cache eviction.
+- Real VideoToolbox hardware decoding ran locally for the 640×360 and 1080p probes.
+- Native screenshot evidence is produced by the macOS CI smoke test. Local
+  window timing was unavailable in this desktop session, as described above.
+- No live pairing, message delivery, microphone, notification or energy test.
+
+Reproduce CPU layout and decoder measurements:
+
+```sh
+cargo run --locked --release --features demo --example conversation_probe > layout.json
+cargo run --locked --release --features demo --example video_probe -- synthetic.mp4
+```
+
+## Earlier rendering and video batch: 16 September 2026
 
 Apple M4 Pro, macOS 27.0 (26A428), Rust 1.98.0, release profile. Raw samples are
 in [the media measurement file](benchmarks/apple-silicon-media-2026-09-16.json).
@@ -35,8 +120,10 @@ order, duration, size and final colours, exercising both the automatic path and
 software independently. Native and software output are not pixel-identical:
 VideoToolbox uses system colour conversion/scaling; the test-pattern RGB mean
 absolute differences were 3.3–10.2 out of 255. Both first frames were inspected.
-GIF/WebP decoders are unchanged; ordinary videos still open externally. This
-is not streaming playback, zero-copy rendering or an energy measurement.
+In that earlier batch, GIF/WebP decoders were unchanged and playback waited for
+complete clips; the streaming batch above supersedes that behavior. Ordinary
+videos still open externally. Neither batch implements zero-copy rendering or
+measures energy use.
 
 ### Metal comparison
 
@@ -128,7 +215,8 @@ Animation tests verify that advancing a frame reuses its texture, a repaint
 within the same frame produces no new upload, tall/wide previews remain within
 320 pixels, and decoded images are retired after leaving a media view. The
 128 MiB limit covers retained decoded pixels, not all process or GPU memory.
-The implementation still decodes complete bounded clips before playback.
+At that stage, complete bounded clips were decoded before playback; the newer
+streaming batch above supersedes that behavior.
 
 ### Validation on 15 September
 
@@ -158,10 +246,10 @@ cargo run --locked --example background_probe
   use on other M-series chips before considering a default change.
 - Test VideoToolbox with representative user-supplied clips and varied colour
   metadata; the current measurements use synthetic H.264 only.
-- Stream a bounded queue of decoded frames, and measure memory pressure with
-  several animated stickers visible at once.
-- Virtualize conversation layout while preserving cross-message selection,
-  scroll anchors and transcript copying.
+- Measure process/GPU memory pressure with several animated stickers visible
+  at once; consider a smaller replay buffer if it improves the memory/energy tradeoff.
+- Reduce initial/resize and active-selection layout costs; a prefix-sum row index
+  could also remove the remaining O(n) height scan.
 - Profile remaining chat sorting, font discovery and background maintenance
   before adding more caches or changing protocol timing.
 

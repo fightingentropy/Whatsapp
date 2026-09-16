@@ -27,10 +27,17 @@ Upstream releases and performance numbers describe the upstream app, not this fo
   space are additional costs.
 - History is saved in transactions of up to 256 messages with cached SQL
   statements, preserving raw attachment keys and delivery state.
+- Long conversations reuse measured row heights and skip offscreen bubble layout.
+  Search jumps, history insertion, edits and resizing preserve the reading position.
+  Rows are remeasured when their content or layout changes; text selection keeps
+  the full message range registered for cross-message copying.
 - Animated media keeps one GPU texture per clip and uploads the current frame
   as needed. Decoded pixels have a 128 MiB cache budget, unseen clips expire
   after 20 seconds, and preview width and height are bounded at 320 pixels.
-  Decoder work and GPU textures are additional memory outside that CPU cache.
+  Playback starts as ordered frames arrive through a bounded queue of eight frames
+  per decoder. Invisible unfinished jobs are cancelled; finished clips keep their
+  loop cache (up to 150 frames) to avoid decoding on every loop. Decoder buffers,
+  unpublished frames and GPU textures are additional memory outside that CPU cache.
 - H.264 animated MP4 previews with at least 230,400 source pixels
   (equivalent to 640×360) and eight frames use Apple's VideoToolbox decoder, with a software
   fallback. Smaller clips avoid hardware setup costs. Decoding requests preview-sized output, limits work in
@@ -44,9 +51,7 @@ Upstream releases and performance numbers describe the upstream app, not this fo
   automatically move or reuse an upstream installation's session.
 
 An optional Metal renderer is available for comparison with OpenGL (see below).
-Incremental streaming decoders and full conversation virtualization remain
-follow-up experiments. See
-[PERFORMANCE.md](PERFORMANCE.md) for measurements and validation details.
+See [PERFORMANCE.md](PERFORMANCE.md) for measurements, remaining costs and validation details.
 
 ## What it does
 
@@ -151,11 +156,18 @@ Offline measurements (no linked account required):
 cargo build --locked --release --features demo,metal
 ./target/aarch64-apple-darwin/release/zapfast --renderer metal --demo-benchmark /tmp/metal.json
 ./target/aarch64-apple-darwin/release/zapfast --renderer open-gl --demo-benchmark /tmp/opengl.json
+./target/aarch64-apple-darwin/release/zapfast --demo --demo-page long --demo-benchmark /tmp/scroll.json --demo-benchmark-scroll
+# Compare the same 10,000 messages with offscreen layout enabled:
+./target/aarch64-apple-darwin/release/zapfast --demo --demo-page long --demo-benchmark /tmp/full-scroll.json --demo-benchmark-scroll --demo-full-layout
+cargo run --locked --release --features demo --example conversation_probe > /tmp/layout.json
 cargo run --locked --release --features demo --example video_probe -- tests/fixtures/h264-bframes.mp4
 ```
 
 The video probe requires an actual hardware decoder and fails when unavailable;
-it never silently measures the software fallback as hardware.
+it never silently measures the software fallback as hardware. It also reports time
+to the first ordered CPU frame; this excludes window scheduling and GPU upload.
+The conversation probe runs the same scrolling UI without a window. Its CPU timings
+exclude native rendering, tessellation and GPU work; they are not frame-rate measurements.
 
 For a local test DMG:
 

@@ -58,6 +58,16 @@ struct Cli {
     #[cfg(feature = "demo")]
     #[arg(long, value_name = "PATH", conflicts_with_all = ["demo_shot", "demo_tour"])]
     demo_benchmark: Option<std::path::PathBuf>,
+
+    /// Disable offscreen row skipping for offline benchmark comparisons.
+    #[cfg(feature = "demo")]
+    #[arg(long, requires = "demo")]
+    demo_full_layout: bool,
+
+    /// Scroll the offline conversation during a benchmark.
+    #[cfg(feature = "demo")]
+    #[arg(long, requires = "demo_benchmark")]
+    demo_benchmark_scroll: bool,
     /// Screenshot window size as WxH logical points.
     #[arg(long, value_name = "WxH")]
     demo_size: Option<String>,
@@ -178,6 +188,10 @@ fn main() -> eframe::Result<()> {
                     .expect("application state present");
                 app.attach(&cc.egui_ctx);
                 #[cfg(feature = "demo")]
+                cc.egui_ctx.data_mut(|data| {
+                    data.insert_temp(egui::Id::new("full-message-layout"), cli.demo_full_layout)
+                });
+                #[cfg(feature = "demo")]
                 if cli.demo_macos {
                     zapfast::theme::preview_macos(&cc.egui_ctx);
                 }
@@ -188,7 +202,12 @@ fn main() -> eframe::Result<()> {
                     shot: creator_shot,
                     #[cfg(feature = "demo")]
                     benchmark: benchmark_path.map(|path| {
-                        zapfast::demo::benchmark::Probe::new(path, cli.renderer, launched)
+                        zapfast::demo::benchmark::Probe::new(
+                            path,
+                            cli.renderer,
+                            launched,
+                            cli.demo_benchmark_scroll,
+                        )
                     }),
                     #[cfg(feature = "demo")]
                     tour: cli.demo_tour.then(|| {
