@@ -1,8 +1,8 @@
 //! Playback for WhatsApp GIFs, animated WebP stickers, and GIF files.
 //!
-//! Decoding runs off the UI thread. WebP, GIF, and H.264 MP4 decode in-process;
-//! other MP4 codecs use `ffmpeg` when available. Idle animations are removed
-//! from memory.
+//! Decoding runs off the UI thread. WebP/GIF decode in-process; H.264 MP4 uses
+//! VideoToolbox with an OpenH264 fallback. Other MP4 codecs use `ffmpeg` when
+//! available. Idle animations are removed from memory.
 
 use std::collections::HashMap;
 use std::io::Read;
@@ -12,6 +12,11 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use egui::{ColorImage, TextureHandle, TextureOptions};
+
+mod videotoolbox;
+
+#[cfg(feature = "demo")]
+pub mod diagnostics;
 
 /// Maximum frame width or height uploaded to the GPU.
 const MAX_WIDTH: u32 = 320;
@@ -340,8 +345,11 @@ fn to_color_image(image: &image::RgbaImage) -> ColorImage {
 
 /// Decodes MP4 to scaled RGBA frames with `ffmpeg`.
 fn decode_video(path: &Path) -> Option<Decoded> {
-    // Decode WhatsApp's H.264 MP4s in-process and use ffmpeg for other codecs.
-    decode_mp4(path).or_else(|| decode_with_ffmpeg(path))
+    // Hardware decoding is confined to H.264 previews. The software path stays
+    // available when a format/device cannot create or complete a native session.
+    videotoolbox::decode(path)
+        .or_else(|| decode_mp4(path))
+        .or_else(|| decode_with_ffmpeg(path))
 }
 
 /// Decodes an MP4 video track in-process.
@@ -362,7 +370,11 @@ fn decode_mp4(path: &Path) -> Option<Decoded> {
             track.sample_count(),
         )
     };
-    let mut decoder = openh264::decoder::Decoder::new().ok()?;
+    let config = openh264::decoder::DecoderConfig::new()
+        .flush_after_decode(openh264::decoder::Flush::NoFlush);
+    let mut decoder =
+        openh264::decoder::Decoder::with_api_config(openh264::OpenH264API::from_source(), config)
+            .ok()?;
     let mut frames: Vec<(ColorImage, Duration)> = Vec::new();
     let mut delays: std::collections::VecDeque<Duration> = std::collections::VecDeque::new();
     // Send parameter sets and samples to the decoder in Annex B format.
@@ -387,6 +399,16 @@ fn decode_mp4(path: &Path) -> Option<Decoded> {
             if let Some(frame) = frame_of(&yuv, delay) {
                 frames.push(frame);
             }
+        }
+    }
+    // Mark end-of-stream before flushing. Otherwise OpenH264 keeps the final
+    // reorder buffer (commonly two B frames) even after flush_remaining().
+    if frames.len() < MAX_FRAMES
+        && let Ok(Some(yuv)) = decoder.decode(&[])
+    {
+        let delay = delays.pop_front().unwrap_or(Duration::from_millis(66));
+        if let Some(frame) = frame_of(&yuv, delay) {
+            frames.push(frame);
         }
     }
     if let Ok(rest) = decoder.flush_remaining() {

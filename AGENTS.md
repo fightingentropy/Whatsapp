@@ -42,14 +42,20 @@ protocol. These notes are for coding agents and new contributors.
   it afterwards (resolving sequences through the font's GSUB ligatures).
   Any text that can hold an emoji goes through `widgets::line` /
   `widgets::rich_text` or `markup::layout`, never a bare `Label`.
-- `src/animation.rs` plays animated stickers and GIFs: WebP/GIF frames
-  decode in-process, and so do MP4s (the `mp4` crate demuxes, `openh264`
-  decodes the H.264 WhatsApp uses, samples converted from AVCC to Annex
-  B); `ffmpeg` is only a fallback for other codecs. `openh264` compiles
+- `src/animation.rs` plays animated stickers and GIFs. WebP/GIF decode
+  in-process; `mp4` demuxes H.264 previews for VideoToolbox hardware decoding
+  with OpenH264 as the software fallback (AVCC converted to Annex B).
+  VideoToolbox requests preview-sized output, limits in-flight submissions to
+  four and sorts output by presentation time. Both paths flush delayed frames.
+  `ffmpeg` is only a fallback for other codecs. `openh264` compiles
   its C++ from source with the C++ compiler of the host; `nasm` is
   optional and only adds the SIMD paths (the AUR recipes leave it out,
   the build works without it). Frames share one playback texture per clip on the interface
   thread. The CPU frame cache is bounded by bytes and expires unseen clips.
+- `src/renderer.rs` configures the native renderer. OpenGL remains the default;
+  `--features metal` adds a Metal-only wgpu backend selected with `--renderer metal`.
+  Keep the OpenGL option for comparison/recovery. Both are event-driven; the
+  offline demo benchmark measures CPU frame time, not GPU time or battery life.
 - Message bodies paint through `markup::paint_selectable` and single lines
   through `widgets::selectable_rich_text`: both hand the galley to
   `egui::text_selection::LabelSelectionState` (which paints it) and only

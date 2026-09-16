@@ -31,6 +31,11 @@ Upstream releases and performance numbers describe the upstream app, not this fo
   as needed. Decoded pixels have a 128 MiB cache budget, unseen clips expire
   after 20 seconds, and preview width and height are bounded at 320 pixels.
   Decoder work and GPU textures are additional memory outside that CPU cache.
+- H.264 animated MP4 previews with at least 230,400 source pixels
+  (equivalent to 640×360) and eight frames use Apple's VideoToolbox decoder, with a software
+  fallback. Smaller clips avoid hardware setup costs. Decoding requests preview-sized output, limits work in
+  flight, and preserves reordered frames at the end of a clip. Ordinary videos
+  still open in your external player.
 - System font collections share their bytes across faces. Apple Color Emoji
   supplies emoji by default; `--features bundled-emoji` restores the Noto
   compatibility fallback. Demo builds still include Noto for their sample art.
@@ -38,8 +43,9 @@ Upstream releases and performance numbers describe the upstream app, not this fo
   belong to this fork. It links as a separate companion device and does not
   automatically move or reuse an upstream installation's session.
 
-Metal rendering, VideoToolbox decoding, incremental streaming decoders and full
-conversation virtualization remain follow-up experiments. See
+An optional Metal renderer is available for comparison with OpenGL (see below).
+Incremental streaming decoders and full conversation virtualization remain
+follow-up experiments. See
 [PERFORMANCE.md](PERFORMANCE.md) for measurements and validation details.
 
 ## What it does
@@ -133,6 +139,23 @@ Use an Apple Silicon Mac, Xcode Command Line Tools, CMake and Rust via rustup.
 cargo build --locked --release
 ./target/aarch64-apple-darwin/release/zapfast
 ```
+
+To build the experimental Metal backend, add `--features metal`, then launch
+with `--renderer metal`. `--renderer open-gl` selects the existing renderer in
+the same build. OpenGL remains the default. The Metal feature enables only the
+Apple backend of wgpu. Both renderers repaint on demand.
+
+Offline measurements (no linked account required):
+
+```sh
+cargo build --locked --release --features demo,metal
+./target/aarch64-apple-darwin/release/zapfast --renderer metal --demo-benchmark /tmp/metal.json
+./target/aarch64-apple-darwin/release/zapfast --renderer open-gl --demo-benchmark /tmp/opengl.json
+cargo run --locked --release --features demo --example video_probe -- tests/fixtures/h264-bframes.mp4
+```
+
+The video probe requires an actual hardware decoder and fails when unavailable;
+it never silently measures the software fallback as hardware.
 
 For a local test DMG:
 
