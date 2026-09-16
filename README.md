@@ -192,6 +192,9 @@ Public releases require Developer ID signing and notarization; see
 On first start, use WhatsApp on your phone: **Linked devices → Link a device**.
 Scan the QR code, or choose phone-number linking. History arrives from the phone
 and remains in this app's local archive. Settings is available with `⌘,`.
+When the QR session expires, the app requests a fresh session automatically.
+If no code is available, **Get a new QR code** retries without restarting the app
+or deleting its data. An outstanding phone-number pairing code is preserved.
 
 ## Files
 
@@ -200,6 +203,8 @@ Settings, `session.db`, `archive.db`, saved stickers and logs are under
 Downloaded media and avatars are under
 `~/Library/Caches/org.erlin.zapfast-silicon/`.
 Window state uses eframe's independent `zapfast-silicon` app id.
+Connection-status logs record only the state name, omitting QR payloads,
+pairing codes, phone numbers and server error details.
 The device database and archived raw messages contain account and attachment
 keys. Clearing the cache does not remove them; unlinking removes the local account.
 
