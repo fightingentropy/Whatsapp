@@ -375,7 +375,11 @@ impl Worker {
 
     /// Resolves phone numbers in chat-row previews.
     fn polish_chat(&self, chat: &mut Chat) {
+        for participant in &mut chat.participants {
+            *participant = self.canonical_str(participant);
+        }
         if let Some(last) = chat.last.as_mut() {
+            last.sender = self.canonical_str(&last.sender);
             last.summary = self.pn_tokens(&last.summary);
         }
     }
@@ -434,6 +438,22 @@ impl Worker {
                 .into_iter()
                 .map(|contact| (contact.id.clone(), contact))
                 .collect();
+        }
+        match self.archive.pending_lid_merges() {
+            Ok(aliases) => {
+                for (lid, pn) in aliases {
+                    self.merge_lid(&lid, &pn);
+                }
+            }
+            Err(error) => log::warn!("could not check for duplicate conversations: {error}"),
+        }
+        // A saved selection or an old notification can still contain an alias
+        // after its rows were repaired on an earlier run.
+        for (lid, pn) in &self.lid_to_pn {
+            self.emit(Event::ChatMerged {
+                from: format!("{lid}@lid"),
+                into: format!("{pn}@s.whatsapp.net"),
+            });
         }
         if let Some(id) = self.me_pn.clone().or_else(|| self.me_lid.clone()) {
             self.emit(Event::Me {
@@ -619,10 +639,55 @@ impl Worker {
         if self.lid_to_pn.get(lid).is_some_and(|known| known == pn) {
             return;
         }
-        self.lid_to_pn.insert(lid.to_owned(), pn.to_owned());
+        self.merge_lid(lid, pn);
+    }
+
+    fn merge_lid(&mut self, lid: &str, pn: &str) {
         if let Err(error) = self.archive.put_lid(lid, pn) {
-            log::warn!("could not remember an id mapping: {error}");
+            // Do not tell the UI to hide an alias whose rows did not commit.
+            self.lid_to_pn.remove(lid);
+            log::warn!("could not merge a conversation identity: {error}");
+            self.emit(Event::Error("Could not combine a conversation. Its saved history is unchanged; restart to retry.".into()));
+            return;
         }
+        self.lid_to_pn.insert(lid.to_owned(), pn.to_owned());
+        let from = format!("{lid}@lid");
+        let into = format!("{pn}@s.whatsapp.net");
+        self.contacts.remove(&from);
+        let contact = self.archive.contact(&into).ok().flatten();
+        if let Some(contact) = &contact {
+            self.contacts.insert(into.clone(), contact.clone());
+        }
+        if let Some(pending) = self.pending_older.remove(&from) {
+            self.pending_older.entry(into.clone()).or_insert(pending);
+        }
+        if let Some(pending) = self.read_syncs.remove(&from) {
+            self.read_syncs.entry(into.clone()).or_insert(pending);
+        }
+        if self.older_warned.remove(&from) {
+            self.older_warned.insert(into.clone());
+        }
+        for full in [false, true] {
+            if let Some(attempts) = self.pending_avatars.remove(&(from.clone(), full)) {
+                self.pending_avatars
+                    .entry((into.clone(), full))
+                    .or_insert(attempts);
+            }
+        }
+        self.sticker_downloads = self
+            .sticker_downloads
+            .drain()
+            .map(|(chat, id)| (if chat == from { into.clone() } else { chat }, id))
+            .collect();
+        self.emit(Event::ChatMerged {
+            from,
+            into: into.clone(),
+        });
+        if let Some(contact) = contact {
+            self.emit(Event::Contacts(vec![contact]));
+        }
+        self.refresh_chat_name(&into);
+        self.emit_chat(&into);
     }
 
     fn learn_pair(&mut self, a: &Jid, b: &Jid) {
@@ -1994,7 +2059,60 @@ impl Worker {
 
     // --- commands --------------------------------------------------------
 
-    async fn handle_command(&mut self, command: Command) {
+    async fn handle_command(&mut self, mut command: Command) {
+        // A picker, download or send may finish after its chat was merged.
+        // Resolve queued work too, so callbacks cannot recreate the alias.
+        match &mut command {
+            Command::SendText { chat, .. }
+            | Command::Composing { chat, .. }
+            | Command::MarkRead { chat, .. }
+            | Command::ReadSyncFinished { chat, .. }
+            | Command::LoadChat { chat, .. }
+            | Command::FetchOlder(chat)
+            | Command::LoadUntil { chat, .. }
+            | Command::EnsureChat { chat, .. }
+            | Command::Download { chat, .. }
+            | Command::OlderFailed { chat, .. }
+            | Command::GroupInfoFailed { chat, .. }
+            | Command::EditText { chat, .. }
+            | Command::Revoke { chat, .. }
+            | Command::DeleteLocal { chat, .. }
+            | Command::PickFiles(chat)
+            | Command::Picked { chat, .. }
+            | Command::SendFiles { chat, .. }
+            | Command::SendImage { chat, .. }
+            | Command::SetMuted(chat, _)
+            | Command::SendVoice { chat, .. }
+            | Command::SendSticker { chat, .. }
+            | Command::SendGif { chat, .. }
+            | Command::React { chat, .. }
+            | Command::SetArchived(chat, _)
+            | Command::SetPinned(chat, _)
+            | Command::Sent { chat, .. }
+            | Command::Downloaded { chat, .. }
+            | Command::GroupRecipients { chat, .. }
+            | Command::GroupInfo { chat, .. } => *chat = self.canonical_str(chat),
+            Command::MarkPlayed { chat, sender, .. } => {
+                *chat = self.canonical_str(chat);
+                *sender = self.canonical_str(sender);
+            }
+            Command::Outbound { chat, row, .. } => {
+                *chat = self.canonical_str(chat);
+                self.polish(row);
+            }
+            Command::Forward {
+                from_chat, to_chat, ..
+            } => {
+                *from_chat = self.canonical_str(from_chat);
+                *to_chat = self.canonical_str(to_chat);
+            }
+            Command::FetchAvatar { id, .. }
+            | Command::AvatarFetched { id, .. }
+            | Command::AvatarFailed { id, .. }
+            | Command::SaveContact { id, .. }
+            | Command::ContactSaved { id, .. } => *id = self.canonical_str(id),
+            _ => {}
+        }
         match command {
             Command::SendText {
                 chat,
@@ -2767,6 +2885,11 @@ impl Worker {
 
     /// Refreshes stored quote ids and names with current mappings.
     fn polish(&self, message: &mut Message) {
+        message.chat = self.canonical_str(&message.chat);
+        message.sender = self.canonical_str(&message.sender);
+        for reaction in &mut message.reactions {
+            reaction.sender = self.canonical_str(&reaction.sender);
+        }
         if let Some(quoted) = message.quoted.as_mut() {
             let sender = self.canonical_str(&quoted.sender);
             if sender != quoted.sender || quoted.sender_name.is_none() {
@@ -5281,6 +5404,92 @@ mod receipt_tests {
         assert_eq!(worker.status, LinkStatus::Connected);
         assert_eq!(worker.bot_generation, 0);
         assert!(inbox.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn late_identity_mapping_repairs_history_and_redirects_queued_results() {
+        let (mut worker, events, _inbox, _wa) = worker();
+        worker.archive.ensure_chat(PEER_LID, "Unknown").unwrap();
+        worker.archive.ensure_chat(PEER, "Peer").unwrap();
+        let mut earlier = own_message("earlier", 10);
+        earlier.chat = PEER_LID.into();
+        worker
+            .archive
+            .insert_message(&earlier, Some(b"old keys"))
+            .unwrap();
+        worker
+            .archive
+            .insert_message(&incoming("reply", 20), Some(b"new keys"))
+            .unwrap();
+        worker.learn_lid("167650256810092", "4917663430455");
+        assert!(events.try_iter().any(|event| matches!(event, Event::ChatMerged { from, into } if from == PEER_LID && into == PEER)));
+        worker
+            .handle_command(Command::Sent {
+                chat: PEER_LID.into(),
+                id: "earlier".into(),
+                error: None,
+            })
+            .await;
+        worker
+            .handle_command(Command::EnsureChat {
+                chat: PEER_LID.into(),
+                name: "stale callback".into(),
+            })
+            .await;
+        assert!(worker.archive.chat(PEER_LID).unwrap().is_none());
+        assert_eq!(worker.archive.messages(PEER, None, 100).unwrap().len(), 2);
+        assert_eq!(
+            worker
+                .archive
+                .message(PEER, "earlier")
+                .unwrap()
+                .unwrap()
+                .status,
+            Delivery::Sent
+        );
+        worker
+            .handle_command(Command::LoadChat {
+                chat: PEER_LID.into(),
+                before: None,
+            })
+            .await;
+        assert!(events.try_iter().any(|event| matches!(event, Event::Messages { chat, messages, .. } if chat == PEER && messages.len() == 2)));
+    }
+
+    #[test]
+    fn startup_repairs_already_known_aliases_without_pairing_again() {
+        let (mut worker, events, _inbox, _wa) = worker();
+        // Reproduce an older build: mapping recorded, alias rows still present.
+        worker
+            .archive
+            .put_lid("167650256810092", "4917663430455")
+            .unwrap();
+        worker.archive.ensure_chat(PEER_LID, "Unknown").unwrap();
+        let mut earlier = own_message("earlier", 10);
+        earlier.chat = PEER_LID.into();
+        worker
+            .archive
+            .insert_message(&earlier, Some(b"old keys"))
+            .unwrap();
+        worker.load_state();
+        assert!(worker.archive.chat(PEER_LID).unwrap().is_none());
+        assert_eq!(
+            worker.archive.raw(PEER, "earlier").unwrap().unwrap(),
+            b"old keys"
+        );
+        assert!(worker.archive.pending_lid_merges().unwrap().is_empty());
+        let chats = events
+            .try_iter()
+            .find_map(|event| match event {
+                Event::Chats(chats) => Some(chats),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(chats.len(), 1);
+        assert_eq!(chats[0].id, PEER);
+        // Even after repair, send aliases so a persisted last-chat id resolves.
+        worker.load_state();
+        assert!(events.try_iter().any(|event| matches!(event, Event::ChatMerged { from, into } if from == PEER_LID && into == PEER)));
     }
 
     fn own_message(id: &str, timestamp: i64) -> Message {
