@@ -178,9 +178,42 @@ fn title(ui: &mut egui::Ui, app: &mut App, label: &str) {
 
 fn shortcuts(app: &mut App, ui: &mut egui::Ui) {
     let palette = app.palette;
-    title(ui, app, "Keyboard shortcuts");
+    title(ui, app, "Controls and shortcuts");
+    let composing = [
+        (
+            if app.settings.enter_sends {
+                "Enter"
+            } else {
+                "Ctrl+Enter"
+            },
+            "Send message",
+        ),
+        (
+            if app.settings.enter_sends {
+                "Shift+Enter"
+            } else {
+                "Enter"
+            },
+            "New line",
+        ),
+        ("*text*", "Bold"),
+        ("_text_", "Italic"),
+        ("~text~", "Strikethrough"),
+        (":name", "Find an emoji"),
+        ("@name", "Mention someone in a group"),
+        ("Drop files", "Attach files to the message"),
+        (
+            "Microphone",
+            "Record a voice message; Enter sends, Escape cancels",
+        ),
+        ("Right-click", "Message actions"),
+    ];
+    let shortcuts: Vec<_> = composing
+        .into_iter()
+        .chain(super::keys::SHORTCUTS.iter().copied())
+        .collect();
     // Reserve enough width for the longest shortcut before laying out the grid.
-    let keys_width = super::keys::SHORTCUTS
+    let keys_width = shortcuts
         .iter()
         .map(|(keys, _)| {
             ui.painter()
@@ -193,21 +226,27 @@ fn shortcuts(app: &mut App, ui: &mut egui::Ui) {
                 .x
         })
         .fold(0.0, f32::max);
-    egui::Grid::new("shortcuts")
-        .num_columns(2)
-        .min_col_width(keys_width)
-        .spacing([18.0, 8.0])
+    egui::ScrollArea::vertical()
+        .id_salt("controls-help")
+        .max_height((ui.ctx().content_rect().height() - 144.0).max(160.0))
+        .auto_shrink([false, true])
         .show(ui, |ui| {
-            for (keys, what) in super::keys::SHORTCUTS {
-                theme::text(
-                    ui,
-                    super::keys::label(keys),
-                    theme::semibold(13.0),
-                    palette.text,
-                );
-                theme::text(ui, *what, theme::regular(13.0), palette.secondary);
-                ui.end_row();
-            }
+            egui::Grid::new("shortcuts")
+                .num_columns(2)
+                .min_col_width(keys_width)
+                .spacing([18.0, 8.0])
+                .show(ui, |ui| {
+                    for (keys, what) in shortcuts {
+                        theme::text(
+                            ui,
+                            super::keys::label(keys),
+                            theme::semibold(13.0),
+                            palette.text,
+                        );
+                        theme::paragraph(ui, what, theme::regular(13.0), palette.secondary);
+                        ui.end_row();
+                    }
+                });
         });
 }
 

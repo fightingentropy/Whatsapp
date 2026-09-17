@@ -86,7 +86,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     toggle(ui, app, "Show sender pictures in every chat", "WhatsApp shows them in groups only.", |settings| &mut settings.show_sender_pictures);
                     toggle(ui, app, "Names from your address book", "Prefer saved contact names. When off, prefer public WhatsApp profile names. This applies throughout the app.", |settings| &mut settings.names_from_contacts);
                     toggle(ui, app, "Save contacts to the phone's address book", "Also add contacts saved here to your phone's address book. When off, they remain WhatsApp contacts. Names sync to linked devices either way.", |settings| &mut settings.save_contacts_to_phone);
-                    toggle(ui, app, "Show shortcut hints", "", |settings| &mut settings.show_shortcut_hints);
+                    toggle(ui, app, "Show shortcut hints", "Show keyboard tips when no chat is open.", |settings| &mut settings.show_shortcut_hints);
 
                     section(ui, app, "Window");
                     toggle(ui, app, "Keep running when the window closes", "Keep Whatsapp linked in the menu bar. Quit from the menu or with ⌘Q.", |settings| &mut settings.keep_running_in_background);

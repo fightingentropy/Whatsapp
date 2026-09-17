@@ -825,7 +825,9 @@ fn composer(app: &mut App, ui: &mut egui::Ui, chat: &Chat) {
                         app.actions.push(Action::TogglePicker(PickerTab::Emoji));
                     }
                 }
-                let field_width = ui.available_width() - button_width - 10.0;
+                // Reserve both trailing controls and their gaps on the same row.
+                let field_width = ui.available_width() - button_width - 32.0
+                    - 2.0 * ui.spacing().item_spacing.x;
                 Frame::new()
                     .fill(palette.surface)
                     .corner_radius(CornerRadius::same(theme::RADIUS + 4))
@@ -988,6 +990,16 @@ fn composer(app: &mut App, ui: &mut egui::Ui, chat: &Chat) {
                         send_click = true;
                     }
                 }
+                if theme::icon_button(
+                    ui,
+                    Icon::Keyboard,
+                    20.0,
+                    palette.secondary,
+                    palette.text,
+                    &format!("Controls and shortcuts ({})", super::keys::label("Ctrl+/")),
+                ).clicked() {
+                    app.actions.push(Action::ShowDialog(Dialog::Shortcuts));
+                }
             },
             );
             if (send_key || send_click)
@@ -1008,32 +1020,7 @@ fn composer(app: &mut App, ui: &mut egui::Ui, chat: &Chat) {
                 }
                 app.focus_composer = true;
             }
-            if app.settings.show_shortcut_hints {
-                let hint = super::keys::label(if enter_sends {
-                    "Enter sends · Shift+Enter for a new line · *bold* _italic_ ~strike~ · Ctrl+V pastes a picture"
-                } else {
-                    "Ctrl+Enter sends · *bold* _italic_ ~strike~ · Ctrl+V pastes a picture"
-                });
-                ui.add_space(2.0);
-                ui.horizontal(|ui| {
-                    theme::text(ui, &hint, theme::regular(11.0), palette.dim);
-                    // Open the shortcut list without consuming typed `?`.
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if theme::icon_button(
-                            ui,
-                            Icon::Keyboard,
-                            13.0,
-                            palette.dim,
-                            palette.secondary,
-                            &format!("All shortcuts ({})", super::keys::label("Ctrl+/")),
-                        )
-                        .clicked()
-                        {
-                            app.actions.push(Action::ShowDialog(Dialog::Shortcuts));
-                        }
-                    });
-                });
-            }
+
         });
 }
 
