@@ -102,12 +102,14 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
 pub const SHORTCUTS: &[(&str, &str)] = &[
     ("Ctrl+F / Ctrl+K", "Search chats"),
     ("Alt+↑ / Alt+↓", "Previous / next chat"),
-    ("Enter", "Send (Shift+Enter for a new line)"),
     (
         "Escape",
         "Dismiss suggestions, cancel the current action, or return from search",
     ),
-    ("Ctrl+V", "Paste text, or send a picture from the clipboard"),
+    (
+        "Ctrl+V",
+        "Paste text or attach a picture from the clipboard",
+    ),
     ("Ctrl+B", "Show or hide the chat list"),
     ("Ctrl+End", "Jump to the newest message"),
     ("Ctrl+,", "Settings"),

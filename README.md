@@ -137,8 +137,9 @@ See [PERFORMANCE.md](PERFORMANCE.md) for measurements, remaining costs and valid
   WhatsApp's `[time, date] Name:` format. Contact names and numbers are also
   selectable.
 - **Keyboard shortcuts.** `⌘K` searches, `Alt+↑/↓` switches chats and
-  keeps the active chat visible in the list, `Esc` cancels the current action,
-  and `⌘/` lists all shortcuts.
+  keeps the active chat visible in the list, and `Esc` cancels the current action.
+  The keyboard button next to the microphone/send button (or `⌘/`) opens controls,
+  formatting help and shortcuts, including your current Enter-key setting.
 - **Local storage.** Messages are stored in one SQLite file and attachments
   in the cache directory. Unlinking deletes both and removes this device from
   your phone.
