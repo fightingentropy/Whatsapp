@@ -20,6 +20,7 @@ use crate::theme::Palette;
 use crate::tray::{TrayCommand, TrayService};
 
 mod cache;
+mod identities;
 
 /// Initial and incremental message-page size.
 pub const PAGE: usize = 60;
@@ -158,6 +159,7 @@ pub struct App {
     /// Chats ordered by latest activity.
     pub chats: Vec<Chat>,
     pub contacts: HashMap<String, Contact>,
+    chat_aliases: HashMap<ChatId, ChatId>,
     pub conversations: HashMap<ChatId, Conversation>,
     conversations_dirty: bool,
     pub open_chat: Option<ChatId>,
@@ -374,6 +376,7 @@ impl App {
             me_about: None,
             chats: Vec::new(),
             contacts: HashMap::new(),
+            chat_aliases: HashMap::new(),
             conversations: HashMap::new(),
             conversations_dirty: true,
             open_chat,
@@ -657,6 +660,19 @@ impl App {
     pub fn chat_title(&self, chat: &Chat) -> String {
         if chat.is_group() || self.me.as_deref() == Some(chat.id.as_str()) {
             return chat.name.clone();
+        }
+        if self.settings.names_from_contacts {
+            if let Some(name) = self
+                .contacts
+                .get(&chat.id)
+                .and_then(|contact| contact.full_name.as_deref())
+                .filter(|name| !name.is_empty())
+            {
+                return name.to_owned();
+            }
+            if let Some(phone) = chat.phone() {
+                return crate::util::phone(phone);
+            }
         }
         self.person_name(&chat.id, None)
     }
@@ -1105,6 +1121,7 @@ impl App {
                         self.contacts.insert(contact.id.clone(), contact);
                     }
                 }
+                Event::ChatMerged { from, into } => self.merge_chat_identity(from, into),
                 Event::Typing {
                     chat,
                     sender,
@@ -1244,6 +1261,7 @@ impl App {
                 self.chats.clear();
                 self.conversations.clear();
                 self.contacts.clear();
+                self.chat_aliases.clear();
                 self.avatars.clear();
                 self.open_chat = None;
                 self.toast_error("This device was unlinked from your phone");
@@ -1396,6 +1414,7 @@ impl App {
     }
 
     fn open_chat(&mut self, id: ChatId) {
+        let id = self.chat_aliases.get(&id).cloned().unwrap_or(id);
         if self.open_chat.as_deref() != Some(id.as_str()) {
             if let Some(previous) = self.open_chat.take() {
                 if let Some(conversation) = self.conversations.get_mut(&previous) {
@@ -1750,6 +1769,7 @@ impl App {
             }
             Action::OpenChat(id) => self.open_chat(id),
             Action::StartChat { id, name } => {
+                let id = self.chat_aliases.get(&id).cloned().unwrap_or(id);
                 if self.chat(&id).is_none() {
                     self.chats.push(Chat::new(id.clone(), name.clone()));
                     self.backend.send(Command::EnsureChat {
@@ -3189,6 +3209,18 @@ mod name_tests {
             "Cy",
             "a name the message carried, for someone unknown"
         );
+    }
+
+    #[test]
+    fn unsaved_direct_chats_prefer_the_number_but_keep_profile_name_choice() {
+        let mut app = app();
+        let chat = Chat::new("2@s.whatsapp.net".into(), "~Bob".into());
+        assert_eq!(app.chat_title(&chat), crate::util::phone("2"));
+        let saved = Chat::new("1@s.whatsapp.net".into(), "old name".into());
+        assert_eq!(app.chat_title(&saved), "Ada Lovelace");
+        app.settings.names_from_contacts = false;
+        assert_eq!(app.chat_title(&chat), "Bob");
+        assert_eq!(app.chat_title(&saved), "Ada");
     }
 
     #[test]

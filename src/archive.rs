@@ -9,6 +9,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::model::{Chat, ChatKind, Contact, Content, Delivery, LastMessage, Message};
 
+mod identities;
 mod receipts;
 mod search;
 
@@ -492,12 +493,16 @@ impl Archive {
 
     /// Stores a privacy id to phone-number mapping without JID domains.
     pub fn put_lid(&self, lid: &str, pn: &str) -> Result<()> {
+        let transaction = self.connection.unchecked_transaction()?;
         self.connection.execute(
             "INSERT INTO lids (lid, pn) VALUES (?1, ?2) ON CONFLICT(lid) DO UPDATE SET pn = excluded.pn",
             params![lid, pn],
         )?;
-        self.merge_group_recipient(&format!("{lid}@lid"), &format!("{pn}@s.whatsapp.net"))?;
-        Ok(())
+        let from = format!("{lid}@lid");
+        let into = format!("{pn}@s.whatsapp.net");
+        self.merge_chat_identity(&from, &into)?;
+        self.merge_group_recipient(&from, &into)?;
+        transaction.commit()
     }
 
     pub fn lids(&self) -> Result<Vec<(String, String)>> {

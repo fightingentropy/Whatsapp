@@ -863,6 +863,12 @@ pub fn apply_flags(app: &mut App, page: Option<&str>) {
             "long" => long_history(app, 10_000),
             "many-chats" => many_chats(app, 10_000),
             "empty" => app.open_chat = None,
+            "unsaved-contact" => {
+                if let Some(contact) = app.contacts.get_mut(SAMPLES[0].id) {
+                    contact.full_name = None;
+                    contact.push_name = Some(".".into());
+                }
+            }
             "settings" => app.page = Page::Settings,
             "update" => {
                 app.update = Some(crate::updates::Release {

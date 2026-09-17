@@ -86,9 +86,9 @@ impl Archive {
     }
 
     /// A privacy id and a phone number identify one person, not two readers.
+    /// Runs inside put_lid's transaction alongside the conversation merge.
     pub(super) fn merge_group_recipient(&self, lid: &str, pn: &str) -> Result<()> {
-        let transaction = self.connection.unchecked_transaction()?;
-        transaction.execute(
+        self.connection.execute(
             "INSERT INTO group_receipts (chat, id, recipient, expected, status, delivered_at, read_at, played_at)
              SELECT chat, id, ?2, expected, status, delivered_at, read_at, played_at
              FROM group_receipts WHERE recipient = ?1
@@ -100,8 +100,9 @@ impl Archive {
                 played_at = COALESCE(MIN(played_at, excluded.played_at), played_at, excluded.played_at)",
             params![lid, pn],
         )?;
-        transaction.execute("DELETE FROM group_receipts WHERE recipient = ?1", [lid])?;
-        transaction.commit()
+        self.connection
+            .execute("DELETE FROM group_receipts WHERE recipient = ?1", [lid])?;
+        Ok(())
     }
 }
 

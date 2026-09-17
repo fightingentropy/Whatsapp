@@ -70,6 +70,9 @@ See [PERFORMANCE.md](PERFORMANCE.md) for measurements, remaining costs and valid
   Recent history is copied to this computer after linking and stored here.
 - **Chats.** See pinned, unread, muted, and archived chats, typing indicators,
   and message status. Search chats, saved messages, and contacts.
+  Phone-number and privacy IDs for the same person combine into one chat as
+  WhatsApp supplies their mapping. Existing duplicates are repaired on startup,
+  preserving saved messages, attachment keys and downloads.
 - **Read state across devices.** Reading a chat syncs its unread badge with
   your phone and other linked devices, including when read receipts are off.
   Replies from another device clear preceding unread messages. The read-receipt
@@ -116,6 +119,7 @@ See [PERFORMANCE.md](PERFORMANCE.md) for measurements, remaining costs and valid
   computer.
 - **Consistent names.** Use names from your address book or public WhatsApp
   profile names across chats, replies, mentions, and notifications.
+  With address-book names enabled, unsaved direct chats show their phone number.
 - **Groups.** See members, sender names, and sender pictures. Announcement
   groups are read-only for non-admins.
 - **Presence.** See online, last-seen, and typing status, and send your typing

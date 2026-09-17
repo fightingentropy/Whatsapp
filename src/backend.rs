@@ -381,6 +381,11 @@ pub enum Event {
         message: Box<Message>,
     },
     Contacts(Vec<Contact>),
+    /// A learned privacy-id mapping merged the archive into one conversation.
+    ChatMerged {
+        from: ChatId,
+        into: ChatId,
+    },
     /// Message search results with their query, newest first.
     SearchHits {
         query: String,

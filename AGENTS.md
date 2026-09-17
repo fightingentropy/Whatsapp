@@ -43,7 +43,11 @@ protocol. These notes are for coding agents and new contributors.
   the worker translates in `classify()` and `parse_conversation()`.
 - Chat ids are canonical strings: a chat behind a privacy id (`@lid`) is
   filed under its phone number once the mapping is known. Use
-  `Worker::canonical` for anything that arrives as a `Jid`.
+  `Worker::canonical` for anything that arrives as a `Jid`. Learning a mapping
+  transactionally merges existing chat/message/contact rows; startup also repairs
+  aliases left by older builds. `Event::ChatMerged` moves open UI state and drafts.
+  Queued commands and asynchronous results must resolve their ids again before
+  touching the archive, since a mapping can arrive while they are in flight.
 - `src/theme.rs` owns colours, fonts, and icons; `src/ui/widgets.rs` the
   shared controls. New icons go in `assets/icons/` as 24px Lucide-style SVGs
   and in the `icons!` table.
