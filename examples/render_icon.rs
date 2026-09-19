@@ -5,7 +5,7 @@ fn main() -> anyhow::Result<()> {
     let mark = include_str!("../assets/brand/whatsapp-mark.svg")
         .replace(
             "width=\"64\" height=\"64\"",
-            "x=\"242\" y=\"236\" width=\"540\" height=\"540\"",
+            "x=\"152\" y=\"146\" width=\"720\" height=\"720\"",
         )
         .replace("#ffffff", "#46d68a");
     let svg = format!(
