@@ -70,7 +70,12 @@ See [PERFORMANCE.md](PERFORMANCE.md) for measurements, remaining costs and valid
 - **Links to your phone.** Scan a QR code or link with your phone number.
   Recent history is copied to this computer after linking and stored here.
 - **Chats.** See pinned, unread, muted, and archived chats, typing indicators,
-  and message status. Search chats, saved messages, and contacts.
+  and message status. Archived stays hidden during normal scrolling. Once you
+  are at the top, make a separate downward pull with the trackpad, mouse wheel,
+  or by dragging the list to reveal it. The list follows the pull with resistance,
+  then smoothly settles open when pulled far enough or slides back after a short
+  pull. Scrolling away hides it again; returning to the top keeps it hidden until
+  another pull. Search chats, saved messages, and contacts.
   Phone-number and privacy IDs for the same person combine into one chat as
   WhatsApp supplies their mapping. Existing duplicates are repaired on startup,
   preserving saved messages, attachment keys and downloads.

@@ -1079,6 +1079,12 @@ pub fn apply_flags(app: &mut App, page: Option<&str>) {
                 app.composer = "Look at these".into();
             }
             "archived" => app.show_archived = true,
+            "archive-only" => {
+                for chat in &mut app.chats {
+                    chat.archived = true;
+                }
+                app.open_chat = None;
+            }
             "picker" => app.picker = Some(crate::model::PickerTab::Emoji),
             "stickers" => {
                 app.picker = Some(crate::model::PickerTab::Stickers);
@@ -1254,6 +1260,7 @@ mod tests {
             "new-contact",
             "light",
             "archived",
+            "archive-only",
             "offline",
             "syncing",
             "picker",

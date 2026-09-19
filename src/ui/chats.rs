@@ -1,7 +1,10 @@
 //! The left panel: the chat list.
 
+mod archive_pull;
+
 use egui::{Align, Frame, Layout, Margin, Rect, Sense, Vec2, pos2, vec2};
 
+use self::archive_pull::ArchivePull;
 use crate::app::App;
 use crate::model::{Action, Chat, Contact, Dialog, Message, Page};
 use crate::theme::{self, Icon, Palette};
@@ -227,7 +230,20 @@ fn list(app: &mut App, ui: &mut egui::Ui) {
     let chats = app.visible_chat_indices();
     let archived = app.archived_count();
     let show_archive_row = !app.show_archived && archived > 0;
+    // Keep the archive folder's scroll position separate from the main list.
+    let scroll_salt = if app.show_archived {
+        "archived-chat-list"
+    } else {
+        "chat-list"
+    };
+    let scroll_id = ui.make_persistent_id(egui::IdSalt::new(scroll_salt));
+    let archive_row_id = scroll_id.with("archive-row-present");
+    let pull_id = scroll_id.with("archive-pull");
     if chats.is_empty() && !show_archive_row {
+        ui.ctx().data_mut(|data| {
+            data.remove::<bool>(archive_row_id);
+            data.remove::<ArchivePull>(pull_id);
+        });
         let (title, body) = if app.show_archived {
             ("Nothing archived", "Archived chats appear here.")
         } else if app.syncing {
@@ -242,10 +258,46 @@ fn list(app: &mut App, ui: &mut egui::Ui) {
         return;
     }
     let row_height = theme::ROW_HEIGHT;
+    let spacing = ui.spacing().item_spacing.y;
+    let row_stride = row_height + spacing;
     let total = chats.len() + usize::from(show_archive_row);
+    let viewport_height = ui.available_height();
+    let mut current = egui::scroll_area::State::load(ui.ctx(), scroll_id)
+        .unwrap_or_default()
+        .offset
+        .y;
+    let previous_archive_row = ui.ctx().data_mut(|data| {
+        let previous = data.get_temp::<bool>(archive_row_id);
+        data.insert_temp(archive_row_id, show_archive_row);
+        previous
+    });
+    let mut pull = ui
+        .ctx()
+        .data(|data| data.get_temp::<ArchivePull>(pull_id))
+        .unwrap_or_default();
     let mut scroll_area = egui::ScrollArea::vertical()
-        .id_salt("chat-list")
+        .id_salt(scroll_salt)
+        .scroll_source(egui::scroll_area::ScrollSource::ALL)
         .auto_shrink([false, false]);
+    if previous_archive_row != Some(show_archive_row) {
+        pull = ArchivePull::default();
+        // The archive row starts just above the viewport. Adjust by one row
+        // when the first chat is archived or the last one is unarchived, too,
+        // so the visible conversations keep their positions.
+        current = match previous_archive_row {
+            None if show_archive_row => row_stride,
+            Some(false) if show_archive_row => current + row_stride,
+            Some(true) => (current - row_stride).max(0.0),
+            _ => current,
+        };
+        scroll_area = scroll_area.vertical_scroll_offset(current);
+    }
+    if show_archive_row && chats.len() as f32 * row_stride - spacing <= viewport_height {
+        // A short list still needs room to pull the archive into view, but
+        // that extra room alone should not introduce a scrollbar.
+        scroll_area =
+            scroll_area.scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden);
+    }
     let target_row = app.scroll_chat_into_view.as_ref().and_then(|target| {
         chats
             .iter()
@@ -253,34 +305,104 @@ fn list(app: &mut App, ui: &mut egui::Ui) {
             .map(|index| index + usize::from(show_archive_row))
     });
     if let Some(target_row) = target_row {
-        let id = ui.make_persistent_id(egui::IdSalt::new("chat-list"));
-        let current = egui::scroll_area::State::load(ui.ctx(), id)
-            .unwrap_or_default()
-            .offset
-            .y;
-        let offset = row_scroll_offset(
-            current,
-            ui.available_height(),
-            target_row,
-            row_height,
-            ui.spacing().item_spacing.y,
-        );
+        pull.hide();
+        let offset = row_scroll_offset(current, viewport_height, target_row, row_height, spacing);
         scroll_area = scroll_area.vertical_scroll_offset(offset);
+        current = offset;
         app.scroll_chat_into_view = None;
     }
-    scroll_area.show_rows(ui, row_height, total, |ui, range| {
-        for index in range {
-            if show_archive_row && index == 0 {
-                archive_row(app, ui, archived);
-                continue;
+    let mut pull_offset = None;
+    if show_archive_row {
+        let was_moving = pull.is_moving();
+        pull_offset = pull.update(ui, scroll_id, current, row_stride);
+        if let Some(offset) = pull_offset {
+            if !was_moving {
+                // Drop any earlier native momentum when the pull takes over.
+                let mut state = egui::scroll_area::State::default();
+                state.offset.y = offset;
+                state.store(ui.ctx(), scroll_id);
             }
-            // Group membership and previews can be large. Snapshot only the
-            // rows egui will draw, rather than every chat on each repaint.
-            let chat = app.chats[chats[index - usize::from(show_archive_row)]].clone();
-            // Key by chat so an open menu survives list reordering.
-            ui.push_id(("chat", &chat.id), |ui| row(app, ui, &chat));
+            // Preserve the list's drag identity and click suppression while
+            // the resisted gesture owns movement instead of native scrolling.
+            ui.interact(
+                ui.available_rect_before_wrap(),
+                scroll_id.with("area"),
+                Sense::drag(),
+            );
+            scroll_area = scroll_area
+                .scroll_source(egui::scroll_area::ScrollSource::NONE)
+                .vertical_scroll_offset(offset);
+        } else if !pull.revealed {
+            scroll_area = scroll_area.vertical_scroll_offset(current.max(row_stride));
+        }
+    }
+    let mut output = scroll_area.show_viewport(ui, |ui, viewport| {
+        // Keep the usual visible-row virtualization, with at least one hidden
+        // row of scrollable space even when the conversations fit on screen.
+        let content_height = (total as f32 * row_stride - spacing).max(0.0);
+        let minimum_height = if show_archive_row {
+            viewport.height() + row_stride
+        } else {
+            0.0
+        };
+        ui.set_height(content_height.max(minimum_height));
+        let first = ((viewport.min.y / row_stride).floor() as usize).min(total);
+        let end = ((viewport.max.y / row_stride).ceil() as usize + 1).min(total);
+        let top = ui.max_rect().top();
+        let rows_rect = Rect::from_x_y_ranges(
+            ui.max_rect().x_range(),
+            (top + first as f32 * row_stride)..=(top + end as f32 * row_stride),
+        );
+        ui.scope_builder(egui::UiBuilder::new().max_rect(rows_rect), |ui| {
+            ui.skip_ahead_auto_ids(first);
+            for index in first..end {
+                if show_archive_row && index == 0 {
+                    archive_row(app, ui, archived);
+                    continue;
+                }
+                // Group membership and previews can be large. Snapshot only
+                // the visible rows. Chat IDs keep menus stable after reordering.
+                let chat = app.chats[chats[index - usize::from(show_archive_row)]].clone();
+                ui.push_id(("chat", &chat.id), |ui| row(app, ui, &chat));
+            }
+        });
+        if chats.is_empty() && show_archive_row {
+            let rect = Rect::from_min_size(
+                pos2(ui.max_rect().left(), top + row_stride),
+                viewport.size(),
+            );
+            ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+                widgets::empty_state(
+                    ui,
+                    &palette,
+                    Icon::Archive,
+                    "All chats are archived",
+                    "Pull down to see your archived chats.",
+                );
+            });
         }
     });
+    if show_archive_row {
+        if pull_offset.is_none() && pull.revealed && output.state.offset.y >= row_stride - 0.5 {
+            pull.hide();
+        }
+        if pull_offset.is_none() && !pull.revealed && output.state.offset.y < row_stride {
+            // Stop at the first chat for the entire gesture, including its
+            // smoothed/momentum tail. A new pull at this boundary unlocks it.
+            output.state.offset.y = row_stride;
+            output.state.store(ui.ctx(), scroll_id);
+            ui.ctx().request_repaint();
+        }
+    }
+    if show_archive_row && app.show_archived {
+        // Entering the folder hides its row again for the return to Chats.
+        // Reset momentum as well, so an earlier pull cannot reveal it again.
+        let mut hidden = egui::scroll_area::State::default();
+        hidden.offset.y = row_stride;
+        hidden.store(ui.ctx(), scroll_id);
+        pull = ArchivePull::default();
+    }
+    ui.ctx().data_mut(|data| data.insert_temp(pull_id, pull));
 }
 
 /// Returns the smallest offset that fully reveals a fixed-height row.
@@ -783,6 +905,551 @@ mod tests {
     use super::*;
     use crate::paths::AppDirs;
     use crate::settings::Settings;
+
+    fn archive_list(active: usize) -> (App, egui::Context) {
+        let root = std::env::temp_dir().join(format!(
+            "whatsapp-archive-pull-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let (mut app, _events) = App::headless(AppDirs::under(&root), Settings::default());
+        app.chats = (0..active)
+            .map(|index| {
+                let mut chat = Chat::new(format!("{index}@g.us"), format!("Chat {index:03}"));
+                chat.last_activity = (active - index) as i64;
+                chat
+            })
+            .collect();
+        let mut archived = Chat::new("saved@g.us".into(), "Saved chat".into());
+        archived.archived = true;
+        app.chats.push(archived);
+        let ctx = egui::Context::default();
+        app.attach(&ctx);
+        (app, ctx)
+    }
+
+    fn list_frame(
+        app: &mut App,
+        ctx: &egui::Context,
+        events: Vec<egui::Event>,
+    ) -> egui::FullOutput {
+        list_frame_with_focus(app, ctx, events, true)
+    }
+
+    fn list_frame_with_focus(
+        app: &mut App,
+        ctx: &egui::Context,
+        events: Vec<egui::Event>,
+        focused: bool,
+    ) -> egui::FullOutput {
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(360.0, 240.0))),
+                time: Some(ctx.cumulative_pass_nr() as f64 / 60.0),
+                events,
+                focused,
+                ..Default::default()
+            },
+            |ui| list(app, ui),
+        );
+        output.textures_delta.clear();
+        output
+    }
+
+    fn visible_text(output: &egui::FullOutput, label: &str) -> Option<Rect> {
+        output.shapes.iter().find_map(|clipped| {
+            if let egui::Shape::Text(text) = &clipped.shape
+                && text.galley.job.text == label
+            {
+                let rect = Rect::from_min_size(text.pos, text.galley.size());
+                if clipped.clip_rect.intersect(rect).is_positive() {
+                    return Some(rect);
+                }
+            }
+            None
+        })
+    }
+
+    fn wheel(pos: egui::Pos2, delta: Vec2) -> Vec<egui::Event> {
+        wheel_phase(pos, delta, egui::TouchPhase::Move)
+    }
+
+    fn wheel_phase(pos: egui::Pos2, delta: Vec2, phase: egui::TouchPhase) -> Vec<egui::Event> {
+        vec![
+            egui::Event::PointerMoved(pos),
+            egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta,
+                modifiers: egui::Modifiers::NONE,
+                phase,
+            },
+        ]
+    }
+
+    fn pointer(pos: egui::Pos2, pressed: bool) -> Vec<egui::Event> {
+        vec![
+            egui::Event::PointerMoved(pos),
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]
+    }
+
+    #[test]
+    fn short_pull_tracks_the_pointer_with_resistance_then_springs_closed() {
+        let (mut app, ctx) = archive_list(100);
+        let start = pos2(180.0, 80.0);
+        list_frame(&mut app, &ctx, vec![]);
+        let output = list_frame(&mut app, &ctx, vec![egui::Event::PointerMoved(start)]);
+        let top = visible_text(&output, "Chat 000").unwrap().top();
+        list_frame(&mut app, &ctx, pointer(start, true));
+        let mut previous = 0.0;
+        let mut previous_step = f32::INFINITY;
+        for distance in [20.0, 40.0, 60.0] {
+            let output = list_frame(
+                &mut app,
+                &ctx,
+                vec![egui::Event::PointerMoved(start + vec2(0.0, distance))],
+            );
+            let displacement = visible_text(&output, "Chat 000").unwrap().top() - top;
+            let step = displacement - previous;
+            assert!(
+                step > 0.0 && step < 20.0,
+                "the list follows with resistance"
+            );
+            assert!(step <= previous_step, "resistance increases with distance");
+            previous = displacement;
+            previous_step = step;
+        }
+        let output = list_frame(&mut app, &ctx, pointer(start + vec2(0.0, 60.0), false));
+        let released = visible_text(&output, "Chat 000").unwrap().top() - top;
+        assert!(
+            released > 0.0 && released < previous,
+            "release must not snap shut"
+        );
+        for _ in 0..60 {
+            let output = list_frame(&mut app, &ctx, vec![]);
+            let displacement = visible_text(&output, "Chat 000").unwrap().top() - top;
+            assert!(displacement >= 0.0 && displacement <= previous);
+            previous = displacement;
+        }
+        let output = list_frame(&mut app, &ctx, vec![]);
+        assert_eq!(visible_text(&output, "Chat 000").unwrap().top(), top);
+        assert!(visible_text(&output, "Archived").is_none());
+        assert!(app.actions.is_empty());
+        assert!(
+            output.viewport_output[&egui::ViewportId::ROOT]
+                .repaint_delay
+                .as_secs()
+                > 1
+        );
+    }
+
+    #[test]
+    fn full_pull_settles_open_and_cancelled_pull_settles_closed() {
+        use egui::TouchPhase::{Cancel, End, Move, Start};
+
+        for end in [End, Cancel] {
+            let (mut app, ctx) = archive_list(1);
+            list_frame(&mut app, &ctx, vec![]);
+            let output = list_frame(&mut app, &ctx, vec![]);
+            let top = visible_text(&output, "Chat 000").unwrap().top();
+            let pos = pos2(180.0, 100.0);
+            list_frame(&mut app, &ctx, wheel_phase(pos, Vec2::ZERO, Start));
+            let output = list_frame(&mut app, &ctx, wheel_phase(pos, vec2(0.0, 120.0), Move));
+            let pulled = visible_text(&output, "Chat 000").unwrap().top() - top;
+            assert!(pulled > 0.0 && pulled < theme::ROW_HEIGHT);
+            // A trackpad held in place must not settle until the fingers lift.
+            for _ in 0..30 {
+                let output = list_frame(&mut app, &ctx, vec![]);
+                assert_eq!(
+                    visible_text(&output, "Chat 000").unwrap().top() - top,
+                    pulled
+                );
+            }
+            let output = list_frame(&mut app, &ctx, wheel_phase(pos, Vec2::ZERO, end));
+            let released = visible_text(&output, "Chat 000").unwrap().top() - top;
+            if end == End {
+                assert!(released > pulled && released < theme::ROW_HEIGHT);
+            } else {
+                assert!(released > 0.0 && released < pulled);
+            }
+            for _ in 0..60 {
+                list_frame(&mut app, &ctx, vec![]);
+            }
+            let output = list_frame(&mut app, &ctx, vec![]);
+            assert_eq!(visible_text(&output, "Archived").is_some(), end == End);
+            let settled = visible_text(&output, "Chat 000").unwrap().top() - top;
+            if end == End {
+                assert_eq!(
+                    settled,
+                    theme::ROW_HEIGHT + ctx.global_style().spacing.item_spacing.y
+                );
+            } else {
+                assert_eq!(settled, 0.0);
+            }
+            assert!(
+                output.viewport_output[&egui::ViewportId::ROOT]
+                    .repaint_delay
+                    .as_secs()
+                    > 1
+            );
+            assert!(app.actions.is_empty());
+        }
+    }
+
+    #[test]
+    fn a_plain_wheel_burst_settles_without_an_end_event() {
+        for distance in [30.0, 120.0] {
+            let (mut app, ctx) = archive_list(1);
+            for _ in 0..3 {
+                list_frame(&mut app, &ctx, vec![]);
+            }
+            list_frame(
+                &mut app,
+                &ctx,
+                wheel(pos2(180.0, 100.0), vec2(0.0, distance)),
+            );
+            for _ in 0..90 {
+                list_frame(&mut app, &ctx, vec![]);
+            }
+            let output = list_frame(&mut app, &ctx, vec![]);
+            assert_eq!(
+                visible_text(&output, "Archived").is_some(),
+                distance > 100.0
+            );
+            assert!(
+                output.viewport_output[&egui::ViewportId::ROOT]
+                    .repaint_delay
+                    .as_secs()
+                    > 1
+            );
+        }
+    }
+
+    #[test]
+    fn a_pointer_pull_can_start_without_keyboard_focus() {
+        let (mut app, ctx) = archive_list(100);
+        let start = pos2(180.0, 80.0);
+        let frame = |app: &mut App, events| list_frame_with_focus(app, &ctx, events, false);
+        frame(&mut app, vec![]);
+        frame(&mut app, vec![egui::Event::PointerMoved(start)]);
+        frame(&mut app, pointer(start, true));
+        for distance in [30.0, 60.0, 90.0, 120.0] {
+            frame(
+                &mut app,
+                vec![egui::Event::PointerMoved(start + vec2(0.0, distance))],
+            );
+        }
+        frame(&mut app, pointer(start + vec2(0.0, 120.0), false));
+        for _ in 0..60 {
+            frame(&mut app, vec![]);
+        }
+        let output = frame(&mut app, vec![]);
+        assert!(visible_text(&output, "Archived").is_some());
+        assert!(app.actions.is_empty());
+    }
+
+    #[test]
+    fn moving_to_the_press_position_is_not_counted_as_a_pull() {
+        let (mut app, ctx) = archive_list(100);
+        list_frame(&mut app, &ctx, vec![]);
+        let output = list_frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::PointerMoved(pos2(180.0, 20.0))],
+        );
+        let top = visible_text(&output, "Chat 000").unwrap().top();
+        let output = list_frame(&mut app, &ctx, pointer(pos2(180.0, 180.0), true));
+        assert_eq!(visible_text(&output, "Chat 000").unwrap().top(), top);
+        list_frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::PointerMoved(pos2(180.0, 200.0))],
+        );
+        list_frame(&mut app, &ctx, pointer(pos2(180.0, 200.0), false));
+        for _ in 0..60 {
+            list_frame(&mut app, &ctx, vec![]);
+        }
+        let output = list_frame(&mut app, &ctx, vec![]);
+        assert_eq!(visible_text(&output, "Chat 000").unwrap().top(), top);
+        assert!(visible_text(&output, "Archived").is_none());
+    }
+
+    #[test]
+    fn a_press_and_drag_batched_in_one_frame_preserve_the_drag_distance() {
+        for release_in_same_frame in [false, true] {
+            for distance in [50.0, 130.0] {
+                let (mut app, ctx) = archive_list(100);
+                list_frame(&mut app, &ctx, vec![]);
+                list_frame(
+                    &mut app,
+                    &ctx,
+                    vec![egui::Event::PointerMoved(pos2(180.0, 20.0))],
+                );
+                let start = pos2(180.0, 85.0);
+                let end = start + vec2(0.0, distance);
+                let mut events = pointer(start, true);
+                events.push(egui::Event::PointerMoved(end));
+                if release_in_same_frame {
+                    events.extend(pointer(end, false));
+                }
+                list_frame(&mut app, &ctx, events);
+                if !release_in_same_frame {
+                    list_frame(&mut app, &ctx, pointer(end, false));
+                }
+                for _ in 0..60 {
+                    list_frame(&mut app, &ctx, vec![]);
+                }
+                let output = list_frame(&mut app, &ctx, vec![]);
+                assert_eq!(
+                    visible_text(&output, "Archived").is_some(),
+                    distance > 100.0
+                );
+                assert!(app.actions.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn archive_row_is_hidden_until_pulled_and_hides_when_scrolled_away() {
+        // Include lists that fit, lists that need virtualization, and a list
+        // whose only conversation is archived.
+        for active in [0, 1, 100] {
+            let (mut app, ctx) = archive_list(active);
+            let output = list_frame(&mut app, &ctx, vec![]);
+            assert!(visible_text(&output, "Archived").is_none());
+            if active > 0 {
+                assert!(visible_text(&output, "Chat 000").is_some());
+            } else {
+                assert!(visible_text(&output, "All chats are archived").is_some());
+            }
+            list_frame(&mut app, &ctx, vec![]);
+            list_frame(&mut app, &ctx, wheel(pos2(180.0, 100.0), vec2(0.0, 120.0)));
+            let output = list_frame(&mut app, &ctx, vec![]);
+            assert!(
+                visible_text(&output, "Archived").is_some(),
+                "{active} chats"
+            );
+            list_frame(&mut app, &ctx, wheel(pos2(180.0, 100.0), vec2(0.0, -160.0)));
+            for _ in 0..20 {
+                list_frame(&mut app, &ctx, vec![]);
+            }
+            let output = list_frame(&mut app, &ctx, vec![]);
+            assert!(visible_text(&output, "Archived").is_none());
+            assert!(!app.show_archived);
+            assert!(app.actions.is_empty());
+        }
+    }
+
+    #[test]
+    fn returning_to_the_top_keeps_archive_hidden_until_a_new_pull() {
+        let (mut app, ctx) = archive_list(100);
+        for _ in 0..3 {
+            list_frame(&mut app, &ctx, vec![]);
+        }
+        let pos = pos2(180.0, 100.0);
+        list_frame(&mut app, &ctx, wheel(pos, vec2(0.0, 120.0)));
+        let output = list_frame(&mut app, &ctx, vec![]);
+        assert!(visible_text(&output, "Archived").is_some());
+        list_frame(&mut app, &ctx, wheel(pos, vec2(0.0, -450.0)));
+        for _ in 0..30 {
+            list_frame(&mut app, &ctx, vec![]);
+        }
+        // This gesture begins below the top and reaches it. Continuing to
+        // pull during the same gesture must not expose the archive folder.
+        for _ in 0..12 {
+            list_frame(&mut app, &ctx, wheel(pos, vec2(0.0, 120.0)));
+            let output = list_frame(&mut app, &ctx, vec![]);
+            assert!(visible_text(&output, "Archived").is_none());
+        }
+        let output = list_frame(&mut app, &ctx, vec![]);
+        assert!(visible_text(&output, "Chat 000").is_some());
+        for _ in 0..30 {
+            list_frame(&mut app, &ctx, vec![]);
+        }
+        list_frame(&mut app, &ctx, wheel(pos, vec2(0.0, 120.0)));
+        let output = list_frame(&mut app, &ctx, vec![]);
+        assert!(visible_text(&output, "Archived").is_some());
+    }
+
+    #[test]
+    fn trackpad_momentum_cannot_turn_a_return_scroll_into_a_new_pull() {
+        use egui::TouchPhase::{End, Move, Start};
+
+        let (mut app, ctx) = archive_list(100);
+        for _ in 0..3 {
+            list_frame(&mut app, &ctx, vec![]);
+        }
+        let pos = pos2(180.0, 100.0);
+        for (phase, dy) in [(Start, 0.0), (Move, 120.0), (End, 0.0)] {
+            list_frame(&mut app, &ctx, wheel_phase(pos, vec2(0.0, dy), phase));
+        }
+        let output = list_frame(&mut app, &ctx, vec![]);
+        assert!(visible_text(&output, "Archived").is_some());
+        for (phase, dy) in [(Start, 0.0), (Move, -450.0), (End, 0.0)] {
+            list_frame(&mut app, &ctx, wheel_phase(pos, vec2(0.0, dy), phase));
+        }
+        // Return to the top, then the OS supplies a second Start for momentum.
+        for (phase, dy) in [
+            (Start, 0.0),
+            (Move, 600.0),
+            (Move, 100.0),
+            (End, 0.0),
+            (Start, 0.0),
+            (Move, 80.0),
+            (Move, 20.0),
+            (End, 0.0),
+        ] {
+            list_frame(&mut app, &ctx, wheel_phase(pos, vec2(0.0, dy), phase));
+            let output = list_frame(&mut app, &ctx, vec![]);
+            assert!(visible_text(&output, "Archived").is_none());
+            if dy == 600.0 {
+                // Pausing with fingers still down does not start a new gesture.
+                for _ in 0..30 {
+                    list_frame(&mut app, &ctx, vec![]);
+                }
+            }
+        }
+        for _ in 0..15 {
+            list_frame(&mut app, &ctx, vec![]);
+        }
+        for (phase, dy) in [(Start, 0.0), (Move, 120.0), (End, 0.0)] {
+            list_frame(&mut app, &ctx, wheel_phase(pos, vec2(0.0, dy), phase));
+        }
+        let output = list_frame(&mut app, &ctx, vec![]);
+        assert!(visible_text(&output, "Archived").is_some());
+    }
+
+    #[test]
+    fn a_drag_from_below_the_top_requires_release_before_revealing_archive() {
+        let (mut app, ctx) = archive_list(100);
+        for _ in 0..3 {
+            list_frame(&mut app, &ctx, vec![]);
+        }
+        list_frame(&mut app, &ctx, wheel(pos2(180.0, 100.0), vec2(0.0, -120.0)));
+        for _ in 0..30 {
+            list_frame(&mut app, &ctx, vec![]);
+        }
+        // Move before pressing so the repositioning is not part of the drag.
+        list_frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::PointerMoved(pos2(180.0, 35.0))],
+        );
+        list_frame(&mut app, &ctx, pointer(pos2(180.0, 35.0), true));
+        for y in [215.0, 225.0, 235.0] {
+            list_frame(
+                &mut app,
+                &ctx,
+                vec![egui::Event::PointerMoved(pos2(180.0, y))],
+            );
+            let output = list_frame(&mut app, &ctx, vec![]);
+            assert!(visible_text(&output, "Archived").is_none());
+        }
+        list_frame(&mut app, &ctx, pointer(pos2(180.0, 235.0), false));
+        for _ in 0..40 {
+            list_frame(&mut app, &ctx, vec![]);
+        }
+        let output = list_frame(&mut app, &ctx, vec![]);
+        assert!(visible_text(&output, "Chat 000").is_some());
+        list_frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::PointerMoved(pos2(180.0, 85.0))],
+        );
+        list_frame(&mut app, &ctx, pointer(pos2(180.0, 85.0), true));
+        list_frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::PointerMoved(pos2(180.0, 195.0))],
+        );
+        list_frame(&mut app, &ctx, pointer(pos2(180.0, 195.0), false));
+        let output = list_frame(&mut app, &ctx, vec![]);
+        assert!(visible_text(&output, "Archived").is_some());
+        assert!(app.actions.is_empty());
+    }
+
+    #[test]
+    fn dragging_down_reveals_archive_without_opening_a_chat() {
+        for active in [0, 1, 100] {
+            let (mut app, ctx) = archive_list(active);
+            for _ in 0..3 {
+                list_frame(&mut app, &ctx, vec![]);
+            }
+            list_frame(&mut app, &ctx, pointer(pos2(180.0, 85.0), true));
+            list_frame(
+                &mut app,
+                &ctx,
+                vec![egui::Event::PointerMoved(pos2(180.0, 195.0))],
+            );
+            list_frame(&mut app, &ctx, pointer(pos2(180.0, 195.0), false));
+            let output = list_frame(&mut app, &ctx, vec![]);
+            assert!(
+                visible_text(&output, "Archived").is_some(),
+                "{active} chats"
+            );
+            assert!(app.actions.is_empty(), "a pull must not open a chat");
+            assert!(!app.show_archived);
+        }
+    }
+
+    #[test]
+    fn archive_opens_at_its_first_chat_and_is_hidden_on_return() {
+        let (mut app, ctx) = archive_list(100);
+        for _ in 0..3 {
+            list_frame(&mut app, &ctx, vec![]);
+        }
+        list_frame(&mut app, &ctx, wheel(pos2(180.0, 100.0), vec2(0.0, 120.0)));
+        list_frame(&mut app, &ctx, vec![]);
+        let output = list_frame(&mut app, &ctx, vec![]);
+        let archive = visible_text(&output, "Archived").unwrap().center();
+        for pressed in [true, false] {
+            list_frame(&mut app, &ctx, pointer(archive, pressed));
+        }
+        assert!(app.show_archived);
+        let output = list_frame(&mut app, &ctx, vec![]);
+        assert!(visible_text(&output, "Saved chat").is_some());
+        assert!(visible_text(&output, "Chat 000").is_none());
+        app.show_archived = false;
+        let output = list_frame(&mut app, &ctx, vec![]);
+        assert!(visible_text(&output, "Archived").is_none());
+        assert!(visible_text(&output, "Chat 000").is_some());
+    }
+
+    #[test]
+    fn horizontal_and_outside_scrolling_do_not_reveal_archive() {
+        let (mut app, ctx) = archive_list(1);
+        for _ in 0..3 {
+            list_frame(&mut app, &ctx, vec![]);
+        }
+        for (pos, delta) in [
+            (pos2(180.0, 100.0), vec2(120.0, 0.0)),
+            (pos2(500.0, 100.0), vec2(0.0, 120.0)),
+        ] {
+            list_frame(&mut app, &ctx, wheel(pos, delta));
+            let output = list_frame(&mut app, &ctx, vec![]);
+            assert!(visible_text(&output, "Archived").is_none());
+        }
+    }
+
+    #[test]
+    fn archive_count_changes_preserve_the_top_chat_position() {
+        let (mut app, ctx) = archive_list(1);
+        let archive = app.chats.pop().unwrap();
+        let before = list_frame(&mut app, &ctx, vec![]);
+        let top = visible_text(&before, "Chat 000").unwrap().top();
+        app.chats.push(archive);
+        let added = list_frame(&mut app, &ctx, vec![]);
+        assert_eq!(visible_text(&added, "Chat 000").unwrap().top(), top);
+        assert!(visible_text(&added, "Archived").is_none());
+        app.chats.pop();
+        let removed = list_frame(&mut app, &ctx, vec![]);
+        assert_eq!(visible_text(&removed, "Chat 000").unwrap().top(), top);
+    }
 
     #[test]
     fn clicks_follow_chat_ids_after_reordering_and_archiving() {
