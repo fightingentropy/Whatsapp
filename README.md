@@ -5,7 +5,8 @@
 A small native WhatsApp companion for **Apple Silicon Macs (M1 and newer)**.
 Built with Rust, [egui](https://github.com/emilk/egui) and
 [whatsapp-rust](https://github.com/oxidezap/whatsapp-rust). Charcoal surfaces,
-green accents, a handset-and-chat icon, and a dark theme by default.
+green accents, a large handset-and-chat mark on a dark Dock icon, and a dark
+theme by default.
 
 The standalone project lives at [fightingentropy/Whatsapp](https://github.com/fightingentropy/Whatsapp).
 There is no browser engine, hosted backend, telemetry or extra account.
