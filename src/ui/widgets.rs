@@ -80,18 +80,18 @@ pub fn selectable_rich_text(
     let (rect, response) = ui.allocate_exact_size(line.size(), Sense::click_and_drag());
     // Register emoji placements so copied text restores the original sequences.
     if let Some(rows) = ui.ctx().data(|data| {
-        data.get_temp::<std::sync::Arc<std::sync::Mutex<Vec<crate::transcript::Row>>>>(
+        data.get_temp::<std::sync::Arc<std::sync::Mutex<Vec<std::sync::Arc<crate::transcript::Row>>>>>(
             egui::Id::new("copy-rows"),
         )
     }) {
         rows.lock()
             .unwrap_or_else(|p| p.into_inner())
-            .push(crate::transcript::Row {
+            .push(std::sync::Arc::new(crate::transcript::Row {
                 header: String::new(),
                 body: line.galley.text().to_owned(),
                 placements: line.placements.clone(),
                 ..Default::default()
-            });
+            }));
     }
     if ui.is_rect_visible(rect) {
         egui::text_selection::LabelSelectionState::label_text_selection(

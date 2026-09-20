@@ -32,8 +32,11 @@ Build from source below; signed, notarized public downloads will appear under
   statements, preserving raw attachment keys and delivery state.
 - Long conversations reuse measured row heights and skip offscreen bubble layout.
   Search jumps, history insertion, edits and resizing preserve the reading position.
-  Rows are remeasured when their content or layout changes; text selection keeps
-  the full message range registered for cross-message copying.
+  Rows are remeasured when their content or layout changes. During text selection,
+  offscreen messages reuse glyph positions and transcript data while keeping the
+  full message range registered for copying. This optional cache is capped at
+  16 MiB per conversation, counts toward the inactive-history budget, and falls
+  back to full layout when exhausted.
 - Chats stop redrawing once they reach the newest message. New messages and
   expanding media keep the view pinned without a continuous idle repaint loop.
 - The main and archived chat lists copy only visible rows for drawing, avoiding
@@ -56,7 +59,9 @@ Build from source below; signed, notarized public downloads will appear under
   fallback. Smaller clips avoid hardware setup costs. Decoding requests preview-sized output, limits work in
   flight, and preserves reordered frames at the end of a clip. Ordinary videos
   still open in your external player.
-- System font collections share their bytes across faces. Apple Color Emoji
+- System font scanning and emoji indexing start in one background worker during
+  native window setup and are reused when the window reopens. Font collections
+  share their bytes across faces. Apple Color Emoji
   supplies emoji by default; `--features bundled-emoji` restores the Noto
   compatibility fallback. Demo builds still include Noto for their sample art.
 - App identity, data directories, single-instance signalling and update notices
@@ -186,14 +191,19 @@ cargo build --locked --release --features demo,metal
 # Compare the same 10,000 messages with offscreen layout enabled:
 ./target/aarch64-apple-darwin/release/whatsapp --demo --demo-page long --demo-benchmark /tmp/full-scroll.json --demo-benchmark-scroll --demo-full-layout
 cargo run --locked --release --features demo --example conversation_probe > /tmp/layout.json
+cargo run --locked --release --features demo --example conversation_probe -- 2070 > /tmp/selection.json
 cargo run --locked --release --features demo --example video_probe -- tests/fixtures/h264-bframes.mp4
 ```
 
 The video probe requires an actual hardware decoder and fails when unavailable;
 it never silently measures the software fallback as hardware. It also reports time
 to the first ordered CPU frame; this excludes window scheduling and GPU upload.
-The conversation probe runs the same scrolling UI without a window. Its CPU timings
-exclude native rendering, tessellation and GPU work; they are not frame-rate measurements.
+The conversation probe compares ordinary scrolling, text-selection scrolling and
+selection with full bubble layout, using 10,000 synthetic messages by default.
+An optional message count lets it match smaller histories. It verifies scrolling,
+an active text selection and complete copy registration at native 2× scale. Its
+CPU timings exclude native rendering, tessellation and GPU work; they are not
+frame-rate measurements.
 
 For a local test DMG:
 

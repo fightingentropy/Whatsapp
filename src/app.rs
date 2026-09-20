@@ -216,7 +216,7 @@ pub struct App {
     /// Voice messages with a sent played receipt.
     played_told: HashSet<String>,
     /// Message bodies registered for transcript copy formatting.
-    pub copy_rows: std::sync::Arc<std::sync::Mutex<Vec<crate::transcript::Row>>>,
+    pub copy_rows: std::sync::Arc<std::sync::Mutex<Vec<std::sync::Arc<crate::transcript::Row>>>>,
     /// Previous message-list rect used by the selection hook.
     pub selection_view: std::sync::Arc<std::sync::Mutex<Option<egui::Rect>>>,
     pub gif_query: String,
@@ -568,6 +568,8 @@ impl App {
 
     /// Initializes a newly created window.
     pub fn attach(&mut self, ctx: &egui::Context) {
+        // Also cover headless callers; window recreation does not start more workers.
+        crate::system_fonts::preload();
         for conversation in self.conversations.values_mut() {
             conversation.row_heights = Default::default();
             conversation.cached_bytes = None;
@@ -588,11 +590,6 @@ impl App {
         crate::theme::install(ctx);
         // Use a faster wheel speed for short chat rows.
         ctx.options_mut(|options| options.input_options.line_scroll_speed = 120.0);
-        // Load and index the color emoji font outside the frame loop.
-        std::thread::Builder::new()
-            .name("emoji-font".into())
-            .spawn(crate::emoji::warm_up)
-            .ok();
         self.applied_dark = None;
         self.zoom_applied = false;
         self.window_hidden = false;

@@ -1830,6 +1830,98 @@ mod tests {
     }
 
     #[test]
+    fn cached_offscreen_transcripts_follow_edits_names_and_window_changes() {
+        let root =
+            std::env::temp_dir().join(format!("whatsapp-selection-refresh-{}", std::process::id()));
+        let (mut app, events) = App::headless(AppDirs::under(&root), Settings::default());
+        populate(&mut app);
+        long_history(&mut app, 200);
+        let chat = sample_ids()[0];
+        let ctx = egui::Context::default();
+        app.attach(&ctx);
+        render(&mut app, &ctx);
+        let old = std::sync::Arc::clone(
+            &app.conversations[chat]
+                .row_heights
+                .selection("long-1")
+                .unwrap()
+                .transcript,
+        );
+        app.conversations
+            .get_mut(chat)
+            .unwrap()
+            .message_mut("long-1")
+            .unwrap()
+            .content = Content::text("*Edited* 👋");
+        assert!(
+            app.conversations[chat]
+                .row_heights
+                .selection("long-1")
+                .is_none()
+        );
+        events
+            .send(crate::backend::Event::Contacts(vec![
+                crate::model::Contact {
+                    id: chat.into(),
+                    full_name: Some("Updated contact".into()),
+                    push_name: None,
+                },
+            ]))
+            .unwrap();
+        render(&mut app, &ctx);
+        let updated = std::sync::Arc::clone(
+            &app.conversations[chat]
+                .row_heights
+                .selection("long-1")
+                .unwrap()
+                .transcript,
+        );
+        assert!(!std::sync::Arc::ptr_eq(&old, &updated));
+        assert!(
+            updated.header.contains("Updated contact"),
+            "{}",
+            updated.header
+        );
+        assert_eq!(
+            crate::transcript::refine(&updated.body, &[&*updated]).as_deref(),
+            Some("Edited 👋")
+        );
+        for _ in 0..3 {
+            let mut input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(980.0, 780.0),
+                )),
+                ..Default::default()
+            };
+            input
+                .viewports
+                .get_mut(&egui::ViewportId::ROOT)
+                .unwrap()
+                .native_pixels_per_point = Some(2.0);
+            let mut output = ctx.run_ui(input, |ui| {
+                app.background_frame(ui.ctx());
+                app.frame_ui(ui);
+            });
+            output.textures_delta.clear();
+        }
+        let resized = &app.conversations[chat]
+            .row_heights
+            .selection("long-1")
+            .unwrap()
+            .transcript;
+        assert!(!std::sync::Arc::ptr_eq(&updated, resized));
+        assert_eq!(updated.body, resized.body);
+        app.attach(&egui::Context::default());
+        assert!(
+            app.conversations[chat]
+                .row_heights
+                .selection("long-1")
+                .is_none()
+        );
+    }
+
+    #[test]
     fn a_paste_is_seen_on_the_key_release() {
         // Platforms may deliver only the Ctrl+V key release for image paste.
         let mut app = app();
@@ -2060,21 +2152,44 @@ mod tests {
     /// Selection continues and scrolls after the pointer leaves the window.
     #[test]
     fn a_drag_out_of_the_window_keeps_selecting() {
-        drag_out_of_window(false);
+        drag_out_of_window(false, false, 1.0);
     }
 
     #[test]
     fn a_drag_out_of_a_long_cached_history_keeps_selecting() {
-        drag_out_of_window(true);
+        drag_out_of_window(true, false, 1.0);
     }
 
-    fn drag_out_of_window(long: bool) {
+    #[test]
+    fn cached_offscreen_selection_copies_the_same_transcript_as_full_layout() {
+        for zoom in [1.0, 1.25] {
+            assert_eq!(
+                drag_out_of_window(true, false, zoom),
+                drag_out_of_window(true, true, zoom)
+            );
+        }
+    }
+
+    fn drag_out_of_window(long: bool, full_layout: bool, zoom: f32) -> String {
         let mut app = app();
+        app.settings.zoom = zoom;
         if long {
             long_history(&mut app, 1000);
+            // Stable transcript timestamps across the cached/full comparison.
+            for (index, message) in app
+                .conversations
+                .get_mut(sample_ids()[0])
+                .unwrap()
+                .messages
+                .iter_mut()
+                .enumerate()
+            {
+                message.timestamp = 1_800_000_000 + index as i64 * 60;
+            }
         }
         let ctx = egui::Context::default();
         app.attach(&ctx);
+        ctx.data_mut(|data| data.insert_temp(egui::Id::new("full-message-layout"), full_layout));
         render(&mut app, &ctx);
         render(&mut app, &ctx);
         if long {
@@ -2152,6 +2267,20 @@ mod tests {
                 app.frame_ui(ui);
             });
             output.textures_delta.clear();
+            if long && !full_layout {
+                let count = ctx
+                    .data(|data| data.get_temp::<usize>(egui::Id::new("message-layout-count")))
+                    .unwrap();
+                assert!(
+                    count < 50,
+                    "selection should reuse offscreen geometry: {count}"
+                );
+                assert_eq!(
+                    app.copy_rows.lock().unwrap().len(),
+                    1000,
+                    "every message must remain available to the copy hook"
+                );
+            }
             for command in output.platform_output.commands {
                 if let egui::OutputCommand::CopyText(text) = command {
                     copied = Some(text);
@@ -2169,6 +2298,7 @@ mod tests {
             copied.contains(opening.trim_end()),
             "the scrolled-away start should be copied: {copied:?}"
         );
+        copied
     }
 
     /// Dragging near the top scrolls up from a bottom-pinned list.

@@ -77,6 +77,20 @@ pub fn fallbacks() -> &'static [Fallback] {
     FONTS.get_or_init(load)
 }
 
+/// Overlaps the one-time font scan and emoji indexing with native window setup.
+/// Consumers still initialize synchronously if they arrive first or spawning fails.
+pub fn preload() {
+    static STARTED: std::sync::Once = std::sync::Once::new();
+    STARTED.call_once(|| {
+        if let Err(error) = std::thread::Builder::new().name("fonts".into()).spawn(|| {
+            fallbacks();
+            crate::emoji::warm_up();
+        }) {
+            log::warn!("could not start font preloading: {error}");
+        }
+    });
+}
+
 /// Candidate font face and interface-suitability score.
 struct Candidate {
     score: u32,
