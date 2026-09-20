@@ -76,10 +76,13 @@ protocol. These notes are for coding agents and new contributors.
   message and its next neighbour when changing content/grouping; use
   `Conversation::message_mut` rather than mutating an existing message directly.
   Contact/name changes invalidate layouts too. Unsettled image rows keep measuring.
-  Explicit per-message UI IDs survive prepended history. Skip offscreen rows only
-  while no label selection/drag is active, and preserve the first visible row when
-  earlier content changes height. Never truncate the rows supplied to egui during
-  cross-message selection or copy.
+  Explicit per-message UI IDs survive prepended history. During selection, an
+  offscreen bubble can skip layout only if its cached glyph geometry and transcript
+  are registered in full and in order. This optional cache has a 16 MiB per-chat
+  budget included in inactive-history accounting; misses use full layout. Cached
+  galleys have no paint meshes and must never render visible text. Preserve the
+  first visible row when earlier content changes height. Never truncate the rows
+  supplied to egui during cross-message selection or copy.
 - `src/renderer.rs` configures the native renderer. OpenGL remains the default;
   `--features metal` adds a Metal-only wgpu backend selected with `--renderer metal`.
   Keep the OpenGL option for comparison/recovery. Both are event-driven; the

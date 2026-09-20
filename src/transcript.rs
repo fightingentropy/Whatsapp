@@ -4,10 +4,13 @@
 //! Each frame registers its message bodies and headers. The output hook adds
 //! those headers when a selection spans multiple messages.
 
+use std::borrow::Borrow;
+use std::sync::Arc;
+
 /// Rewrites copied message text in `output_hook`, after egui's selection hook.
 pub struct CopyAnnotator {
     /// Message bodies drawn during the frame, in order.
-    pub rows: std::sync::Arc<std::sync::Mutex<Vec<Row>>>,
+    pub rows: Arc<std::sync::Mutex<Vec<Arc<Row>>>>,
 }
 
 impl egui::plugin::Plugin for CopyAnnotator {
@@ -47,6 +50,18 @@ pub struct Row {
 }
 
 impl Row {
+    /// Allocations retained by a cached transcript row, excluding shared owners.
+    pub fn estimated_bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.header.capacity()
+            + self.body.capacity()
+            + self.placements.capacity() * std::mem::size_of::<String>()
+            + self.placements.iter().map(String::capacity).sum::<usize>()
+            + self.marker.as_ref().map_or(0, String::capacity)
+            + self.reactions.capacity()
+            + self.quote.as_ref().map_or(0, String::capacity)
+    }
+
     /// Formats one transcript line from its available parts.
     fn line(&self, body: &str) -> String {
         let mut line = self.header.clone();
@@ -92,7 +107,7 @@ impl Row {
 
 /// Restores emoji and adds headers for multi-message selections. Returns
 /// `None` for unrelated or unchanged copied text.
-pub fn refine(copied: &str, rows: &[Row]) -> Option<String> {
+pub fn refine(copied: &str, rows: &[impl Borrow<Row>]) -> Option<String> {
     if let Some(annotated) = annotate(copied, rows) {
         return Some(annotated);
     }
@@ -101,6 +116,7 @@ pub fn refine(copied: &str, rows: &[Row]) -> Option<String> {
         return None;
     }
     for row in rows {
+        let row = row.borrow();
         if let Some(start) = row.body.find(copied) {
             return Some(row.restored(start, copied));
         }
@@ -111,7 +127,7 @@ pub fn refine(copied: &str, rows: &[Row]) -> Option<String> {
 /// Adds a header per message when copied text spans multiple rows.
 ///
 /// Matches egui's copied tail, complete middle bodies, and final head.
-pub fn annotate(copied: &str, rows: &[Row]) -> Option<String> {
+pub fn annotate(copied: &str, rows: &[impl Borrow<Row>]) -> Option<String> {
     for start in 0..rows.len() {
         if let Some(lines) = walk(copied, &rows[start..])
             && lines.len() >= 2
@@ -123,8 +139,8 @@ pub fn annotate(copied: &str, rows: &[Row]) -> Option<String> {
 }
 
 /// Parses a copied tail followed by later rows into annotated lines.
-fn walk(copied: &str, rows: &[Row]) -> Option<Vec<String>> {
-    let row = rows.first()?;
+fn walk(copied: &str, rows: &[impl Borrow<Row>]) -> Option<Vec<String>> {
+    let row = rows.first()?.borrow();
     // Try the longest tail first because the selection continues into the next row.
     for cut in 0..row.body.len() {
         if !row.body.is_char_boundary(cut) {
@@ -148,7 +164,7 @@ fn walk(copied: &str, rows: &[Row]) -> Option<Vec<String>> {
 
 /// Parses complete middle bodies and the final partial body after a separator.
 /// Non-text rows crossed by the selection contribute their message kind.
-fn follow(copied: &str, rows: &[Row]) -> Option<Vec<String>> {
+fn follow(copied: &str, rows: &[impl Borrow<Row>]) -> Option<Vec<String>> {
     let remaining = copied
         .strip_prefix("\n\n")
         .or_else(|| copied.strip_prefix('\n'))?;
@@ -157,6 +173,7 @@ fn follow(copied: &str, rows: &[Row]) -> Option<Vec<String>> {
     }
     let mut passed: Vec<String> = Vec::new();
     for (skipped, row) in rows.iter().enumerate() {
+        let row = row.borrow();
         if row.body.is_empty() {
             if row.marker.is_some() {
                 passed.push(row.line(""));
@@ -236,7 +253,7 @@ mod tests {
         assert_eq!(annotate("the analyzer is crazy good", &rows()), None);
         assert_eq!(annotate("something else entirely", &rows()), None);
         assert_eq!(annotate("", &rows()), None);
-        assert_eq!(annotate("anything", &[]), None);
+        assert_eq!(annotate("anything", &[] as &[Row]), None);
     }
 
     #[test]

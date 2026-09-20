@@ -341,6 +341,31 @@ mod tests {
     }
 
     #[test]
+    fn cached_selection_geometry_counts_toward_inactive_history_budget() {
+        let (mut app, _) = app();
+        let ctx = egui::Context::default();
+        for (chat, age) in [("old", 30), ("middle", 20), ("recent", 10)] {
+            loaded(&mut app, chat, age);
+            let conversation = app.conversations.get_mut(chat).unwrap();
+            conversation.row_heights.set("m", None, 30.0);
+            conversation.row_heights.set_selection(
+                "m",
+                crate::ui::conversation::rows::Selection::new(std::sync::Arc::new(
+                    crate::transcript::Row {
+                        body: "x".repeat(12 * 1024 * 1024),
+                        ..Default::default()
+                    },
+                )),
+            );
+        }
+        app.trim_conversations(&ctx);
+        assert!(app.conversations["old"].messages.is_empty());
+        assert_eq!(app.conversations["old"].row_heights.estimated_bytes(), 0);
+        assert!(!app.conversations["middle"].messages.is_empty());
+        assert!(!app.conversations["recent"].messages.is_empty());
+    }
+
+    #[test]
     fn active_loads_sends_and_downloads_are_protected_then_become_evictable() {
         let (mut app, _) = app();
         let ctx = egui::Context::default();

@@ -1117,8 +1117,10 @@ struct View<'a> {
     avatars: &'a HashMap<String, Option<PathBuf>>,
     now: i64,
     player: &'a crate::audio::Player,
-    copy_rows: &'a std::sync::Mutex<Vec<crate::transcript::Row>>,
+    copy_rows: &'a Mutex<Vec<Arc<crate::transcript::Row>>>,
     layout_pending: &'a std::cell::Cell<bool>,
+    capture_selection: &'a std::cell::Cell<bool>,
+    selection: &'a std::cell::RefCell<Option<rows::Selection>>,
 }
 
 fn messages(app: &mut App, ui: &mut egui::Ui, chat: &Chat) {
@@ -1142,6 +1144,8 @@ fn messages(app: &mut App, ui: &mut egui::Ui, chat: &Chat) {
         }
     }
     let layout_pending = std::cell::Cell::new(false);
+    let capture_selection = std::cell::Cell::new(false);
+    let selection = std::cell::RefCell::new(None);
     let names_or = |id: &str, hint: Option<&str>| app.display_name_or(id, hint);
     let mention_names = |id: &str| app.mention_name(id);
     let view = View {
@@ -1162,6 +1166,8 @@ fn messages(app: &mut App, ui: &mut egui::Ui, chat: &Chat) {
         player: &app.player,
         copy_rows: app.copy_rows.as_ref(),
         layout_pending: &layout_pending,
+        capture_selection: &capture_selection,
+        selection: &selection,
     };
     let mut actions = Vec::new();
     let mut anchored = false;
@@ -1175,18 +1181,19 @@ fn messages(app: &mut App, ui: &mut egui::Ui, chat: &Chat) {
     let scroll_to_bottom = scroll_to_bottom && !benchmark_scroll;
     let app_pictures = app.settings.show_sender_pictures;
     // egui drops cross-widget selections when either endpoint is absent.
-    // Keep all rows registered throughout a drag and until selection is cleared.
+    // Keep all text registered throughout a drag and until selection is cleared.
     let selecting = ui
         .ctx()
         .plugin::<egui::text_selection::LabelSelectionState>()
         .lock()
         .has_selection();
     #[cfg(any(test, feature = "demo"))]
-    let selecting = selecting
-        || ui.ctx().data(|data| {
-            data.get_temp::<bool>(egui::Id::new("full-message-layout"))
-                .unwrap_or(false)
-        });
+    let full_layout = ui.ctx().data(|data| {
+        data.get_temp::<bool>(egui::Id::new("full-message-layout"))
+            .unwrap_or(false)
+    });
+    #[cfg(not(any(test, feature = "demo")))]
+    let full_layout = false;
     let preserve_place = !scroll_to_bottom
         && !app.at_bottom
         && view.anchor.is_none()
@@ -1257,6 +1264,7 @@ fn messages(app: &mut App, ui: &mut egui::Ui, chat: &Chat) {
                     for message in &conversation.messages {
                         let previous_id = previous.map(|row| row.id.as_str());
                         let top = ui.cursor().top();
+                        let origin = pos2(ui.max_rect().left(), top);
                         layout_pending.set(false);
                         let cached = heights.get(&message.id, previous_id);
                         if cached.is_none() {
@@ -1269,12 +1277,14 @@ fn messages(app: &mut App, ui: &mut egui::Ui, chat: &Chat) {
                         {
                             correction = Some(*y - top);
                         }
-                        let skip = !selecting
+                        let offscreen = !full_layout
                             && view.anchor != Some(message.id.as_str())
                             && cached.is_some_and(|height| {
                                 top + height < viewport.top() - 100.0
                                     || top > viewport.bottom() + 100.0
                             });
+                        let skip =
+                            offscreen && (!selecting || heights.selection(&message.id).is_some());
                         if skip {
                             if heights.mark_skipped(&message.id) {
                                 ui.ctx().data_mut(|data| {
@@ -1283,8 +1293,17 @@ fn messages(app: &mut App, ui: &mut egui::Ui, chat: &Chat) {
                                     data.remove::<Rect>(id.with("body"));
                                 });
                             }
+                            if selecting && let Some(selection) = heights.selection(&message.id) {
+                                selection.register(ui, origin);
+                                view.copy_rows
+                                    .lock()
+                                    .unwrap_or_else(|p| p.into_inner())
+                                    .push(Arc::clone(&selection.transcript));
+                            }
                             ui.add_space(cached.unwrap());
                         } else {
+                            capture_selection.set(heights.needs_selection(&message.id));
+                            selection.replace(None);
                             // Explicit IDs keep selection endpoints stable even if
                             // earlier history is inserted during a selection.
                             ui.scope_builder(
@@ -1330,6 +1349,10 @@ fn messages(app: &mut App, ui: &mut egui::Ui, chat: &Chat) {
                                 heights.invalidate(&message.id);
                             } else {
                                 heights.set(&message.id, previous_id, bottom - top);
+                                if let Some(selection) = selection.take() {
+                                    heights
+                                        .set_selection(&message.id, selection.relative_to(origin));
+                                }
                             }
                         }
                         if first_visible.is_none()
@@ -1408,6 +1431,8 @@ fn messages(app: &mut App, ui: &mut egui::Ui, chat: &Chat) {
     let loading = conversation.loading_older;
     let fetching = conversation.fetching_phone;
     let exhausted = conversation.phone_exhausted;
+    // Drawing can add selection geometry to the conversation's memory budget.
+    conversation.cached_bytes = None;
     app.conversations
         .insert(chat.id.clone(), std::mem::take(&mut conversation));
     app.at_bottom = at_bottom;
@@ -2472,10 +2497,14 @@ fn content(
         _ => false,
     };
     if !has_body {
+        let row = Arc::new(transcript_row(view, message, String::new(), Vec::new()));
         view.copy_rows
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .push(transcript_row(view, message, String::new(), Vec::new()));
+            .push(Arc::clone(&row));
+        if view.capture_selection.get() {
+            view.selection.replace(Some(rows::Selection::new(row)));
+        }
     }
     match &message.content {
         Content::Text { text, preview } => {
@@ -2727,17 +2756,26 @@ fn rich_body(
         allocation.x = allocation.x.max(span);
     }
     // Register the body for transcript formatting when copying across messages.
+    let row = Arc::new(transcript_row(
+        view,
+        message,
+        laid.galley.text().to_owned(),
+        laid.placements().to_vec(),
+    ));
     view.copy_rows
         .lock()
         .unwrap_or_else(|p| p.into_inner())
-        .push(transcript_row(
-            view,
-            message,
-            laid.galley.text().to_owned(),
-            laid.placements().to_vec(),
-        ));
+        .push(Arc::clone(&row));
     // Click links and drag to select text.
     let (rect, response) = ui.allocate_exact_size(allocation, Sense::click_and_drag());
+    if view.capture_selection.get() {
+        view.selection
+            .replace(Some(rows::Selection::new(row).with_body(
+                response.id,
+                rect,
+                markup::selection_galley(ui, &laid, rect.min),
+            )));
+    }
     // Store the body rect for selection tests.
     ui.ctx().data_mut(|data| {
         data.insert_temp(bubble_id(&view.chat.id, &message.id).with("body"), rect);

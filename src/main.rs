@@ -141,6 +141,7 @@ fn main() -> eframe::Result<()> {
     }
     logger.init();
     log_panics(dirs.panic_log());
+    whatsapp::system_fonts::preload();
     let settings = settings::Settings::load(&dirs.settings_file());
     let demo_persistence = demo.then(|| dirs.state.join("window.ron"));
 

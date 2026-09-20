@@ -154,6 +154,23 @@ pub fn paint_selectable(
     fallback: Color32,
     visible: bool,
 ) {
+    let galley = selection_galley(ui, text, pos);
+    let selection_pos = Pos2::new(ui.clip_rect().left(), pos.y);
+    egui::text_selection::LabelSelectionState::label_text_selection(
+        ui,
+        response,
+        selection_pos,
+        Arc::new(galley),
+        fallback,
+        egui::Stroke::NONE,
+    );
+    if visible {
+        emoji::paint(ui, &text.galley, pos, &text.placements);
+    }
+}
+
+/// Shared-column geometry used by visible text and cached offscreen selections.
+pub fn selection_galley(ui: &egui::Ui, text: &Text, pos: Pos2) -> Galley {
     // egui treats non-overlapping text bounds as separate columns. Incoming
     // and outgoing bubbles are one transcript even when both contain short
     // text. Give selection a shared column while keeping every glyph in its
@@ -167,18 +184,7 @@ pub fn paint_selectable(
     galley.rect.min.x = 0.0;
     galley.rect.max.x = column.span();
     galley.mesh_bounds = galley.mesh_bounds.translate(egui::vec2(offset, 0.0));
-    let selection_pos = Pos2::new(column.min, pos.y);
-    egui::text_selection::LabelSelectionState::label_text_selection(
-        ui,
-        response,
-        selection_pos,
-        Arc::new(galley),
-        fallback,
-        egui::Stroke::NONE,
-    );
-    if visible {
-        emoji::paint(ui, &text.galley, pos, &text.placements);
-    }
+    galley
 }
 
 /// Plain text with resolved mentions, used in previews.
