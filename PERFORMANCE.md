@@ -3,6 +3,50 @@
 The project is now named **Whatsapp**. Historical runs below retain the name,
 commit and artifact paths used at measurement time.
 
+## Idle conversation repainting: 20 September 2026
+
+Keeping a conversation at its newest message repeatedly requested scrolling
+64 points beyond the end. egui clamped the position but scheduled another
+repaint, even when the content had stopped changing. The view now uses the
+scroll area's exact maximum offset and requests a frame only when the offset
+used to draw the view changes. New messages and expanding media still keep the
+view pinned; scrolling upward releases it as before.
+
+On the Apple M4 Pro, macOS 27.0 (26A428), release/M1 baseline, the same visible
+chat was sampled without input for 15 seconds before and after a signed local
+update. CPU usage was **83.13% of one core before**, then **0.36% and 0.02%** in
+two consecutive samples after. Interrupt wakeups fell from **836/s** to
+**1.27/s and 1.20/s**. An earlier pre-fix sample measured 79.08% CPU. No compiler
+ran during the measurements. The installed app was also checked for scrolling
+up and returning to the newest message; a further 15-second sample with the
+window focused measured 0.01% of one core.
+
+These are short observations of one chat, not a battery-life or whole-app
+speedup claim. Sequential offline launches produced inconsistent baseline
+results when window visibility was uncontrolled. A native scrolling probe
+completed for the baseline but timed out for the fixed build in that desktop
+session; there is no valid startup/scrolling timing comparison from this run.
+All resource samples, including those inconsistent trials, are retained in
+[the idle measurement file](benchmarks/apple-silicon-idle-2026-09-20.json).
+
+The regression test settles six static screens at normal and fractional zoom
+with one or two native pixels per point, then checks that none requests an
+immediate repaint. Existing tests cover expanding images, cached/full geometry,
+history anchors, wheel scrolling and cross-message selection. All six required
+checks passed on Apple Silicon with pinned Rust 1.98.0: default features passed
+236 tests, all features 238, with seven explicit skips in each suite.
+
+For repeatable resource sampling of an already running process:
+
+```sh
+python3 scripts/process-usage.py PID --seconds 15 > usage.json
+```
+
+The sampler reads `proc_pid_rusage` counters and converts CPU time with
+`mach_timebase_info`; these counters are Mach ticks, not nanoseconds. CPU usage
+is expressed relative to one core. It does not measure GPU time or energy.
+Keep the window visible, allow it to settle and avoid compiling during samples.
+
 ## Inactive conversation memory: 16 September 2026
 
 Inactive histories now retain at most eight chats within an estimated 32 MiB

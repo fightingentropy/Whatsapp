@@ -1195,8 +1195,12 @@ fn messages(app: &mut App, ui: &mut egui::Ui, chat: &Chat) {
     // Do not animate programmatic scrolling. Pending animations can delay a
     // later request to reach the end.
     let mut edge_scrolled_up = false;
-    let output = egui::ScrollArea::vertical()
-        .id_salt(("messages", &chat.id))
+    let scroll_salt = ("messages", &chat.id);
+    let scroll_id = ui.make_persistent_id(egui::IdSalt::new(scroll_salt));
+    let previous_offset =
+        egui::scroll_area::State::load(ui.ctx(), scroll_id).map_or(0.0, |state| state.offset.y);
+    let mut output = egui::ScrollArea::vertical()
+        .id_salt(scroll_salt)
         .auto_shrink([false, false])
         .stick_to_bottom(true)
         .animated(false)
@@ -1358,27 +1362,8 @@ fn messages(app: &mut App, ui: &mut egui::Ui, chat: &Chat) {
                         typing_bubble(ui, &view, &typing);
                     }
                     ui.add_space(4.0);
-                    if scroll_to_bottom {
-                        // Scroll past the end so clamping keeps the view pinned
-                        // while media expands the content. Do it immediately.
-                        let end = ui.cursor().min + vec2(0.0, 64.0);
-                        ui.scroll_to_rect_animation(
-                            Rect::from_min_size(end, Vec2::ZERO),
-                            Some(Align::BOTTOM),
-                            egui::style::ScrollAnimation::none(),
-                        );
-                    }
                 });
         });
-    #[cfg(feature = "demo")]
-    ui.ctx().data_mut(|data| {
-        data.insert_temp(
-            egui::Id::new("message-scroll-offset"),
-            output.state.offset.y,
-        )
-    });
-    let at_bottom =
-        output.state.offset.y + output.inner_rect.height() >= output.content_size.y - 24.0;
     // Keep the view at the end while initial content expands, until the user
     // scrolls with the wheel, trackpad, or scrollbar.
     let bar = Rect::from_min_max(
@@ -1398,6 +1383,27 @@ fn messages(app: &mut App, ui: &mut egui::Ui, chat: &Chat) {
                     .interact_pos()
                     .is_some_and(|pos| bar.contains(pos)))
     });
+    if scroll_to_bottom && !reader_scrolled && !edge_scrolled_up {
+        // Use egui's actual scroll limit, including margins, rather than an
+        // unreachable rectangle beyond the end. The latter requests another
+        // repaint even when scrolling is clamped. Request a frame only when
+        // the offset used to draw this frame needs to change.
+        let bottom = (output.content_size.y - output.inner_rect.height()).max(0.0);
+        if previous_offset != bottom || output.state.offset.y != bottom {
+            output.state.offset.y = bottom;
+            output.state.store(ui.ctx(), output.id);
+            ui.ctx().request_repaint();
+        }
+    }
+    #[cfg(feature = "demo")]
+    ui.ctx().data_mut(|data| {
+        data.insert_temp(
+            egui::Id::new("message-scroll-offset"),
+            output.state.offset.y,
+        )
+    });
+    let at_bottom =
+        output.state.offset.y + output.inner_rect.height() >= output.content_size.y - 24.0;
     let complete = conversation.complete;
     let loading = conversation.loading_older;
     let fetching = conversation.fetching_phone;
