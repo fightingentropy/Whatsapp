@@ -79,6 +79,27 @@ pub fn lines(chat_name: &str, is_group: bool, sender: &str, summary: &str) -> (S
     (chat_name.to_owned(), body)
 }
 
+#[cfg(target_os = "macos")]
+const MACOS_APPLICATION_ID: &str = "org.erlin.whatsapp";
+
+/// `appname` has no effect on macOS. Without explicit initialization the
+/// notification library looks up an application named `use_default` through
+/// AppleScript, which opens the system application chooser. Cache failures too:
+/// a missing app bundle must not fall through to that lookup on a later message.
+#[cfg(target_os = "macos")]
+fn macos_application_ready(
+    ready: &std::sync::OnceLock<bool>,
+    set_application: impl FnOnce(&str) -> Result<(), notify_rust::error::MacOsError>,
+) -> bool {
+    *ready.get_or_init(|| match set_application(MACOS_APPLICATION_ID) {
+        Ok(()) => true,
+        Err(error) => {
+            log::debug!("could not initialize macOS notifications: {error}");
+            false
+        }
+    })
+}
+
 #[cfg(target_os = "linux")]
 fn deliver(
     title: &str,
@@ -151,6 +172,13 @@ fn deliver(
     ) {
         return;
     }
+    #[cfg(target_os = "macos")]
+    {
+        static READY: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if !macos_application_ready(&READY, notify_rust::set_application) {
+            return;
+        }
+    }
     let mut notification = notify_rust::Notification::new();
     notification.appname("Whatsapp").summary(title).body(body);
     // Windows uses the image; macOS always uses the app icon.
@@ -165,6 +193,61 @@ fn deliver(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_notifications_use_the_packaged_application_identity() {
+        let plist = include_str!("../packaging/macos/Info.plist");
+        let bundle_id = plist
+            .split_once("<key>CFBundleIdentifier</key>")
+            .unwrap()
+            .1
+            .split_once("<string>")
+            .unwrap()
+            .1
+            .split_once("</string>")
+            .unwrap()
+            .0;
+        let ready = std::sync::OnceLock::new();
+        assert!(macos_application_ready(&ready, |application| {
+            assert_eq!(application, bundle_id);
+            Ok(())
+        }));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn simultaneous_macos_notifications_initialize_only_once() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let ready = std::sync::OnceLock::new();
+        let calls = AtomicUsize::new(0);
+        let start = std::sync::Barrier::new(8);
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| {
+                    start.wait();
+                    assert!(macos_application_ready(&ready, |_| {
+                        calls.fetch_add(1, Ordering::Relaxed);
+                        Ok(())
+                    }));
+                });
+            }
+        });
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn failed_macos_initialization_keeps_notifications_disabled() {
+        let ready = std::sync::OnceLock::new();
+        assert!(!macos_application_ready(&ready, |application| {
+            Err(notify_rust::error::ApplicationError::CouldNotSet(application.into()).into())
+        }));
+        assert!(!macos_application_ready(&ready, |_| {
+            panic!("failed initialization must not be retried")
+        }));
+    }
 
     #[test]
     fn reading_cancels_delivered_and_pending_notifications_for_only_that_chat() {

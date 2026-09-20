@@ -1198,6 +1198,52 @@ mod tests {
     }
 
     #[test]
+    fn static_screens_stop_requesting_immediate_repaints() {
+        for (pixels_per_point, zoom) in [(1.0, 1.0), (2.0, 0.8), (2.0, 1.25)] {
+            for page in [
+                "empty",
+                "chat",
+                "archived",
+                "many-chats",
+                "long",
+                "settings",
+            ] {
+                let mut app = app();
+                app.settings.zoom = zoom;
+                apply_flags(&mut app, Some(page));
+                let ctx = egui::Context::default();
+                app.attach(&ctx);
+                let mut delay = std::time::Duration::ZERO;
+                for pass in 0..120 {
+                    let mut input = egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(1180.0, 780.0),
+                        )),
+                        time: Some(pass as f64 / 60.0),
+                        focused: false,
+                        ..Default::default()
+                    };
+                    let viewport = input.viewports.get_mut(&egui::ViewportId::ROOT).unwrap();
+                    viewport.focused = Some(false);
+                    viewport.native_pixels_per_point = Some(pixels_per_point);
+                    let mut output = ctx.run_ui(input, |ui| {
+                        app.background_frame(ui.ctx());
+                        app.frame_ui(ui);
+                    });
+                    delay = output.viewport_output[&egui::ViewportId::ROOT].repaint_delay;
+                    output.textures_delta.clear();
+                }
+                assert!(
+                    !delay.is_zero(),
+                    "{page} keeps repainting at {pixels_per_point} px/point and zoom {zoom}: {:?}",
+                    ctx.repaint_causes()
+                );
+            }
+        }
+    }
+
+    #[test]
     fn the_sample_has_every_kind_of_row() {
         let app = app();
         assert!(app.chats.len() >= 5);
