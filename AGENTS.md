@@ -1,8 +1,11 @@
 # Whatsapp agent guide
 
-Whatsapp is an independent Apple Silicon-only client derived from ZapFast: Rust, egui, and the
+Whatsapp is an independent Apple Silicon Mac client derived from ZapFast: Rust, egui, and the
 [whatsapp-rust](https://github.com/oxidezap/whatsapp-rust) library for the
 protocol. These notes are for coding agents and new contributors.
+
+`ios/` adds a personal iPhone companion in SwiftUI, using the same Rust backend
+and archive. This is an explicit additional target; keep the Mac build intact.
 
 ## Product boundaries
 
@@ -15,6 +18,17 @@ protocol. These notes are for coding agents and new contributors.
   Preserve existing user behaviour unless the task changes it.
 
 ## Architecture
+
+- `ios/rust` compiles the shared worker, archive, models and codecs into a static
+  library, exposing only validated UI commands and versioned JSON events through
+  `CoreBridge.h`. Native sources are reused by path, not copied. The iOS Waker
+  schedules coalesced main-queue drains. All FFI calls run on one serial engine
+  queue; shutdown must never block Swift's main actor. Pairing payloads and event
+  JSON must never be logged. iOS uses a separate container and linked session,
+  with no Mac migration, telemetry, browser or push relay. A bounded UIKit
+  background task finishes active work before stopping the connection; foreground
+  activation restarts it. Do not claim background delivery. Test with `--demo`
+  and fixtures, never send live messages as an automated check.
 
 - `src/ui/` draws views and pushes `model::Action`s; `src/app.rs` applies
   them after the frame. Never mutate application state from inside a view
@@ -202,10 +216,11 @@ protocol. These notes are for coding agents and new contributors.
   `Client::fetch_message_history` → a `HistorySync` chunk with
   `sync_type == ON_DEMAND`); the archive is paged first, the phone only
   when it is exhausted.
-- This fork targets `aarch64-apple-darwin` only, including CI and packaging.
+- The desktop package targets `aarch64-apple-darwin` only, including CI and packaging.
   Keep the M1 baseline; do not use `target-cpu=native` for distributable builds.
   Legacy platform branches can remain for upstream comparison, but they are not
-  supported build targets. Respect the explicit Mac-only scope.
+  supported desktop build targets. The separate `ios/rust` package adds
+  `aarch64-apple-ios` and `aarch64-apple-ios-sim`; do not make the egui app an iOS target.
 
 Three egui pitfalls this code has already hit:
 

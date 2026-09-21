@@ -31,8 +31,8 @@ use whatsapp_rust::wacore_binary::jid::JidExt;
 use whatsapp_rust::waproto::buffa::Message as _;
 use whatsapp_rust::{MediaRetryResult, MediaReuploadRequest};
 
+use super::PAGE;
 use super::{Command, Event, LinkStatus, Waker};
-use crate::app::PAGE;
 use crate::archive::Archive;
 use crate::model::{
     Chat, ChatId, ChatKind, Contact, Content, Delivery, Gif, GifError, LinkPreview, Media,
@@ -587,7 +587,11 @@ impl Worker {
             // WhatsApp reads the linked-device name, version, and icon at pairing.
             .with_device_props(
                 DevicePropsOverride::new()
-                    .with_os("Whatsapp")
+                    .with_os(if cfg!(target_os = "ios") {
+                        "Whatsapp for iPhone"
+                    } else {
+                        "Whatsapp"
+                    })
                     .with_version(app_version())
                     .with_platform_type(wa::device_props::PlatformType::DESKTOP),
             )
@@ -2182,6 +2186,7 @@ impl Worker {
                     self.emit_chat(&chat);
                 }
             }
+            #[cfg(not(target_os = "ios"))]
             Command::PickFiles(chat) => {
                 let commands = self.commands.clone();
                 tokio::task::spawn_blocking(move || {
@@ -2193,6 +2198,12 @@ impl Worker {
                 });
             }
             Command::Picked { chat, paths } => self.emit(Event::Picked { chat, paths }),
+            #[cfg(target_os = "ios")]
+            Command::PickFiles(_) | Command::PickStickerArchive => {
+                self.emit(Event::Error(
+                    "Use the iPhone's attachment picker".to_owned(),
+                ));
+            }
             Command::SendFiles {
                 chat,
                 paths,
@@ -2231,6 +2242,7 @@ impl Worker {
                     let _ = commands.send(Command::StickerPackImported { result });
                 });
             }
+            #[cfg(not(target_os = "ios"))]
             Command::PickStickerArchive => {
                 let commands = self.commands.clone();
                 let packs = self.packs_dir();
