@@ -1,6 +1,20 @@
 import XCTest
 
 final class WhatsappUITests: XCTestCase {
+    func testInterruptedPairingExplainsRecoveryWithoutAnExpiredCode() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--demo", "--demo-pairing-interrupted"]
+        app.launch()
+        XCTAssertTrue(app.staticTexts["pairing-interrupted"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.staticTexts["pairing-code"].exists)
+        XCTAssertTrue(app.textFields["pairing-phone"].exists)
+        XCTAssertTrue(app.buttons["pairing-submit"].isEnabled)
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = "Interrupted pairing recovery — offline fixture"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
     func testNativeChatAndOfflineComposer() {
         let app = XCUIApplication()
         app.launchArguments = ["--demo"]

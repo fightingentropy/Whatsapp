@@ -31,7 +31,20 @@ func whatsappEventsReady() { CoreWakeup.shared.signal() }
 
 /// Every handle operation, including shutdown, is serialized on this queue.
 /// The callback only schedules a drain, so it never re-enters Rust's session lock.
-final class CoreEngine: @unchecked Sendable {
+protocol MessagingEngine: AnyObject {
+    var onEvents: (([CoreEvent]) -> Void)? { get set }
+    var onError: ((String) -> Void)? { get set }
+    func start(root: URL)
+    func drain()
+    func send(_ command: [String: Any], completion: ((Bool) -> Void)?)
+    func stop(completion: @escaping () -> Void)
+}
+
+extension MessagingEngine {
+    func send(_ command: [String: Any]) { send(command, completion: nil) }
+}
+
+final class CoreEngine: MessagingEngine, @unchecked Sendable {
     private let queue = DispatchQueue(label: "org.erlin.whatsapp.ios.engine", qos: .userInitiated)
     private var handle: UInt64 = 0
     var onEvents: (([CoreEvent]) -> Void)?

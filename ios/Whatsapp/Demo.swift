@@ -1,6 +1,14 @@
 import Foundation
 
 extension ChatStore {
+    func loadInterruptedPairingDemo() {
+        guard isDemo else { return }
+        status = "unlinked"
+        hasSession = false
+        chats = []
+        pairingInterrupted = true
+    }
+
     // Opt-in offline fixture data. No real contacts, session or network is used.
     func loadDemo() {
         status = "connected"
