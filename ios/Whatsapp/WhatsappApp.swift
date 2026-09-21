@@ -12,7 +12,13 @@ struct WhatsappApp: App {
         #else
         let demo = false
         #endif
-        _store = StateObject(wrappedValue: ChatStore(demo: demo))
+        let store = ChatStore(demo: demo)
+        #if DEBUG
+        if demo && ProcessInfo.processInfo.arguments.contains("--demo-pairing-interrupted") {
+            store.loadInterruptedPairingDemo()
+        }
+        #endif
+        _store = StateObject(wrappedValue: store)
     }
 
     var body: some Scene {
@@ -34,6 +40,7 @@ struct WhatsappApp: App {
             .task { if phase == .active { store.activate() } }
             .onChange(of: phase) { _, phase in
                 if phase == .active { store.activate() }
+                else if phase == .inactive { store.prepareForBackground() }
                 else if phase == .background { store.background() }
             }
         }

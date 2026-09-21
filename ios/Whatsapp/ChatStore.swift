@@ -10,6 +10,7 @@ final class ChatStore: ObservableObject {
     @Published var qr: String?
     @Published var pairingCode: String?
     @Published var pairingBusy = false
+    @Published var pairingInterrupted = false
     @Published var loading = false
     @Published var fetchingPhone = false
     @Published var archiveComplete = false
@@ -28,7 +29,9 @@ final class ChatStore: ObservableObject {
 
     let isDemo: Bool
     private let defaults: UserDefaults
-    private let engine = CoreEngine()
+    private let engine: MessagingEngine
+    private let backgroundActivity: BackgroundActivityManaging
+    private let diagnostics: ConnectionDiagnostics
     private var root: URL?
     private var observer: NSObjectProtocol?
     private var foreground = false
@@ -38,6 +41,7 @@ final class ChatStore: ObservableObject {
     private var suspendWork: DispatchWorkItem?
     private var backgroundTask = UIBackgroundTaskIdentifier.invalid
     private var backgroundGeneration = 0
+    private var stoppingBackgroundTasks: [Int: BackgroundActivityCompletion] = [:]
 
     var connected: Bool { status == "connected" }
     var currentChat: Chat? { chats.first { $0.id == selectedChat } }
@@ -53,14 +57,20 @@ final class ChatStore: ObservableObject {
         }
     }
 
-    init(demo: Bool = false, defaults: UserDefaults = .standard) {
+    init(demo: Bool = false, defaults: UserDefaults = .standard,
+         engine: MessagingEngine = CoreEngine(), backgroundActivity: BackgroundActivityManaging? = nil) {
         self.isDemo = demo
         self.defaults = defaults
+        self.engine = engine
+        self.backgroundActivity = backgroundActivity ?? BackgroundActivity()
+        self.diagnostics = ConnectionDiagnostics(defaults: defaults)
         self.hasSession = demo || defaults.bool(forKey: "hasLinkedSession")
         self.sendReadReceipts = defaults.object(forKey: "readReceipts") as? Bool ?? true
         if demo { loadDemo(); return }
+        diagnostics.record(.appStarted)
         engine.onEvents = { [weak self] in self?.apply($0) }
         engine.onError = { [weak self] in
+            self?.diagnostics.record(.engineError)
             self?.error = $0; self?.status = "failed"
             self?.loading = false; self?.fetchingPhone = false
         }
@@ -76,10 +86,11 @@ final class ChatStore: ObservableObject {
         suspendWork = nil
         finishBackgroundTask()
         guard !isDemo else { return }
+        diagnostics.record(.foreground)
         do {
             root = try CoreEngine.storageDirectory()
             guard let root else { return }
-            if status == "suspended" { status = "connecting" }
+            if status == "suspended" || status == "suspending" { status = "connecting" }
             engine.start(root: root)
             if let selectedChat {
                 loading = true
@@ -88,40 +99,88 @@ final class ChatStore: ObservableObject {
         } catch { self.error = "Could not create private storage on this iPhone." }
     }
 
-    func background() {
-        foreground = false
+    func prepareForBackground() {
         guard !isDemo, backgroundTask == .invalid else { return }
         backgroundGeneration += 1
         let generation = backgroundGeneration
-        // Finish current pairing/sends, then close the socket before suspension.
-        // No background mode or silent keepalive is requested.
-        backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Finish WhatsApp activity") { [weak self] in
-            Task { @MainActor in self?.suspend(generation: generation) }
+        // Acquire the assertion while still in the foreground, before pairing
+        // or the scene's inactive -> background transition. Starting it only
+        // after backgrounding does not establish a reliable UIKit allowance.
+        backgroundTask = backgroundActivity.begin { [weak self] in
+            Task { @MainActor in self?.expireBackgroundActivity(generation: generation) }
         }
-        let work = DispatchWorkItem { [weak self] in self?.suspend(generation: generation) }
-        suspendWork = work
-        let remaining = UIApplication.shared.backgroundTimeRemaining
-        let grace = backgroundTask == .invalid ? 0 : max(0, min(20, remaining - 9))
-        DispatchQueue.main.asyncAfter(deadline: .now() + grace, execute: work)
+        diagnostics.record(backgroundTask == .invalid ? .backgroundTaskUnavailable : .backgroundTaskStarted)
     }
 
-    private func suspend(generation: Int) {
+    func background() {
+        foreground = false
+        guard !isDemo else { return }
+        // Fallback for a scene without a preceding inactive notification.
+        // An unavailable assertion stops immediately rather than trusting a timer.
+        if backgroundTask == .invalid { prepareForBackground() }
+        diagnostics.record(.background, remaining: backgroundActivity.timeRemaining)
+        checkBackgroundBudget(generation: backgroundGeneration)
+    }
+
+    private func checkBackgroundBudget(generation: Int) {
         guard generation == backgroundGeneration, !foreground else { return }
+        suspendWork?.cancel()
+        guard backgroundTask != .invalid,
+              let delay = BackgroundActivity.nextCheck(remaining: backgroundActivity.timeRemaining) else {
+            suspend(generation: generation)
+            return
+        }
+        let work = DispatchWorkItem { [weak self] in self?.checkBackgroundBudget(generation: generation) }
+        suspendWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    private func suspend(generation: Int, expired: Bool = false) {
+        guard generation == backgroundGeneration else { return }
+        guard !foreground else {
+            if expired { finishBackgroundTask() }
+            return
+        }
         suspendWork?.cancel()
         suspendWork = nil
         let task = backgroundTask
         backgroundTask = .invalid
+        diagnostics.record(expired ? .backgroundExpired : .backgroundBudgetLow, remaining: backgroundActivity.timeRemaining)
+        if !hasSession && (pairingCode != nil || pairingBusy) { pairingInterrupted = true }
+        pairingCode = nil
+        qr = nil
+        pairingBusy = false
+        status = "suspending"
+        // An unexpected expiration cannot wait for asynchronous shutdown.
+        // The normal budget check starts shutdown before this deadline.
+        let completion = BackgroundActivityCompletion(activity: backgroundActivity, task: task)
+        stoppingBackgroundTasks[generation] = completion
+        if expired { completion.end() }
         engine.stop { [weak self] in
+            completion.end()
+            self?.stoppingBackgroundTasks.removeValue(forKey: generation)
+            self?.diagnostics.record(.engineStopped)
             if let self, !self.foreground, generation == self.backgroundGeneration {
                 self.status = "suspended"; self.loading = false; self.fetchingPhone = false
+                self.pairingCode = nil; self.qr = nil; self.pairingBusy = false
             }
-            if task != .invalid { UIApplication.shared.endBackgroundTask(task) }
+        }
+    }
+
+    private func expireBackgroundActivity(generation: Int) {
+        if let completion = stoppingBackgroundTasks[generation] {
+            // UIKit can revoke the reserved time while Rust is already stopping.
+            // End only that assertion, without stopping a newer connection.
+            diagnostics.record(.backgroundExpired)
+            completion.end()
+        } else {
+            suspend(generation: generation, expired: true)
         }
     }
 
     private func finishBackgroundTask() {
         if backgroundTask != .invalid {
-            UIApplication.shared.endBackgroundTask(backgroundTask)
+            backgroundActivity.end(backgroundTask)
             backgroundTask = .invalid
         }
     }
@@ -176,6 +235,9 @@ final class ChatStore: ObservableObject {
     func pair(phone: String) {
         let digits = phone.filter(\.isASCII).filter(\.isNumber)
         guard (7...15).contains(digits.count) else { error = "Enter your phone number with its country code."; return }
+        prepareForBackground()
+        if !isDemo { diagnostics.record(.pairingRequested) }
+        pairingInterrupted = false
         pairingBusy = true
         engine.send(["type": "pair", "phone": digits]) { [weak self] accepted in
             if !accepted { self?.pairingBusy = false; self?.error = "The connection is not ready. Try again in a moment." }
@@ -245,11 +307,21 @@ final class ChatStore: ObservableObject {
         for event in events {
             switch event.type {
             case "link":
+                // A code queued before shutdown no longer belongs to a live
+                // connection. Do not put it back on the pairing screen.
+                if (status == "suspending" || status == "suspended") && event.status == "unlinked" { continue }
                 status = event.status ?? "failed"
+                if !isDemo {
+                    diagnostics.record(ConnectionDiagnostics.Stage(rawValue: status) ?? .unknownLinkState)
+                    if event.code != nil { diagnostics.record(.codeReady) }
+                }
                 qr = event.qr
                 pairingCode = event.code
+                if event.code != nil { pairingInterrupted = false }
                 if event.code != nil || status != "unlinked" { pairingBusy = false }
                 if status == "connected" {
+                    pairingInterrupted = false
+                    if foreground { finishBackgroundTask() }
                     hasSession = true
                     defaults.set(true, forKey: "hasLinkedSession")
                     requestedAvatars = []
@@ -308,7 +380,9 @@ final class ChatStore: ObservableObject {
                     messages[index].mediaState = event.path == nil ? "failed" : "idle"
                     messages[index].mediaError = event.detail
                 }
-            case "sync": syncProgress = event.active == true ? 0 : nil
+            case "sync":
+                syncProgress = event.active == true ? 0 : nil
+                if !isDemo { diagnostics.record(event.active == true ? .syncStarted : .syncFinished) }
             case "progress": syncProgress = event.progress
             case "older":
                 if event.chat.map(canonical) == selectedChat {
@@ -319,7 +393,9 @@ final class ChatStore: ObservableObject {
                     archiveComplete = false
                 }
             case "privacy": receiptsDisabled = event.disabled ?? true
-            case "error", "info": error = event.detail; pairingBusy = false
+            case "error", "info":
+                error = event.detail; pairingBusy = false
+                if !isDemo && event.type == "error" { diagnostics.record(.updateError) }
             default: break
             }
         }

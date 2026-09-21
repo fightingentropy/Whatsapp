@@ -28,14 +28,22 @@ struct PairingView: View {
                             } label: {
                                 Label("Copy code", systemImage: "doc.on.doc")
                             }.buttonStyle(.borderedProminent)
-                            Text("Open the official WhatsApp app → Settings → Linked Devices → Link a Device → Link with phone number instead. Enter the code, approve, then return here.")
+                            Text("Switch to official WhatsApp, enter the code and approve. Return here straight after submitting it so this app can finish connecting.")
                                 .font(.subheadline).foregroundStyle(.secondary)
-                            Text("If linking expires while you switch apps, return here and request a fresh code.")
+                            Text("iOS gives linking limited time while you switch apps. This code stops working if that time runs out.")
                                 .font(.footnote).foregroundStyle(.secondary)
                         }
                         .padding(20).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
                     } else {
                         VStack(alignment: .leading, spacing: 14) {
+                            if store.pairingInterrupted {
+                                Label("Linking was interrupted", systemImage: "clock.badge.exclamationmark").font(.headline)
+                                Text("This app ran out of background time, so the previous code is no longer active. Request a fresh code and return here straight after submitting it in WhatsApp.")
+                                    .font(.subheadline).foregroundStyle(.secondary)
+                                    .accessibilityIdentifier("pairing-interrupted")
+                            }
+                            Text("First, open official WhatsApp → Settings → Linked Devices → Link a Device → Link with phone number instead. Then return here to get your code.")
+                                .font(.subheadline).foregroundStyle(.secondary)
                             Text("Phone number").font(.headline)
                             TextField("Country code + phone number", text: $phone)
                                 .keyboardType(.phonePad).textContentType(.telephoneNumber)

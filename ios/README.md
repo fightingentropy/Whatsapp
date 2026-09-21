@@ -20,6 +20,12 @@ Silicon Mac to build. This is an initial personal-device build, not an App Store
 Messages arrive while the app is open. UIKit provides a short, bounded grace
 period for active work when leaving it; the app then stops its connection and
 reconnects when reopened. **No background notifications or always-on connection.**
+The app requests that allowance before leaving the foreground and watches the
+remaining time, reserving time to close the connection safely. An interrupted
+pairing clears its expired code and explains how to retry. The last 32 connection
+and lifecycle stages are saved locally in app preferences for troubleshooting;
+they contain timestamps and background time only, never codes, phone numbers,
+account identifiers, messages or error payloads. They are not transmitted.
 No background audio workaround, background mode or remote notification server is used.
 Removing the app removes its local history. Unlink this companion from the
 official app's Linked Devices settings when finished using it.
@@ -53,9 +59,10 @@ xcrun devicectl device install app --device YOUR_DEVICE_UDID \
 ```
 
 Bundle identity is `org.erlin.whatsapp.ios`, independent of the Mac app and the
-official WhatsApp app. Open it and enter your number including country code.
-In official WhatsApp, open Settings → Linked Devices → Link a Device → Link with
-phone number instead. Approve this app's code, then return here to sync. Pairing
+official WhatsApp app. First, in official WhatsApp, open Settings → Linked
+Devices → Link a Device → Link with phone number instead. Return to this app,
+enter your number including country code, and copy the new code. Switch back to
+official WhatsApp to submit it, then return here straight away to finish linking. Pairing
 needs to finish within iOS's background allowance when using the same phone;
 request a fresh code if it expires. The linked device is named “Whatsapp for iPhone”.
 
@@ -72,9 +79,11 @@ xcodebuild -project ios/Whatsapp.xcodeproj -scheme Whatsapp \
 
 Also run all six root Mac checks in `AGENTS.md` after shared-source changes.
 Swift unit tests cover replay deduplication, paging, live-vs-query events, identity
-merges and load failures. Rust bridge tests validate commands and event fields.
-The UI test launches a Debug-only `--demo` preview with fictional chats, exercises
-the composer and saves a screenshot. It never links an account or sends a real
+merges, load failures, foreground background-task acquisition, interruption,
+expiration during shutdown and privacy of local diagnostics. Rust bridge tests
+validate commands and event fields. UI tests launch a Debug-only `--demo` preview
+with fictional chats, exercise the composer and interrupted-pairing screen, and
+save screenshots. They never link an account or send a real
 message. Simulator tests and a signed installation do not establish live account
 pairing, sending, history sync or physical-device visual behavior; verify those
 separately with the account owner.
