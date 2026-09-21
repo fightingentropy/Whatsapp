@@ -9,8 +9,11 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::model::{Chat, ChatKind, Contact, Content, Delivery, LastMessage, Message};
 
+#[path = "archive/identities.rs"]
 mod identities;
+#[path = "archive/receipts.rs"]
 mod receipts;
+#[path = "archive/search.rs"]
 mod search;
 
 /// Recent phone sticker metadata, last-used time, and optional local file.

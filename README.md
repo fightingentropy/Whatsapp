@@ -8,6 +8,12 @@ Built with Rust, [egui](https://github.com/emilk/egui) and
 green accents, a large handset-and-chat mark on a dark Dock icon, and a dark
 theme by default.
 
+A personal **native iPhone companion** is also available in [`ios/`](ios/README.md).
+It uses SwiftUI and the same Rust messaging worker and SQLite archive. It links
+as a separate device and currently receives messages while open; it does not
+provide background push notifications. The desktop features below describe the
+Mac app; see the iOS README for the smaller iPhone feature set and build steps.
+
 The standalone project lives at [fightingentropy/Whatsapp](https://github.com/fightingentropy/Whatsapp).
 There is no browser engine, hosted backend, telemetry or extra account.
 Build from source below; signed, notarized public downloads will appear under

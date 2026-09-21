@@ -1,0 +1,68 @@
+name: Whatsapp
+options:
+  deploymentTarget:
+    iOS: "18.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    DEVELOPMENT_TEAM: T29NU9NCA2
+    CODE_SIGN_STYLE: Automatic
+    MARKETING_VERSION: "0.13.1"
+    CURRENT_PROJECT_VERSION: "1"
+    ENABLE_USER_SCRIPT_SANDBOXING: false
+targets:
+  Whatsapp:
+    type: application
+    platform: iOS
+    sources:
+      - path: Whatsapp
+    preBuildScripts:
+      - name: Build shared Rust messaging core
+        script: '"$SRCROOT/scripts/build-rust.sh"'
+        basedOnDependencyAnalysis: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.erlin.whatsapp.ios
+        TARGETED_DEVICE_FAMILY: "1"
+        SUPPORTS_MACCATALYST: false
+        SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: false
+        SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD: false
+        SWIFT_OBJC_BRIDGING_HEADER: Whatsapp/CoreBridge.h
+        LIBRARY_SEARCH_PATHS: ["$(inherited)", "$(SRCROOT)/build/$(PLATFORM_NAME)"]
+        OTHER_LDFLAGS: ["$(inherited)", "-lwhatsapp_ios_core", "-lc++", "-framework", "Security", "-framework", "SystemConfiguration"]
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+    info:
+      path: config/Info.plist
+      properties:
+        CFBundleDisplayName: Whatsapp
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+    scheme:
+      testTargets: [WhatsappTests, WhatsappUITests]
+      gatherCoverageData: true
+  WhatsappTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [WhatsappTests]
+    dependencies:
+      - target: Whatsapp
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.erlin.whatsapp.ios.tests
+        GENERATE_INFOPLIST_FILE: true
+  WhatsappUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [WhatsappUITests]
+    dependencies:
+      - target: Whatsapp
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.erlin.whatsapp.ios.uitests
+        GENERATE_INFOPLIST_FILE: true

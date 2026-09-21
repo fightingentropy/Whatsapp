@@ -10,6 +10,11 @@ repository = "https://github.com/fightingentropy/Whatsapp"
 keywords = ["whatsapp", "chat", "egui", "messaging"]
 categories = ["gui"]
 
+[workspace]
+members = ["ios/rust"]
+default-members = ["."]
+resolver = "3"
+
 [lib]
 name = "whatsapp"
 path = "src/lib.rs"

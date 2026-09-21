@@ -5881,6 +5881,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "whatsapp-ios-core"
+version = "0.13.1"
+dependencies = [
+ "aes",
+ "anyhow",
+ "cbc",
+ "core-foundation-sys",
+ "directories",
+ "eframe",
+ "egui",
+ "hkdf",
+ "hmac",
+ "image",
+ "jiff",
+ "log",
+ "mime_guess2",
+ "objc2 0.6.4",
+ "ogg",
+ "opus",
+ "png 0.18.1",
+ "resvg",
+ "rfd",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "ureq",
+ "webp-animation",
+ "whatsapp-rust",
+ "zip",
+]
+
+[[package]]
 name = "whatsapp-rust"
 version = "0.7.0"
 source = "git+https://github.com/oxidezap/whatsapp-rust?rev=1ace865716726daec8d0f00335453fcb8de35d1b#1ace865716726daec8d0f00335453fcb8de35d1b"

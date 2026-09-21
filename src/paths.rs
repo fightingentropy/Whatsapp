@@ -3,7 +3,9 @@
 //! Configuration, session state, and caches use separate standard platform
 //! directories. Clearing a cache does not remove device keys.
 
-use std::path::{Path, PathBuf};
+#[cfg(any(test, not(target_os = "ios")))]
+use std::path::Path;
+use std::path::PathBuf;
 
 use directories::ProjectDirs;
 
@@ -45,6 +47,7 @@ impl AppDirs {
     /// Moves this app's previous identity without replacing existing data.
     /// Never adopts an upstream ZapFast or FastSapp account.
     /// Call only after acquiring the instance guard, and never for demo runs.
+    #[cfg(not(target_os = "ios"))]
     pub fn adopt_previous_names(&self) -> std::io::Result<()> {
         if let Some(old) = Self::of("zapfast-silicon") {
             self.adopt(&old)?;
@@ -58,6 +61,7 @@ impl AppDirs {
         Ok(())
     }
 
+    #[cfg(any(test, not(target_os = "ios")))]
     fn adopt(&self, old: &Self) -> std::io::Result<()> {
         for (from, to) in [
             (&old.config, &self.config),
@@ -143,6 +147,7 @@ impl AppDirs {
 
 /// Rename whole directories so SQLite databases travel with their WAL files.
 /// A failed move stops startup before empty replacement directories are made.
+#[cfg(any(test, not(target_os = "ios")))]
 fn adopt_directory(from: &Path, to: &Path) -> std::io::Result<()> {
     if from.is_dir() && !to.try_exists()? {
         if let Some(parent) = to.parent() {

@@ -23,7 +23,7 @@ mod cache;
 mod identities;
 
 /// Initial and incremental message-page size.
-pub const PAGE: usize = 60;
+pub use crate::backend::PAGE;
 /// Minimum delay between phone history requests.
 const PHONE_COOLDOWN: Duration = Duration::from_secs(6);
 /// WhatsApp message-edit window.

@@ -12,8 +12,10 @@ use tokio::sync::mpsc;
 use crate::model::{Chat, ChatId, Contact, Gif, GifError, Message, StickerPack};
 use crate::paths::AppDirs;
 
-// Re-exported so the picker can detect pasted Signal pack links.
-pub(crate) mod sticker_import;
+// Shared helpers for native pickers and future mobile attachment importers.
+#[path = "backend/sticker_import.rs"]
+pub mod sticker_import;
+#[path = "backend/worker.rs"]
 mod worker;
 
 /// Phone-link state.
@@ -61,6 +63,9 @@ impl LinkStatus {
 
 /// Oldest loaded message timestamp and id used as a page boundary.
 pub type PageKey = (i64, String);
+
+/// Maximum number of messages returned by one archive page.
+pub const PAGE: usize = 60;
 
 #[derive(Clone, Debug)]
 pub enum Command {
@@ -456,8 +461,10 @@ pub enum Event {
 
 /// Cross-thread window wake handle.
 #[derive(Clone, Default)]
+#[cfg(not(target_os = "ios"))]
 pub struct Waker(Arc<std::sync::Mutex<Option<egui::Context>>>);
 
+#[cfg(not(target_os = "ios"))]
 impl Waker {
     pub fn attach(&self, ctx: &egui::Context) {
         *self.0.lock().unwrap_or_else(|p| p.into_inner()) = Some(ctx.clone());
@@ -480,6 +487,24 @@ impl Waker {
     pub fn wake_after(&self, delay: std::time::Duration) {
         if let Some(ctx) = self.0.lock().unwrap_or_else(|p| p.into_inner()).as_ref() {
             ctx.request_repaint_after(delay);
+        }
+    }
+}
+
+/// iOS delivers events to Swift's main queue without an egui context.
+#[cfg(target_os = "ios")]
+#[derive(Clone, Default)]
+pub struct Waker(Option<Arc<dyn Fn() + Send + Sync>>);
+
+#[cfg(target_os = "ios")]
+impl Waker {
+    pub fn new(callback: impl Fn() + Send + Sync + 'static) -> Self {
+        Self(Some(Arc::new(callback)))
+    }
+
+    pub fn wake(&self) {
+        if let Some(callback) = &self.0 {
+            callback();
         }
     }
 }

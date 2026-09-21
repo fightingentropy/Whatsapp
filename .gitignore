@@ -8,3 +8,6 @@
 /.cache/
 
 /dist/
+/ios/build/
+/ios/Whatsapp.xcodeproj/
+/ios/DerivedData/
