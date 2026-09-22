@@ -11,27 +11,30 @@ struct ChatDetails: View {
     var body: some View {
         List {
             Section {
-                VStack(spacing: 12) {
-                    AvatarView(name: store.displayName(id), url: store.localURL(store.fullAvatars[store.canonical(id)] ?? store.avatars[store.canonical(id)]), group: chat?.kind == "group")
-                        .scaleEffect(1.5).padding(20)
-                    Text(chat.map(store.chatTitle) ?? store.displayName(id)).font(.title2.bold()).textSelection(.enabled)
+                VStack(spacing: 7) {
+                    AvatarView(name: chat.map(store.chatTitle) ?? store.displayName(id), url: store.localURL(store.fullAvatars[store.canonical(id)] ?? store.avatars[store.canonical(id)]), group: chat?.kind == "group", size: 88)
+                        .padding(.bottom, 8)
+                    Text(chat.map(store.chatTitle) ?? store.displayName(id)).font(.title2.weight(.semibold)).textSelection(.enabled)
                     if id.hasSuffix("@s.whatsapp.net") { Text("+" + id.components(separatedBy: "@")[0]).foregroundStyle(.secondary).textSelection(.enabled) }
                     if let chat, let status = store.presenceLabel(chat) { Text(status).font(.footnote).foregroundStyle(.secondary) }
                     if id == store.accountID, let about = store.accountAbout { Text(about).foregroundStyle(.secondary) }
-                }.frame(maxWidth: .infinity)
-            }
+                }.frame(maxWidth: .infinity).multilineTextAlignment(.center).padding(.vertical, 12)
+            }.listRowBackground(Color.clear)
             if let chat {
                 Section {
-                    Button(chat.pinned ? "Unpin chat" : "Pin chat") { store.setPinned(chat) }
-                    Button(chat.archived ? "Unarchive chat" : "Archive chat") { store.setArchived(chat) }
+                    Button { store.setPinned(chat) } label: { Label(chat.pinned ? "Unpin chat" : "Pin chat", systemImage: chat.pinned ? "pin.slash" : "pin") }
+                    Button { store.setArchived(chat) } label: { Label(chat.archived ? "Unarchive chat" : "Archive chat", systemImage: "archivebox") }
                     ChatMuteMenu(chat: chat)
-                    Button("Mark as read") { store.markChatRead(chat) }
-                }
+                    Button { store.markChatRead(chat) } label: { Label("Mark as read", systemImage: "checkmark.bubble") }
+                }.tint(.primary)
                 if chat.kind == "group" {
                     Section("Members") {
                         ForEach(chat.participants ?? [], id: \.self) { member in
                             NavigationLink { ChatDetails(id: member) } label: {
-                                HStack { AvatarView(name: store.displayName(member), url: store.localURL(store.avatars[member])); Text(store.displayName(member)) }
+                                HStack(spacing: 12) {
+                                    AvatarView(name: store.displayName(member), url: store.localURL(store.avatars[member]), size: 36)
+                                    Text(store.displayName(member))
+                                }.padding(.vertical, 3)
                             }.task { store.avatar(member) }
                         }
                         if chat.participants?.isEmpty != false { Text("Member information is still loading.").foregroundStyle(.secondary) }

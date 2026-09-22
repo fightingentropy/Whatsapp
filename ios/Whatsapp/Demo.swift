@@ -24,7 +24,7 @@ extension ChatStore {
             Chat(id: "showcase@g.us", name: "Media preview", kind: "group", timestamp: now - 300, unread: 0, archived: false, pinned: false, readOnly: false, preview: "Photos, voice, stickers and message cards", participants: ["maya@lid", "me@lid"]),
             Chat(id: "alex@lid", name: "Alex Morgan", kind: "direct", timestamp: now - 900, unread: 0, archived: false, pinned: false, readOnly: false, preview: "That sounds good. Thanks!"),
             Chat(id: "studio@g.us", name: "Studio", kind: "group", timestamp: now - 3600, unread: 1, archived: false, pinned: false, readOnly: false, preview: "The new sketches are ready to look at."),
-            Chat(id: "family@g.us", name: "Family", kind: "group", timestamp: now - 7200, unread: 0, archived: false, pinned: false, readOnly: false, preview: "Dinner on Sunday? 🍝"),
+            Chat(id: "family@g.us", name: "Family", kind: "group", timestamp: now - 86400, unread: 0, archived: false, pinned: false, readOnly: false, preview: "Dinner on Sunday? 🍝"),
             Chat(id: "summer@g.us", name: "Summer trip", kind: "group", timestamp: now - 86400, unread: 0, archived: true, pinned: false, readOnly: false, preview: "A weekend to remember.")
         ]
         try? FileManager.default.createDirectory(at: Self.demoRoot, withIntermediateDirectories: true)
@@ -39,9 +39,11 @@ extension ChatStore {
     static func demoMessages(chat: String) -> [Message] {
         let now = Date().timeIntervalSince1970
         if chat == "showcase@g.us" { return richDemoMessages(now: now) }
-        let texts = ["Anyone up for a walk this weekend?", "Absolutely. Saturday morning?", "Perfect! We could grab a coffee first ☕️", "Let's meet at 10 by the park entrance.", "I'll bring my camera 📷", "Great — see you there! ☀️"]
+        let texts = ["Anyone up for a walk this weekend?", "The forecast looks lovely ☀️", "Absolutely. Saturday morning?", "Perfect! We could grab a coffee first ☕️", "Let's meet at 10 by the park entrance.", "I'll bring my camera 📷", "See you there!", "Sounds good"]
         return texts.enumerated().map { index, text in
-            sampleMessage(id: "fixture-\(index)", chat: chat, text: text, fromMe: index == 1 || index == 3, time: now - Double(3600 - index * 420))
+            var message = sampleMessage(id: "fixture-\(index)", chat: chat, text: text, fromMe: index == 2 || index == 4 || index == 7, time: now - Double(600 - index * 40))
+            if index == 4 { message.reactions = ["👍"]; message.reactionDetails = [.init(sender: "maya@lid", from_me: false, emoji: "👍")] }
+            return message
         }
     }
 

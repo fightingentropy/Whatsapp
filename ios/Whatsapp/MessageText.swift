@@ -41,7 +41,7 @@ enum MessageText {
             guard let expression = try? NSRegularExpression(pattern: "@" + NSRegularExpression.escapedPattern(for: token) + "(?![\\p{L}\\p{N}])") else { continue }
             for match in expression.matches(in: text.string, range: NSRange(location: 0, length: text.length)).reversed() {
                 guard text.attribute(codeKey, at: match.range.location, effectiveRange: nil) == nil else { continue }
-                text.replaceCharacters(in: match.range, with: NSAttributedString(string: "@" + name, attributes: [.font: UIFont.boldSystemFont(ofSize: size), .foregroundColor: UIColor.systemGreen]))
+                text.replaceCharacters(in: match.range, with: NSAttributedString(string: "@" + name, attributes: [.font: UIFont.boldSystemFont(ofSize: size), .foregroundColor: UIColor(named: "AccentColor") ?? UIColor.systemGreen]))
             }
         }
         if let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) {

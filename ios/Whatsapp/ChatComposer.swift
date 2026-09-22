@@ -6,6 +6,7 @@ struct ChatComposer: View {
     @Binding var draft: String
     @ObservedObject var audio: NativeAudio
     @EnvironmentObject private var store: ChatStore
+    @FocusState private var focused: Bool
     @State private var sending = false
     @State private var importing = false
     @State private var filesPresented = false
@@ -18,20 +19,11 @@ struct ChatComposer: View {
         VStack(spacing: 8) {
             if !store.connected && !store.isDemo { Text("Reconnecting… Your draft is saved.").font(.caption).foregroundStyle(.secondary) }
             if let editing = store.editing {
-                HStack {
-                    Label("Editing message", systemImage: "pencil").font(.caption.bold())
-                    Spacer()
-                    Button("Cancel") { store.editing = nil; draft = store.draftBeforeEditing ?? ""; store.draftBeforeEditing = nil }
-                }.padding(8).accessibilityIdentifier("editing-message")
-                Text(editing.text).font(.caption).lineLimit(2).foregroundStyle(.secondary)
+                composerContext(title: "Editing message", text: editing.text, icon: "pencil") {
+                    store.editing = nil; draft = store.draftBeforeEditing ?? ""; store.draftBeforeEditing = nil
+                }.accessibilityIdentifier("editing-message")
             } else if let reply = store.reply {
-                HStack {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("Replying to \(store.displayName(reply.sender, fallback: reply.senderName))").font(.caption.bold()).foregroundStyle(Color.accentColor)
-                        Text(reply.text).font(.caption).lineLimit(2).foregroundStyle(.secondary)
-                    }.frame(maxWidth: .infinity, alignment: .leading)
-                    Button { store.reply = nil } label: { Image(systemName: "xmark.circle.fill") }.accessibilityLabel("Cancel reply")
-                }.padding(10).background(Color(.tertiarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
+                composerContext(title: store.displayName(reply.sender, fallback: reply.senderName), text: reply.text, icon: "arrowshape.turn.up.left.fill") { store.reply = nil }
             }
             if !pending.isEmpty {
                 ScrollView(.horizontal) {
@@ -52,12 +44,14 @@ struct ChatComposer: View {
                 recordingControls
             } else {
                 completions
-                HStack(alignment: .bottom, spacing: 8) {
+                HStack(alignment: .bottom, spacing: 4) {
                     attachmentMenu.disabled(importing || store.editing != nil)
                     TextField(pending.isEmpty ? "Message" : "Add a caption", text: $draft, axis: .vertical)
                         .font(.system(size: store.preferences.textSize)).lineLimit(1...5)
-                        .padding(.horizontal, 14).padding(.vertical, 11)
-                        .background(Color(.tertiarySystemBackground), in: RoundedRectangle(cornerRadius: 23))
+                        .padding(.horizontal, 13).padding(.vertical, 10)
+                        .background(ChatAppearance.field, in: RoundedRectangle(cornerRadius: 21))
+                        .overlay(RoundedRectangle(cornerRadius: 21).stroke(.primary.opacity(0.07), lineWidth: 0.5))
+                        .focused($focused)
                         .accessibilityIdentifier("message-composer")
                         .onChange(of: draft) { _, value in
                             let expanded = EmojiCatalog.expandCompletedShortcode(value)
@@ -66,24 +60,26 @@ struct ChatComposer: View {
                         }
                     if hasText || !pending.isEmpty || store.editing != nil {
                         Button(action: send) {
-                            Image(systemName: store.editing == nil ? "arrow.up" : "checkmark").font(.title3.bold()).foregroundStyle(.black)
-                                .frame(width: 44, height: 44).background(Color.accentColor, in: Circle())
+                            Image(systemName: store.editing == nil ? "arrow.up" : "checkmark").font(.system(size: 17, weight: .semibold)).foregroundStyle(Color(.systemBackground))
+                                .frame(width: 34, height: 34).background(Color.accentColor, in: Circle()).frame(width: 44, height: 44)
                         }.disabled(sending || importing || !store.canPost || (!hasText && pending.isEmpty))
                             .accessibilityLabel("Send message").accessibilityIdentifier("send-message")
                             .keyboardShortcut(.return, modifiers: .command)
                     } else {
                         Button { Task { await store.startVoiceRecording() } } label: {
-                            Image(systemName: "mic.fill").font(.title3).frame(width: 44, height: 44)
+                            Image(systemName: "mic").font(.system(size: 21, weight: .medium)).foregroundStyle(Color.primary).frame(width: 44, height: 44)
                         }.disabled(!store.canPost).accessibilityLabel("Record voice message")
                     }
                 }
             }
             if importing { ProgressView("Preparing attachments…").font(.caption) }
         }
-        .padding(.horizontal, 12).padding(.vertical, 8).background(.bar)
+        .padding(.horizontal, 6).padding(.vertical, 7).background(.bar)
+        .overlay(alignment: .top) { Rectangle().fill(.primary.opacity(0.07)).frame(height: 0.5) }
         .onChange(of: store.editing?.id) { old, _ in
-            if let message = store.editing { if old == nil { store.draftBeforeEditing = draft }; draft = message.text; store.reply = nil }
+            if let message = store.editing { if old == nil { store.draftBeforeEditing = draft }; draft = message.text; store.reply = nil; focused = true }
         }
+        .onChange(of: store.reply?.id) { _, id in if id != nil { focused = true } }
         .onChange(of: photos) { _, items in
             guard !items.isEmpty else { return }
             let chat = store.canonical(chatID)
@@ -108,6 +104,18 @@ struct ChatComposer: View {
             MediaPicker { emoji in draft += emoji; pickerPresented = false }
         }
         .onChange(of: audio.error) { _, error in if let error { store.error = error; audio.error = nil } }
+    }
+
+    private func composerContext(title: String, text: String, icon: String, cancel: @escaping () -> Void) -> some View {
+        HStack(spacing: 9) {
+            Image(systemName: icon).font(.system(size: 14)).foregroundStyle(Color.accentColor)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).font(.caption.weight(.semibold)).foregroundStyle(Color.accentColor)
+                Text(text).font(.caption).lineLimit(1).foregroundStyle(.secondary)
+            }.frame(maxWidth: .infinity, alignment: .leading)
+            Button(action: cancel) { Image(systemName: "xmark").font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary).frame(width: 44, height: 44) }
+                .accessibilityLabel(store.editing == nil ? "Cancel reply" : "Cancel edit")
+        }.padding(.leading, 12)
     }
 
     @ViewBuilder private var completions: some View {
@@ -152,7 +160,7 @@ struct ChatComposer: View {
                     }
                 }
             }
-        } label: { Image(systemName: "plus").font(.title2).frame(width: 30, height: 44) }
+        } label: { Image(systemName: "plus").font(.system(size: 23, weight: .regular)).foregroundStyle(Color.primary).frame(width: 44, height: 44) }
             .accessibilityLabel("Add attachment").accessibilityIdentifier("composer-attachments")
     }
 

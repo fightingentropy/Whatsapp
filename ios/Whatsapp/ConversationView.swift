@@ -18,7 +18,7 @@ struct ConversationView: View {
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(spacing: 7) {
+                LazyVStack(spacing: 3) {
                     if store.loading || store.fetchingPhone {
                         ProgressView(store.fetchingPhone ? "Asking your phone for history…" : "Loading messages…")
                             .font(.caption).padding(16)
@@ -34,24 +34,26 @@ struct ConversationView: View {
                     }
                     ForEach(Array(store.messages.enumerated()), id: \.element.id) { index, message in
                         if startsDay(index) {
-                            Text(Date(timeIntervalSince1970: message.timestamp), format: .dateTime.day().month(.wide))
-                                .font(.caption.weight(.medium)).foregroundStyle(.secondary)
-                                .padding(.horizontal, 12).padding(.vertical, 6)
-                                .background(Color(.secondarySystemBackground), in: Capsule()).padding(.vertical, 9)
+                            Text(ChatDate.day(message.timestamp))
+                                .font(.caption2.weight(.medium)).foregroundStyle(.secondary)
+                                .padding(.horizontal, 10).padding(.vertical, 5)
+                                .background(.thinMaterial, in: Capsule()).padding(.vertical, 14)
                         }
-                        MessageBubble(message: message, group: chat?.kind == "group", selecting: selecting, selected: selection.contains(message.id), select: { selecting = true; if !selection.insert(message.id).inserted { selection.remove(message.id) } }) { message in
+                        MessageBubble(message: message, group: chat?.kind == "group", joinsPrevious: joinsPrevious(index), joinsNext: joinsNext(index), selecting: selecting, selected: selection.contains(message.id), select: { selecting = true; if !selection.insert(message.id).inserted { selection.remove(message.id) } }) { message in
                             if let url = store.localURL(message.mediaPath) { previewURL = url }
                             else { store.download(message) }
                         }
+                        .padding(.top, startsDay(index) || joinsPrevious(index) ? 0 : 7)
                         .id(message.id)
                     }
                     Color.clear.frame(height: 1).id("conversation-bottom")
                 }.padding(.horizontal, 12).padding(.bottom, 8)
             }
-            .background(Color(.systemGroupedBackground))
+            .background(ChatAppearance.canvas)
             .scrollDismissesKeyboard(.interactively)
             .defaultScrollAnchor(.bottom, for: .initialOffset)
             .defaultScrollAnchor(.bottom, for: .alignment)
+            .defaultScrollAnchor(.bottom, for: .sizeChanges)
             .onScrollGeometryChange(for: Bool.self) { geometry in
                 geometry.contentSize.height - geometry.visibleRect.maxY < 100
             } action: { _, value in nearBottom = value }
@@ -84,7 +86,7 @@ struct ConversationView: View {
             .overlay(alignment: .bottomTrailing) {
                 if !nearBottom && !store.messages.isEmpty {
                     Button { withAnimation { proxy.scrollTo("conversation-bottom", anchor: .bottom) } } label: {
-                        Image(systemName: "chevron.down").font(.headline).padding(14)
+                        Image(systemName: "chevron.down").font(.system(size: 15, weight: .semibold)).foregroundStyle(.primary).frame(width: 44, height: 44)
                             .background(.regularMaterial, in: Circle())
                     }.padding(14).accessibilityLabel("Jump to latest message")
                 }
@@ -95,10 +97,10 @@ struct ConversationView: View {
         .toolbar {
             ToolbarItem(placement: .principal) {
                 Button { infoPresented = true } label: {
-                    VStack {
+                    VStack(spacing: 2) {
                         Text(chat.map(store.chatTitle) ?? "Chat").font(.headline).foregroundStyle(Color.primary)
                         if let chat, let label = store.presenceLabel(chat) { Text(label).font(.caption2).foregroundStyle(Color.secondary).lineLimit(1) }
-                    }
+                    }.lineLimit(1)
                 }.accessibilityLabel("Chat information")
             }
             ToolbarItem(placement: .topBarTrailing) {
@@ -110,7 +112,11 @@ struct ConversationView: View {
                         }.disabled(selection.isEmpty)
                         Button("Cancel selection", role: .cancel) { selecting = false; selection = [] }
                     } label: { Image(systemName: "checkmark.circle.fill") }
-                } else { Button { infoPresented = true } label: { Image(systemName: "info.circle") } }
+                } else {
+                    Button { infoPresented = true } label: {
+                        AvatarView(name: chat.map(store.chatTitle) ?? "Chat", url: store.localURL(store.avatars[store.canonical(chatID)]), group: chat?.kind == "group", size: 32)
+                    }.accessibilityLabel("View profile")
+                }
             }
         }
         .sheet(isPresented: $infoPresented) { NavigationStack { ChatDetails(id: chatID).toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { infoPresented = false } } } } }
@@ -128,6 +134,14 @@ struct ConversationView: View {
         .onChange(of: phase) { _, phase in
             if phase != .active { store.drafts[store.canonical(chatID)] = store.draftBeforeEditing ?? draftText }
         }
+    }
+
+    private func joinsPrevious(_ index: Int) -> Bool {
+        index > 0 && MessageGrouping.joins(store.messages[index - 1], store.messages[index])
+    }
+
+    private func joinsNext(_ index: Int) -> Bool {
+        index + 1 < store.messages.count && MessageGrouping.joins(store.messages[index], store.messages[index + 1])
     }
 
     private func startsDay(_ index: Int) -> Bool {
