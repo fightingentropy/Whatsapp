@@ -166,6 +166,35 @@ final class PairingLifecycleTests: XCTestCase {
         XCTAssertFalse(store.pairingInterrupted)
         XCTAssertNil(store.pairingCode)
     }
+
+    func testBriefAppSwitchKeepsWorkerAndDoesNotReloadVisibleConversation() {
+        let (store, engine, _, _) = fixture()
+        store.open("fixture@lid"); store.loading = false
+        engine.commands = []
+        store.prepareForBackground(); store.background(); store.activate()
+        XCTAssertEqual(engine.starts, 1)
+        XCTAssertFalse(engine.commands.contains("load"))
+        XCTAssertFalse(store.loading)
+        store.activate()
+        XCTAssertEqual(engine.starts, 1, "Duplicate foreground callbacks should be cheap")
+    }
+
+    func testActualSuspensionRestartsWorkerAndReloadsVisibleConversationOnce() {
+        let (store, engine, activity, _) = fixture()
+        store.open("fixture@lid"); engine.commands = []
+        store.prepareForBackground(); activity.timeRemaining = 0; store.background()
+        engine.finishStop(); store.activate(); store.activate()
+        XCTAssertEqual(engine.starts, 2)
+        XCTAssertEqual(engine.commands.filter { $0 == "load" }.count, 1)
+        XCTAssertTrue(store.loading)
+    }
+
+    func testStorageFailureCanRetryOnNextActivation() {
+        let (store, engine, _, _) = fixture()
+        engine.onError?("Fixture storage failure")
+        store.activate()
+        XCTAssertEqual(engine.starts, 2)
+    }
 }
 
 private final class FakeMessagingEngine: MessagingEngine {
@@ -175,7 +204,8 @@ private final class FakeMessagingEngine: MessagingEngine {
     var onStop: (() -> Void)?
     var commands: [String] = []
     var stops: [() -> Void] = []
-    func start(root: URL) {}
+    var starts = 0
+    func start(root: URL) { starts += 1 }
     func drain() {}
     func send(_ command: [String: Any], completion: ((Bool) -> Void)?) {
         onSend?()

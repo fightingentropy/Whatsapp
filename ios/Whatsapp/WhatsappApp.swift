@@ -6,14 +6,21 @@ struct WhatsappApp: App {
     @StateObject private var store: ChatStore
 
     init() {
-        #if DEBUG
+        #if BENCHMARK
+        // Separate container, optimized code, and no live account even if the
+        // test runner forgets its launch arguments.
+        let demo = true
+        #elseif DEBUG
         let demo = ProcessInfo.processInfo.arguments.contains("--demo")
             || ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
         #else
         let demo = false
         #endif
         let store = ChatStore(demo: demo)
-        #if DEBUG
+        #if DEBUG || BENCHMARK
+        if demo && ProcessInfo.processInfo.arguments.contains("--performance-fixture") {
+            store.loadPerformanceDemo()
+        }
         if demo && ProcessInfo.processInfo.arguments.contains("--demo-pairing-interrupted") {
             store.loadInterruptedPairingDemo()
         }
@@ -42,6 +49,9 @@ struct WhatsappApp: App {
                 if phase == .active { store.activate() }
                 else if phase == .inactive { store.prepareForBackground() }
                 else if phase == .background { store.background() }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: UIApplication.didReceiveMemoryWarningNotification)) { _ in
+                MessageText.clearCache()
             }
         }
     }
