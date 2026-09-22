@@ -24,6 +24,13 @@ Silicon Mac to build. This is a personal-device build, not an App Store release.
   for confirmation; forwarding requires choosing a destination and pressing Forward.
 - Bold, italic, strike-through, monospace, lists, quotes, links and resolved
   mentions. Native previews for links, locations, contact cards and read-only polls.
+  Formatted text is reused in a memory-only cache with a 512-entry / approximately
+  8 MiB cost budget; edits, resolved mention names, size and appearance form its
+  key. Memory warnings and unlinking clear it. Incoming updates preserve the
+  existing order and combine adjacent collection events before updating views;
+  requested history pages, deletions and identity changes retain their ordering.
+  Long conversations keep one stable lazy row per message, including its day
+  separator, so scrolling does not construct every off-screen bubble.
 - Photos, videos and files from the system pickers, plus explicit Paste photo,
   with captions. Up to 30 files per send, each up to 100 MB. Adding attachments
   clears a quoted reply: the shared file sender does not support quoted attachments.
@@ -61,6 +68,8 @@ connection is running, including that brief allowance; muted chats do not notify
 **No push delivery or always-on background connection.** Desktop tray behavior,
 desktop window shortcuts and the Mac updater do not apply to iOS; install a new
 signed build to update this personal companion.
+Brief app switches reuse the still-running worker and visible conversation;
+after actual suspension, reopening starts the worker and reloads history once.
 The app requests that allowance before leaving the foreground and watches the
 remaining time, reserving time to close the connection safely. An interrupted
 pairing clears its expired code and explains how to retry. The last 32 connection
@@ -132,7 +141,7 @@ privacy, cancelled audio, logout, paging, sender/day grouping, relative dates an
 lifecycle/pairing recovery. Rust tests
 check command validation, symlink/file boundaries, GIF hosts, sticker deletion
 scope, finite voice samples, bounded Opus decoding and native WAV conversion.
-UI tests launch a Debug-only `--demo` preview with fictional chats and rich-content
+UI tests launch a Debug `--demo` preview with fictional chats and rich-content
 fixtures, exercise editing/forwarding, the composer, emoji search, group details
 and interrupted pairing, check the latest message remains visible on opening a
 chat, and save dark/light screenshots including large text and multiline drafts.
@@ -140,6 +149,35 @@ They never link an account or send a real
 message. Simulator tests and a signed installation do not establish live account
 pairing, sending, history sync or physical-device visual behavior; verify those
 separately with the account owner.
+
+### Performance measurements
+
+The `Benchmark` configuration uses Release optimization and the separate
+`org.erlin.whatsapp.ios.benchmark` container. It **always uses offline fixtures**,
+even without launch arguments. It cannot link or send through a real account.
+Normal Release builds do not accept the demo/performance launch arguments.
+
+```sh
+xcodegen generate --spec ios/project.yml
+xcodebuild -project ios/Whatsapp.xcodeproj -scheme Whatsapp \
+  -configuration Benchmark -destination 'platform=iOS,id=YOUR_DEVICE_UDID' \
+  -derivedDataPath ios/build/BenchmarkDerivedData -allowProvisioningUpdates \
+  -parallel-testing-enabled NO -collect-test-diagnostics never \
+  -only-testing:WhatsappTests/PerformanceTests \
+  -only-testing:WhatsappUITests/PerformanceUITests \
+  -resultBundlePath ios/build/Performance.xcresult test
+```
+
+Use an unlocked, idle device, the same fixture and configuration before and
+after a change, and a new result-bundle path each run. A simulator destination
+also works, but its timings and memory do not represent an iPhone. Unit workloads
+cover fresh/repeated rich text, 100 live updates in 8,000 messages, and 100 chat
+updates across 2,000 chats. UI workloads cover first-frame responsiveness with
+1,000 chats and scrolling through a 3,000-message conversation, recording CPU,
+memory and Apple's scrolling metrics. Scroll duration measures the gesture and
+deceleration, not frame smoothness; use hitch metrics on hardware when available.
+These offline measurements exclude WhatsApp connection/history-transfer latency
+and do not establish battery life or background delivery.
 
 Regenerate the bundled emoji catalog after changing the desktop emoji dependency:
 

@@ -33,23 +33,29 @@ struct ConversationView: View {
                             .font(.caption).foregroundStyle(.secondary).padding(8)
                     }
                     ForEach(Array(store.messages.enumerated()), id: \.element.id) { index, message in
-                        if startsDay(index) {
-                            Text(ChatDate.day(message.timestamp))
-                                .font(.caption2.weight(.medium)).foregroundStyle(.secondary)
-                                .padding(.horizontal, 10).padding(.vertical, 5)
-                                .background(.thinMaterial, in: Capsule()).padding(.vertical, 14)
+                        // One stable child per message lets LazyVStack determine
+                        // row identities without evaluating every conditional
+                        // day separator and bubble in a long conversation.
+                        VStack(spacing: 3) {
+                            if startsDay(index) {
+                                Text(ChatDate.day(message.timestamp))
+                                    .font(.caption2.weight(.medium)).foregroundStyle(.secondary)
+                                    .padding(.horizontal, 10).padding(.vertical, 5)
+                                    .background(.thinMaterial, in: Capsule()).padding(.vertical, 14)
+                            }
+                            MessageBubble(message: message, group: chat?.kind == "group", joinsPrevious: joinsPrevious(index), joinsNext: joinsNext(index), selecting: selecting, selected: selection.contains(message.id), select: { selecting = true; if !selection.insert(message.id).inserted { selection.remove(message.id) } }) { message in
+                                if let url = store.localURL(message.mediaPath) { previewURL = url }
+                                else { store.download(message) }
+                            }
+                            .padding(.top, startsDay(index) || joinsPrevious(index) ? 0 : 7)
                         }
-                        MessageBubble(message: message, group: chat?.kind == "group", joinsPrevious: joinsPrevious(index), joinsNext: joinsNext(index), selecting: selecting, selected: selection.contains(message.id), select: { selecting = true; if !selection.insert(message.id).inserted { selection.remove(message.id) } }) { message in
-                            if let url = store.localURL(message.mediaPath) { previewURL = url }
-                            else { store.download(message) }
-                        }
-                        .padding(.top, startsDay(index) || joinsPrevious(index) ? 0 : 7)
                         .id(message.id)
                     }
                     Color.clear.frame(height: 1).id("conversation-bottom")
                 }.padding(.horizontal, 12).padding(.bottom, 8)
             }
             .background(ChatAppearance.canvas)
+            .accessibilityIdentifier("conversation-scroll")
             .scrollDismissesKeyboard(.interactively)
             .defaultScrollAnchor(.bottom, for: .initialOffset)
             .defaultScrollAnchor(.bottom, for: .alignment)

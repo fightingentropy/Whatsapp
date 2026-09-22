@@ -73,6 +73,7 @@ final class ChatStore: ObservableObject {
     private let diagnostics: ConnectionDiagnostics
     private var root: URL?
     private var observer: NSObjectProtocol?
+    private var engineStarted = false
     var foreground = false
     private var receiptsDisabled = false
     private var requestedAvatars: Set<String> = []
@@ -114,6 +115,7 @@ final class ChatStore: ObservableObject {
         diagnostics.record(.appStarted)
         engine.onEvents = { [weak self] in self?.apply($0) }
         engine.onError = { [weak self] in
+            self?.engineStarted = false
             self?.diagnostics.record(.engineError)
             self?.error = $0; self?.status = "failed"
             self?.loading = false; self?.fetchingPhone = false
@@ -131,10 +133,15 @@ final class ChatStore: ObservableObject {
         finishBackgroundTask()
         guard !isDemo else { return }
         diagnostics.record(.foreground)
+        // Inactive scenes and short app switches leave the worker running.
+        // It already archives and delivers updates; reloading here repeats work
+        // and flashes a spinner over a conversation that is still current.
+        guard !engineStarted else { return }
         do {
-            root = try CoreEngine.storageDirectory()
+            if root == nil { root = try CoreEngine.storageDirectory() }
             guard let root else { return }
             if status == "suspended" || status == "suspending" { status = "connecting" }
+            engineStarted = true
             engine.start(root: root)
             if let selectedChat {
                 loading = true
@@ -198,6 +205,7 @@ final class ChatStore: ObservableObject {
         qr = nil
         pairingBusy = false
         status = "suspending"
+        engineStarted = false
         // An unexpected expiration cannot wait for asynchronous shutdown.
         // The normal budget check starts shutdown before this deadline.
         let completion = BackgroundActivityCompletion(activity: backgroundActivity, task: task)
@@ -366,7 +374,7 @@ final class ChatStore: ObservableObject {
     }
 
     func apply(_ events: [CoreEvent]) {
-        for event in events {
+        for event in CoreEvent.coalescing(events) {
             switch event.type {
             case "link":
                 // A code queued before shutdown no longer belongs to a live
@@ -389,6 +397,7 @@ final class ChatStore: ObservableObject {
                     requestedAvatars = []
                     markRead()
                 } else if status == "unlinked" || status == "logged_out" {
+                    MessageText.clearCache()
                     hasSession = false
                     defaults.set(false, forKey: "hasLinkedSession")
                     chats = []; messages = []; selectedChat = nil; drafts = [:]; reply = nil
@@ -407,9 +416,7 @@ final class ChatStore: ObservableObject {
                 if status == "failed" { error = event.detail ?? "Could not connect to WhatsApp." }
             case "me": accountName = event.name ?? "Your account"; accountID = event.id; accountAbout = event.about
             case "chats":
-                var byID = Dictionary(chats.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
-                for chat in event.chats ?? [] { byID[chat.id] = chat }
-                chats = byID.values.sorted { $0.pinned != $1.pinned ? $0.pinned : ($0.timestamp == $1.timestamp ? $0.id < $1.id : $0.timestamp > $1.timestamp) }
+                chats = OrderedUpdates.merge(chats, event.chats ?? []) { $0.pinned != $1.pinned ? $0.pinned : ($0.timestamp == $1.timestamp ? $0.id < $1.id : $0.timestamp > $1.timestamp) }
             case "messages":
                 guard event.chat.map(canonical) == selectedChat else { continue }
                 messages = ConversationMessages.merge(messages, (event.messages ?? []).map { message in
@@ -426,7 +433,10 @@ final class ChatStore: ObservableObject {
                 if var message = event.message, canonical(message.chat) == selectedChat,
                    let index = messages.firstIndex(where: { $0.id == message.id }) {
                     message.chat = canonical(message.chat)
-                    messages[index] = message
+                    if messages[index] != message {
+                        if messages[index].timestamp == message.timestamp { messages[index] = message }
+                        else { messages = ConversationMessages.merge(messages, [message]) }
+                    }
                 }
             case "load_failed":
                 if event.chat.map(canonical) == selectedChat { loading = false; error = event.detail ?? "Could not load this chat." }

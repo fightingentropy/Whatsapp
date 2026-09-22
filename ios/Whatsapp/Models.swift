@@ -164,9 +164,7 @@ enum ConversationMessages {
     // History replays and live updates share IDs. Do not append duplicates or let a
     // receipt for a message outside this page grow the loaded conversation.
     static func merge(_ existing: [Message], _ incoming: [Message]) -> [Message] {
-        var byID = Dictionary(existing.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
-        for message in incoming { byID[message.id] = message }
-        return byID.values.sorted {
+        OrderedUpdates.merge(existing, incoming) {
             $0.timestamp == $1.timestamp ? $0.id < $1.id : $0.timestamp < $1.timestamp
         }
     }
