@@ -38,10 +38,14 @@ protocol MessagingEngine: AnyObject {
     func drain()
     func send(_ command: [String: Any], completion: ((Bool) -> Void)?)
     func stop(completion: @escaping () -> Void)
+    func prepareAudio(_ url: URL, completion: @escaping (URL?) -> Void)
+    func clearTransientMedia(root: URL)
 }
 
 extension MessagingEngine {
     func send(_ command: [String: Any]) { send(command, completion: nil) }
+    func prepareAudio(_ url: URL, completion: @escaping (URL?) -> Void) { completion(nil) }
+    func clearTransientMedia(root: URL) {}
 }
 
 final class CoreEngine: MessagingEngine, @unchecked Sendable {
@@ -109,6 +113,19 @@ final class CoreEngine: MessagingEngine, @unchecked Sendable {
             if handle != 0 { wa_stop(handle) }
             DispatchQueue.main.async(execute: completion)
         }
+    }
+
+    func prepareAudio(_ url: URL, completion: @escaping (URL?) -> Void) {
+        queue.async {
+            let pointer = url.path.withCString { wa_prepare_audio(self.handle, $0) }
+            let output = pointer.map { URL(fileURLWithPath: String(cString: $0)) }
+            if let pointer { wa_free_string(pointer) }
+            DispatchQueue.main.async { completion(output) }
+        }
+    }
+
+    func clearTransientMedia(root: URL) {
+        queue.async { AttachmentImport.clearTransientMedia(root: root) }
     }
 
     private func fail(_ message: String) {

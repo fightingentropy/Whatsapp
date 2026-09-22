@@ -2242,6 +2242,14 @@ impl Worker {
                     let _ = commands.send(Command::StickerPackImported { result });
                 });
             }
+            Command::ImportStickerArchive { path } => {
+                let commands = self.commands.clone();
+                let packs = self.packs_dir();
+                tokio::task::spawn_blocking(move || {
+                    let result = super::sticker_import::import_archive(&path, &packs);
+                    let _ = commands.send(Command::StickerPackImported { result });
+                });
+            }
             #[cfg(not(target_os = "ios"))]
             Command::PickStickerArchive => {
                 let commands = self.commands.clone();

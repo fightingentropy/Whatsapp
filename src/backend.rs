@@ -205,6 +205,10 @@ pub enum Command {
     },
     /// Selects and imports a .wastickers or zip archive.
     PickStickerArchive,
+    /// Imports a file copied into private storage by a native picker.
+    ImportStickerArchive {
+        path: PathBuf,
+    },
     /// Deletes an imported pack directory.
     DeleteStickerPack {
         dir: PathBuf,

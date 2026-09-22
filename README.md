@@ -10,9 +10,11 @@ theme by default.
 
 A personal **native iPhone companion** is also available in [`ios/`](ios/README.md).
 It uses SwiftUI and the same Rust messaging worker and SQLite archive. It links
-as a separate device and currently receives messages while open; it does not
-provide background push notifications. The desktop features below describe the
-Mac app; see the iOS README for the smaller iPhone feature set and build steps.
+as a separate device, with message actions, voice and attachment sending,
+archive search, contact/chat controls, rich messages, emoji/GIF/sticker pickers
+and native media playback. It receives messages while connected and offers
+optional local alerts, but has no always-on background push delivery. See the
+iOS README for the supported features, mobile limits and build steps.
 
 The standalone project lives at [fightingentropy/Whatsapp](https://github.com/fightingentropy/Whatsapp).
 There is no browser engine, hosted backend, telemetry or extra account.
