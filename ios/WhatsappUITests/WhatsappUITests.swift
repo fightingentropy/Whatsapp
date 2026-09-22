@@ -98,7 +98,11 @@ final class WhatsappUITests: XCTestCase {
         app.launchArguments = ["--demo"]
         app.launch()
         XCTAssertTrue(app.navigationBars["Chats"].waitForExistence(timeout: 10))
+        capture(app, "Refined chat list — dark appearance")
         app.buttons["chat-weekend@g.us"].tap()
+        XCTAssertTrue(app.staticTexts["Sounds good"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Sounds good"].isHittable, "The newest message should be visible above the composer when a chat opens")
+        capture(app, "Grouped messages — dark appearance")
         let composer = app.textFields["message-composer"]
         let multiline = app.textViews["message-composer"]
         let input = composer.waitForExistence(timeout: 3) ? composer : multiline
@@ -112,5 +116,28 @@ final class WhatsappUITests: XCTestCase {
         attachment.name = "Native iPhone conversation — offline fixture"
         attachment.lifetime = .keepAlways
         add(attachment)
+    }
+
+    func testLightAppearanceAndLargeMessageText() {
+        let app = demo()
+        app.tabBars.buttons["Settings"].tap()
+        capture(app, "Settings — dark appearance")
+        app.buttons["Appearance"].tap()
+        XCTAssertTrue(app.navigationBars["Appearance"].waitForExistence(timeout: 3))
+        app.buttons["appearance-theme"].tap()
+        app.buttons["Light"].tap()
+        app.sliders["Message text size"].adjust(toNormalizedSliderPosition: 1)
+        capture(app, "Appearance — live message preview")
+        app.tabBars.buttons["Chats"].tap()
+        capture(app, "Refined chat list — light appearance")
+        app.buttons["chat-weekend@g.us"].tap()
+        XCTAssertTrue(app.staticTexts["Sounds good"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Sounds good"].isHittable, "Large text must still open at the latest message")
+        capture(app, "Grouped messages — light appearance and large text")
+        let input = composer(app)
+        input.tap(); input.typeText("A longer draft that should grow naturally across several lines without hiding either the attachment or send controls.")
+        XCTAssertTrue(app.buttons["send-message"].isHittable)
+        XCTAssertTrue(app.buttons["composer-attachments"].isHittable)
+        capture(app, "Multiline composer — light appearance and large text")
     }
 }

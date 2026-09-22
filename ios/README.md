@@ -10,6 +10,11 @@ Silicon Mac to build. This is a personal-device build, not an App Store release.
 - Link with a phone-number code, or scan a QR code from another primary phone.
 - Native chat list, unread counts, profile pictures, pinning, archive/unarchive,
   mute durations and mark-as-read. Pull down the chat list to reveal Archived.
+- Compact, content-sized message bubbles group consecutive messages from the
+  same sender within five minutes. Sender names start a group, portraits finish
+  it, and day changes always separate groups. Reaction pills and unframed stickers
+  keep the conversation light. Chat dates distinguish today, yesterday and older
+  conversations; both light and dark appearances use matching native controls.
 - Search chat names and the downloaded message archive; open a result or quoted
   reply at its original message, loading earlier local history as needed.
 - Text messages, quoted replies, group mentions and typing/presence indicators.
@@ -42,6 +47,8 @@ Silicon Mac to build. This is a personal-device build, not an App Store release.
 - Dark/light/system appearance, message text size, sender pictures, contact-name
   preference, read receipts, typing indicators, automatic downloads and optional
   local notifications. Read and played receipts respect the shared privacy rules.
+  Settings groups these controls under Appearance, Privacy & contacts, Media &
+  downloads and Notifications. Appearance includes a live message-size preview.
 - Local SQLite history and device keys in Application Support/Whatsapp, excluded
   from backup with iOS data protection. No desktop credentials are copied.
 - Reconnect and confirmed unlink controls. Calls, status posts, group
@@ -121,12 +128,15 @@ xcodebuild -project ios/Whatsapp.xcodeproj -scheme Whatsapp \
 Also run all six root Mac checks in `AGENTS.md` after shared-source changes.
 Swift unit tests cover message actions, mention boundaries, archive search/jumps,
 formatting, emoji lookup, attachment limits, drafts, identity merges, receipt
-privacy, cancelled audio, logout, paging and lifecycle/pairing recovery. Rust tests
+privacy, cancelled audio, logout, paging, sender/day grouping, relative dates and
+lifecycle/pairing recovery. Rust tests
 check command validation, symlink/file boundaries, GIF hosts, sticker deletion
 scope, finite voice samples, bounded Opus decoding and native WAV conversion.
 UI tests launch a Debug-only `--demo` preview with fictional chats and rich-content
 fixtures, exercise editing/forwarding, the composer, emoji search, group details
-and interrupted pairing, and save screenshots. They never link an account or send a real
+and interrupted pairing, check the latest message remains visible on opening a
+chat, and save dark/light screenshots including large text and multiline drafts.
+They never link an account or send a real
 message. Simulator tests and a signed installation do not establish live account
 pairing, sending, history sync or physical-device visual behavior; verify those
 separately with the account owner.
