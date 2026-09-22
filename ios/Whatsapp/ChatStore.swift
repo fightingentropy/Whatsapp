@@ -23,18 +23,57 @@ final class ChatStore: ObservableObject {
     @Published var drafts: [String: String] = [:]
     @Published var reply: Message?
     @Published var accountName = "Your account"
+    @Published var accountID: String?
+    @Published var accountAbout: String?
+    @Published var navigation: [String] = []
+    @Published var selectedTab = "chats"
+    @Published var preferences: Preferences { didSet {
+        if !isDemo, let data = try? JSONEncoder().encode(preferences) { defaults.set(data, forKey: "preferences") }
+    } }
+    @Published var searchQuery = ""
+    @Published var searchHits: [Message] = []
+    @Published var searching = false
+    @Published var editing: Message?
+    @Published var attachments: [String: [PendingAttachment]] = [:]
+    @Published var typing: [String: [String: Date]] = [:]
+    @Published var presence: [String: (online: Bool, lastSeen: TimeInterval?)] = [:]
+    @Published var fullAvatars: [String: String] = [:]
+    @Published var contacts: [CoreEvent.Contact] = []
+    @Published var scrollTarget: String?
+    @Published var infoChatID: String?
+    @Published var gifQuery = ""
+    @Published var gifs: [GifItem] = []
+    @Published var gifError: String?
+    @Published var gifsLoading = false
+    @Published var savedStickers: [String] = []
+    @Published var recentStickers: [String] = []
+    @Published var stickerPacks: [StickerPack] = []
+    @Published var newContactBusy = false
+    @Published var voiceSending = false
+    let audio = NativeAudio()
+    let notifications = LocalNotifications()
+    var pendingJump: String?
+    var pendingJumpChat: String?
+    var jumpRequested = false
+    var typingExpiry: DispatchWorkItem?
+    var audioRequest = UUID()
+    var playedMessages: Set<String> = []
+    var draftBeforeEditing: String?
+    var demoConversations: [String: [Message]] = [:]
+    var composingWork: DispatchWorkItem?
+    var lastComposing = Date.distantPast
     @Published var sendReadReceipts: Bool {
         didSet { if !isDemo { defaults.set(sendReadReceipts, forKey: "readReceipts") } }
     }
 
     let isDemo: Bool
     private let defaults: UserDefaults
-    private let engine: MessagingEngine
+    let engine: MessagingEngine
     private let backgroundActivity: BackgroundActivityManaging
     private let diagnostics: ConnectionDiagnostics
     private var root: URL?
     private var observer: NSObjectProtocol?
-    private var foreground = false
+    var foreground = false
     private var receiptsDisabled = false
     private var requestedAvatars: Set<String> = []
     private var phoneRetryAfter = Date.distantPast
@@ -44,6 +83,9 @@ final class ChatStore: ObservableObject {
     private var stoppingBackgroundTasks: [Int: BackgroundActivityCompletion] = [:]
 
     var connected: Bool { status == "connected" }
+    var canPost: Bool { (connected || isDemo) && selectedChat != nil && currentChat?.readOnly != true }
+    var receiptsAllowed: Bool { receiptsAllowed(in: selectedChat ?? "") }
+    func receiptsAllowed(in chat: String) -> Bool { sendReadReceipts && (chat.hasSuffix("@g.us") || !receiptsDisabled) }
     var currentChat: Chat? { chats.first { $0.id == selectedChat } }
     var connectionLabel: String {
         if isDemo { return "Offline preview" }
@@ -64,9 +106,11 @@ final class ChatStore: ObservableObject {
         self.engine = engine
         self.backgroundActivity = backgroundActivity ?? BackgroundActivity()
         self.diagnostics = ConnectionDiagnostics(defaults: defaults)
+        self.preferences = defaults.data(forKey: "preferences").flatMap { try? JSONDecoder().decode(Preferences.self, from: $0) } ?? Preferences()
         self.hasSession = demo || defaults.bool(forKey: "hasLinkedSession")
         self.sendReadReceipts = defaults.object(forKey: "readReceipts") as? Bool ?? true
-        if demo { loadDemo(); return }
+        if demo { root = Self.demoRoot; loadDemo(); return }
+        notifications.onOpen = { [weak self] id in self?.navigate(to: id) }
         diagnostics.record(.appStarted)
         engine.onEvents = { [weak self] in self?.apply($0) }
         engine.onError = { [weak self] in
@@ -114,6 +158,9 @@ final class ChatStore: ObservableObject {
 
     func background() {
         foreground = false
+        audioRequest = UUID()
+        audio.pauseForBackground()
+        stopComposing()
         guard !isDemo else { return }
         // Fallback for a scene without a preceding inactive notification.
         // An unavailable assertion stops immediately rather than trusting a timer.
@@ -195,14 +242,18 @@ final class ChatStore: ObservableObject {
     func open(_ chat: String) {
         let chat = canonical(chat)
         guard selectedChat != chat else { return }
+        stopComposing()
+        audioRequest = UUID()
         selectedChat = chat
+        if pendingJumpChat != chat { pendingJump = nil; pendingJumpChat = nil }
         messages = []
         reply = nil
+        editing = nil
         archiveComplete = false
         phoneComplete = false
         phoneRetryAfter = .distantPast
         fetchingPhone = false
-        if isDemo { messages = Self.demoMessages(chat: chat); archiveComplete = true; phoneComplete = true; return }
+        if isDemo { messages = demoConversations[chat] ?? Self.demoMessages(chat: chat); archiveComplete = true; phoneComplete = true; loading = false; resolveJump(); return }
         loading = true
         engine.send(["type": "load", "chat": chat])
         markRead()
@@ -210,9 +261,16 @@ final class ChatStore: ObservableObject {
 
     func close(_ chat: String) {
         guard selectedChat == canonical(chat) else { return }
+        if isDemo { demoConversations[canonical(chat)] = messages }
         selectedChat = nil
+        audioRequest = UUID()
+        stopComposing(chat: canonical(chat))
+        audio.pauseForBackground()
+        audio.stopPlayback()
         messages = []
         reply = nil
+        editing = nil
+        draftBeforeEditing = nil
         loading = false
         fetchingPhone = false
     }
@@ -252,10 +310,14 @@ final class ChatStore: ObservableObject {
 
     func sendText(_ text: String, completion: @escaping (Bool) -> Void) {
         guard let chat = selectedChat, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              connected || isDemo else { completion(false); return }
+              canPost else { completion(false); return }
         guard text.unicodeScalars.count <= 65_536 else {
             error = "This message is too long. Split it into smaller messages."
             completion(false)
+            return
+        }
+        if let editing {
+            submitEdit(editing, text: text, completion: completion)
             return
         }
         drafts[chat] = text
@@ -266,7 +328,7 @@ final class ChatStore: ObservableObject {
             completion(true)
             return
         }
-        var command: [String: Any] = ["type": "send", "chat": chat, "text": text]
+        var command: [String: Any] = ["type": "send", "chat": chat, "text": text, "mentions": mentionedIDs(in: text)]
         if let reply { command["quoting"] = reply.id }
         let quotedID = reply?.id
         engine.send(command) { [weak self] accepted in
@@ -330,9 +392,20 @@ final class ChatStore: ObservableObject {
                     hasSession = false
                     defaults.set(false, forKey: "hasLinkedSession")
                     chats = []; messages = []; selectedChat = nil; drafts = [:]; reply = nil
+                    if status == "logged_out" {
+                        navigation = []; editing = nil; attachments = [:]; audio.discardRecording(); audio.stopPlayback()
+                        contacts = []; contactNames = [:]; avatars = [:]; fullAvatars = [:]; aliases = [:]
+                        searchHits = []; searchQuery = ""; searching = false
+                        typing = [:]; typingExpiry?.cancel(); presence = [:]
+                        pendingJump = nil; pendingJumpChat = nil; scrollTarget = nil; draftBeforeEditing = nil
+                        audioRequest = UUID(); playedMessages = []
+                        accountID = nil; accountName = "Your account"; accountAbout = nil
+                        gifs = []; gifQuery = ""; savedStickers = []; recentStickers = []; stickerPacks = []
+                        if !isDemo, let root { engine.clearTransientMedia(root: root); notifications.clear() }
+                    }
                 }
                 if status == "failed" { error = event.detail ?? "Could not connect to WhatsApp." }
-            case "me": accountName = event.name ?? "Your account"
+            case "me": accountName = event.name ?? "Your account"; accountID = event.id; accountAbout = event.about
             case "chats":
                 var byID = Dictionary(chats.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
                 for chat in event.chats ?? [] { byID[chat.id] = chat }
@@ -346,6 +419,7 @@ final class ChatStore: ObservableObject {
                     loading = false
                     archiveComplete = event.complete ?? false
                     if messages.isEmpty && archiveComplete { loadOlder() }
+                    resolveJump()
                 }
                 markRead()
             case "message":
@@ -361,19 +435,53 @@ final class ChatStore: ObservableObject {
                 aliases[from] = into
                 chats.removeAll { $0.id == from }
                 if let draft = drafts.removeValue(forKey: from), drafts[into, default: ""].isEmpty { drafts[into] = draft }
+                if let pending = attachments.removeValue(forKey: from) { attachments[into, default: []].append(contentsOf: pending) }
+                navigation = navigation.map { $0 == from ? into : $0 }
+                if pendingJumpChat == from { pendingJumpChat = into }
                 if selectedChat == from {
                     selectedChat = into
                     messages = messages.map { var message = $0; message.chat = into; return message }
                     if var quote = reply { quote.chat = into; reply = quote }
+                    if var edited = editing { edited.chat = into; editing = edited }
                     loading = true
                     engine.send(["type": "load", "chat": into])
                 }
             case "deleted":
                 if event.chat.map(canonical) == selectedChat { messages.removeAll { $0.id == event.id } }
             case "contacts":
+                var byID = Dictionary(contacts.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
+                for contact in event.contacts ?? [] { byID[contact.id] = contact }
+                contacts = Array(byID.values)
                 for contact in event.contacts ?? [] { if let name = contact.name { contactNames[contact.id] = name } }
             case "avatar":
-                if let id = event.id { avatars[id] = event.path }
+                if let id = event.id {
+                    if event.full == true { fullAvatars[id] = event.path } else { avatars[id] = event.path }
+                }
+            case "search":
+                if event.query == searchQuery { searchHits = event.messages ?? []; searching = false }
+            case "typing":
+                if let chat = event.chat.map(canonical), let id = event.id {
+                    typing[chat, default: [:]][id] = event.composing == true ? Date().addingTimeInterval(12) : nil
+                    scheduleTypingExpiry()
+                }
+            case "presence":
+                if let id = event.id { presence[canonical(id)] = (event.online == true, event.lastSeen) }
+            case "contact_ready":
+                newContactBusy = false
+                if let id = event.id {
+                    engine.send(["type": "ensure", "chat": id, "name": event.name ?? displayName(id)])
+                    navigate(to: id)
+                }
+            case "gifs":
+                if event.query == gifQuery { gifs = event.gifs ?? []; gifError = event.detail; gifsLoading = false }
+            case "stickers":
+                savedStickers = event.saved ?? []; recentStickers = event.recent ?? []; stickerPacks = event.packs ?? []
+            case "incoming":
+                if let message = event.message, preferences.notifications, !isDemo,
+                   (!foreground || selectedChat != canonical(message.chat)),
+                   chats.first(where: { $0.id == canonical(message.chat) })?.muted != true {
+                    notifications.show(message, name: chats.first(where: { $0.id == canonical(message.chat) })?.name ?? displayName(message.sender))
+                }
             case "media":
                 if event.chat.map(canonical) == selectedChat, let index = messages.firstIndex(where: { $0.id == event.id }) {
                     messages[index].mediaPath = event.path
@@ -395,6 +503,7 @@ final class ChatStore: ObservableObject {
             case "privacy": receiptsDisabled = event.disabled ?? true
             case "error", "info":
                 error = event.detail; pairingBusy = false
+                newContactBusy = false
                 if !isDemo && event.type == "error" { diagnostics.record(.updateError) }
             default: break
             }

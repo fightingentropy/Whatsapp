@@ -17,6 +17,11 @@ const BITRATE: i32 = 32_000;
 
 /// Mono samples at `RATE` from an OGG/Opus file.
 pub fn decode(bytes: &[u8]) -> Result<Vec<f32>, String> {
+    decode_limited(bytes, usize::MAX)
+}
+
+/// Decode with an explicit memory budget for native mobile playback.
+pub fn decode_limited(bytes: &[u8], maximum_samples: usize) -> Result<Vec<f32>, String> {
     let mut reader = ogg::PacketReader::new(Cursor::new(bytes));
     let mut stream: Option<Stream> = None;
     let mut out = Vec::new();
@@ -54,6 +59,9 @@ pub fn decode(bytes: &[u8]) -> Result<Vec<f32>, String> {
         // Remove the encoder lookahead from the decoded output.
         let skip = current.skip.min(mono.len());
         current.skip -= skip;
+        if mono.len() - skip > maximum_samples.saturating_sub(out.len()) {
+            return Err("voice message exceeds the playback limit".to_owned());
+        }
         out.extend_from_slice(&mono[skip..]);
     }
     if stream.is_none() {
@@ -315,6 +323,15 @@ mod tests {
     fn what_is_not_opus_is_refused() {
         assert!(decode(b"not an ogg file at all").is_err());
         assert!(decode(&[]).is_err());
+    }
+
+    #[test]
+    fn mobile_decoding_stops_at_the_sample_budget() {
+        let encoded = encode(&tone(0.1)).expect("encode fixture");
+        let complete = decode(&encoded).expect("decode fixture");
+        assert_eq!(decode_limited(&encoded, complete.len()).unwrap(), complete);
+        assert!(decode_limited(&encoded, complete.len() - 1).is_err());
+        assert!(decode_limited(&encoded, 0).is_err());
     }
 
     /// Decodes the file in `ZAPFAST_OGG_PROBE`:

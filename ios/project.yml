@@ -9,7 +9,7 @@ settings:
     DEVELOPMENT_TEAM: T29NU9NCA2
     CODE_SIGN_STYLE: Automatic
     MARKETING_VERSION: "0.13.1"
-    CURRENT_PROJECT_VERSION: "2"
+    CURRENT_PROJECT_VERSION: "3"
     ENABLE_USER_SCRIPT_SANDBOXING: false
 targets:
   Whatsapp:
@@ -39,6 +39,7 @@ targets:
         CFBundleDisplayName: Whatsapp
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSMicrophoneUsageDescription: Record voice messages that you choose to send to a WhatsApp chat.
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
         UILaunchScreen: {}
