@@ -34,6 +34,14 @@ Silicon Mac to build. This is a personal-device build, not an App Store release.
 - Photos, videos and files from the system pickers, plus explicit Paste photo,
   with captions. Up to 30 files per send, each up to 100 MB. Adding attachments
   clears a quoted reply: the shared file sender does not support quoted attachments.
+- A compact composer with an inline sticker control, separate camera button and
+  green microphone/send button. Plus opens a rounded attachment panel beneath
+  the composer; its keyboard control returns to typing without losing the draft.
+  The panel offers Photos, Camera, Document, Paste photo, Emoji, GIFs and Stickers,
+  plus Mention in groups. Only supported actions are shown.
+- Native camera photo capture, requesting camera permission only when tapped.
+  Captures are staged as upright JPEGs in private outgoing storage, with a
+  maximum edge of 4,096 pixels; review the attachment and tap Send to send it.
 - Voice recording, playback, seeking, waveform and played receipts. Recordings
   and OGG/Opus playback are limited to ten minutes to bound mobile memory use.
   Leaving the app pauses playback and stops the microphone, retaining an unsent
@@ -145,6 +153,9 @@ UI tests launch a Debug `--demo` preview with fictional chats and rich-content
 fixtures, exercise editing/forwarding, the composer, emoji search, group details
 and interrupted pairing, check the latest message remains visible on opening a
 chat, and save dark/light screenshots including large text and multiline drafts.
+Composer tests also cover the attachment/keyboard transition, draft preservation,
+direct sticker/GIF entry points and camera-image orientation/cancellation. The
+offline preview never opens the camera; physical capture is checked manually.
 They never link an account or send a real
 message. Simulator tests and a signed installation do not establish live account
 pairing, sending, history sync or physical-device visual behavior; verify those

@@ -2,6 +2,10 @@ import QuickLook
 import SwiftUI
 
 struct ConversationView: View {
+    private struct Viewport: Equatable {
+        let height: CGFloat
+        let nearBottom: Bool
+    }
     let chatID: String
     @EnvironmentObject private var store: ChatStore
     @Environment(\.scenePhase) private var phase
@@ -17,87 +21,96 @@ struct ConversationView: View {
     private var chat: Chat? { store.chats.first { $0.id == store.canonical(chatID) } }
     var body: some View {
         ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(spacing: 3) {
-                    if store.loading || store.fetchingPhone {
-                        ProgressView(store.fetchingPhone ? "Asking your phone for history…" : "Loading messages…")
-                            .font(.caption).padding(16)
-                    } else if !(store.archiveComplete && store.phoneComplete) {
-                        Button("Load earlier messages") {
-                            historyAnchor = store.messages.first?.id
-                            store.loadOlder()
-                        }.font(.caption).padding(12)
-                    }
-                    if store.isDemo {
-                        Text("Offline preview · messages here are never sent")
-                            .font(.caption).foregroundStyle(.secondary).padding(8)
-                    }
-                    ForEach(Array(store.messages.enumerated()), id: \.element.id) { index, message in
-                        // One stable child per message lets LazyVStack determine
-                        // row identities without evaluating every conditional
-                        // day separator and bubble in a long conversation.
-                        VStack(spacing: 3) {
-                            if startsDay(index) {
-                                Text(ChatDate.day(message.timestamp))
-                                    .font(.caption2.weight(.medium)).foregroundStyle(.secondary)
-                                    .padding(.horizontal, 10).padding(.vertical, 5)
-                                    .background(.thinMaterial, in: Capsule()).padding(.vertical, 14)
-                            }
-                            MessageBubble(message: message, group: chat?.kind == "group", joinsPrevious: joinsPrevious(index), joinsNext: joinsNext(index), selecting: selecting, selected: selection.contains(message.id), select: { selecting = true; if !selection.insert(message.id).inserted { selection.remove(message.id) } }) { message in
-                                if let url = store.localURL(message.mediaPath) { previewURL = url }
-                                else { store.download(message) }
-                            }
-                            .padding(.top, startsDay(index) || joinsPrevious(index) ? 0 : 7)
+            VStack(spacing: 0) {
+                ScrollView {
+                    LazyVStack(spacing: 3) {
+                        if store.loading || store.fetchingPhone {
+                            ProgressView(store.fetchingPhone ? "Asking your phone for history…" : "Loading messages…")
+                                .font(.caption).padding(16)
+                        } else if !(store.archiveComplete && store.phoneComplete) {
+                            Button("Load earlier messages") {
+                                historyAnchor = store.messages.first?.id
+                                store.loadOlder()
+                            }.font(.caption).padding(12)
                         }
-                        .id(message.id)
+                        if store.isDemo {
+                            Text("Offline preview · messages here are never sent")
+                                .font(.caption).foregroundStyle(.secondary).padding(8)
+                        }
+                        ForEach(Array(store.messages.enumerated()), id: \.element.id) { index, message in
+                            // One stable child per message lets LazyVStack determine
+                            // row identities without evaluating every conditional
+                            // day separator and bubble in a long conversation.
+                            VStack(spacing: 3) {
+                                if startsDay(index) {
+                                    Text(ChatDate.day(message.timestamp))
+                                        .font(.caption2.weight(.medium)).foregroundStyle(.secondary)
+                                        .padding(.horizontal, 10).padding(.vertical, 5)
+                                        .background(.thinMaterial, in: Capsule()).padding(.vertical, 14)
+                                }
+                                MessageBubble(message: message, group: chat?.kind == "group", joinsPrevious: joinsPrevious(index), joinsNext: joinsNext(index), selecting: selecting, selected: selection.contains(message.id), select: { selecting = true; if !selection.insert(message.id).inserted { selection.remove(message.id) } }) { message in
+                                    if let url = store.localURL(message.mediaPath) { previewURL = url }
+                                    else { store.download(message) }
+                                }
+                                .padding(.top, startsDay(index) || joinsPrevious(index) ? 0 : 7)
+                            }
+                            .id(message.id)
+                        }
+                        Color.clear.frame(height: 1).id("conversation-bottom")
+                    }.padding(.horizontal, 12).padding(.bottom, 8)
+                }
+                .background(ChatAppearance.canvas)
+                .accessibilityIdentifier("conversation-scroll")
+                .scrollDismissesKeyboard(.interactively)
+                .defaultScrollAnchor(.bottom, for: .initialOffset)
+                .defaultScrollAnchor(.bottom, for: .alignment)
+                .defaultScrollAnchor(.bottom, for: .sizeChanges)
+                .onScrollGeometryChange(for: Viewport.self) { geometry in
+                    Viewport(height: geometry.containerSize.height, nearBottom: geometry.contentSize.height - geometry.visibleRect.maxY < 100)
+                } action: { old, new in
+                    nearBottom = new.nearBottom
+                    // Anchor after the resized viewport has been laid out. A
+                    // composer panel can shrink it without changing any rows.
+                    if old.height > 0 && old.height != new.height && old.nearBottom {
+                        DispatchQueue.main.async { proxy.scrollTo("conversation-bottom", anchor: .bottom) }
                     }
-                    Color.clear.frame(height: 1).id("conversation-bottom")
-                }.padding(.horizontal, 12).padding(.bottom, 8)
-            }
-            .background(ChatAppearance.canvas)
-            .accessibilityIdentifier("conversation-scroll")
-            .scrollDismissesKeyboard(.interactively)
-            .defaultScrollAnchor(.bottom, for: .initialOffset)
-            .defaultScrollAnchor(.bottom, for: .alignment)
-            .defaultScrollAnchor(.bottom, for: .sizeChanges)
-            .onScrollGeometryChange(for: Bool.self) { geometry in
-                geometry.contentSize.height - geometry.visibleRect.maxY < 100
-            } action: { _, value in nearBottom = value }
-            .onChange(of: store.messages.last?.id) { _, _ in
-                guard !store.messages.isEmpty else { return }
-                if !didInitialScroll || nearBottom || store.messages.last?.fromMe == true {
-                    didInitialScroll = true
-                    DispatchQueue.main.async { proxy.scrollTo("conversation-bottom", anchor: .bottom) }
                 }
-            }
-            .onChange(of: store.scrollTarget) { _, id in
-                if let id { withAnimation { proxy.scrollTo(id, anchor: .center) }; store.scrollTarget = nil }
-            }
-            .onScrollGeometryChange(for: Bool.self) { geometry in geometry.visibleRect.minY < 80 } action: { _, nearTop in
-                if nearTop && didInitialScroll && !nearBottom && !store.loading && !store.fetchingPhone && !(store.archiveComplete && store.phoneComplete) { historyAnchor = store.messages.first?.id; store.loadOlder() }
-            }
-            .onChange(of: store.messages.first?.id) { _, _ in
-                if let historyAnchor {
-                    DispatchQueue.main.async { proxy.scrollTo(historyAnchor, anchor: .top) }
-                    self.historyAnchor = nil
+                .onChange(of: store.messages.last?.id) { _, _ in
+                    guard !store.messages.isEmpty else { return }
+                    if !didInitialScroll || nearBottom || store.messages.last?.fromMe == true {
+                        didInitialScroll = true
+                        DispatchQueue.main.async { proxy.scrollTo("conversation-bottom", anchor: .bottom) }
+                    }
                 }
-            }
-            .overlay {
-                if store.messages.isEmpty && !store.loading && !store.fetchingPhone {
-                    ContentUnavailableView("No messages yet", systemImage: "bubble.left",
-                                           description: Text("Messages will appear as your phone shares this chat's history."))
-                        .allowsHitTesting(false)
+                .onChange(of: store.scrollTarget) { _, id in
+                    if let id { withAnimation { proxy.scrollTo(id, anchor: .center) }; store.scrollTarget = nil }
                 }
-            }
-            .overlay(alignment: .bottomTrailing) {
-                if !nearBottom && !store.messages.isEmpty {
-                    Button { withAnimation { proxy.scrollTo("conversation-bottom", anchor: .bottom) } } label: {
-                        Image(systemName: "chevron.down").font(.system(size: 15, weight: .semibold)).foregroundStyle(.primary).frame(width: 44, height: 44)
-                            .background(.regularMaterial, in: Circle())
-                    }.padding(14).accessibilityLabel("Jump to latest message")
+                .onScrollGeometryChange(for: Bool.self) { geometry in geometry.visibleRect.minY < 80 } action: { _, nearTop in
+                    if nearTop && didInitialScroll && !nearBottom && !store.loading && !store.fetchingPhone && !(store.archiveComplete && store.phoneComplete) { historyAnchor = store.messages.first?.id; store.loadOlder() }
                 }
+                .onChange(of: store.messages.first?.id) { _, _ in
+                    if let historyAnchor {
+                        DispatchQueue.main.async { proxy.scrollTo(historyAnchor, anchor: .top) }
+                        self.historyAnchor = nil
+                    }
+                }
+                .overlay {
+                    if store.messages.isEmpty && !store.loading && !store.fetchingPhone {
+                        ContentUnavailableView("No messages yet", systemImage: "bubble.left",
+                                               description: Text("Messages will appear as your phone shares this chat's history."))
+                            .allowsHitTesting(false)
+                    }
+                }
+                .overlay(alignment: .bottomTrailing) {
+                    if !nearBottom && !store.messages.isEmpty {
+                        Button { withAnimation { proxy.scrollTo("conversation-bottom", anchor: .bottom) } } label: {
+                            Image(systemName: "chevron.down").font(.system(size: 15, weight: .semibold)).foregroundStyle(.primary).frame(width: 44, height: 44)
+                                .background(.regularMaterial, in: Circle())
+                        }.padding(14).accessibilityLabel("Jump to latest message")
+                    }
+                }
+                ChatComposer(chatID: chatID, draft: $draftText, audio: store.audio)
             }
-            .safeAreaInset(edge: .bottom, spacing: 0) { ChatComposer(chatID: chatID, draft: $draftText, audio: store.audio) }
         }
         .navigationTitle(chat.map(store.chatTitle) ?? "Chat")
         .toolbar {

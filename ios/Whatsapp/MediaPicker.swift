@@ -2,34 +2,39 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct MediaPicker: View {
+    enum Tab: String, Identifiable { case emoji, gifs, stickers; var id: String { rawValue } }
     var insertEmoji: (String) -> Void
     @EnvironmentObject private var store: ChatStore
     @Environment(\.dismiss) private var dismiss
-    @State private var tab = "emoji"
+    @State private var tab: Tab
     @State private var query = ""
     @State private var packURL = ""
     @State private var importPresented = false
     @State private var deletePack: StickerPack?
+    init(initialTab: Tab = .emoji, insertEmoji: @escaping (String) -> Void) {
+        self.insertEmoji = insertEmoji
+        _tab = State(initialValue: initialTab)
+    }
     var body: some View {
         NavigationStack {
             VStack {
                 Picker("Picker", selection: $tab) {
-                    Text("Emoji").tag("emoji"); Text("GIFs").tag("gifs"); Text("Stickers").tag("stickers")
+                    Text("Emoji").tag(Tab.emoji); Text("GIFs").tag(Tab.gifs); Text("Stickers").tag(Tab.stickers)
                 }.pickerStyle(.segmented).padding(.horizontal)
                 ScrollView {
-                    if tab == "emoji" { emojiGrid }
-                    else if tab == "gifs" { gifGrid }
+                    if tab == .emoji { emojiGrid }
+                    else if tab == .gifs { gifGrid }
                     else { stickerGrid }
                 }
             }
             .navigationTitle("Add to your message").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
-            .searchable(text: $query, prompt: tab == "gifs" ? "Search GIPHY" : "Search")
-            .task(id: tab + query) {
-                if tab == "gifs" {
+            .searchable(text: $query, prompt: tab == .gifs ? "Search GIPHY" : "Search")
+            .task(id: tab.rawValue + query) {
+                if tab == .gifs {
                     do { try await Task.sleep(for: .milliseconds(250)) } catch { return }
                     store.searchGifs(query)
-                } else if tab == "stickers" { store.loadStickers() }
+                } else if tab == .stickers { store.loadStickers() }
             }
             .fileImporter(isPresented: $importPresented, allowedContentTypes: [.zip, UTType(filenameExtension: "wastickers") ?? .data]) { result in
                 guard case .success(let url) = result else { return }

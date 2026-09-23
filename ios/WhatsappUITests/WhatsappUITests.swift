@@ -17,6 +17,13 @@ final class WhatsappUITests: XCTestCase {
         attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
     }
 
+    private func assertLatestMessageIsAboveComposer(_ app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
+        let message = app.staticTexts["Sounds good"]
+        XCTAssertTrue(message.waitForExistence(timeout: 3), file: file, line: line)
+        XCTAssertLessThan(message.frame.maxY, composer(app).frame.minY, "The latest message must be above the composer, not covered by its panel", file: file, line: line)
+        XCTAssertGreaterThan(message.frame.minY, app.navigationBars.firstMatch.frame.maxY, file: file, line: line)
+    }
+
     func testEditForwardAndMessageInformationUseNativeControls() {
         let app = demo()
         app.buttons["chat-weekend@g.us"].tap()
@@ -54,7 +61,7 @@ final class WhatsappUITests: XCTestCase {
         app.buttons["hot beverage"].tap()
         XCTAssertTrue((input.value as? String)?.contains("☕") == true)
         app.buttons["composer-attachments"].tap()
-        app.buttons["Emoji, GIFs and stickers"].tap()
+        app.buttons["attachment-emoji"].tap()
         XCTAssertTrue(app.navigationBars["Add to your message"].waitForExistence(timeout: 3))
         let search = app.searchFields.firstMatch
         search.tap(); search.typeText("rocket")
@@ -118,6 +125,52 @@ final class WhatsappUITests: XCTestCase {
         add(attachment)
     }
 
+    func testAttachmentPanelAndKeyboardKeepTheDraft() {
+        let app = demo()
+        app.buttons["chat-weekend@g.us"].tap()
+        XCTAssertTrue(app.buttons["composer-camera"].isHittable)
+        XCTAssertTrue(app.buttons["composer-stickers"].isHittable)
+        XCTAssertTrue(app.buttons["composer-microphone"].isHittable)
+        capture(app, "Reference composer — dark and collapsed")
+        let input = composer(app); input.tap(); input.typeText("Keep this draft")
+        app.buttons["composer-attachments"].tap()
+        for action in ["photos", "camera", "document", "paste", "emoji", "gifs", "stickers", "mention"] {
+            XCTAssertTrue(app.buttons["attachment-" + action].waitForExistence(timeout: 3))
+            XCTAssertTrue(app.buttons["attachment-" + action].isHittable)
+        }
+        XCTAssertEqual(app.buttons["composer-attachments"].label, "Show keyboard")
+        XCTAssertLessThan(input.frame.maxY, app.buttons["attachment-photos"].frame.minY)
+        assertLatestMessageIsAboveComposer(app)
+        capture(app, "Reference attachment panel — dark")
+        app.buttons["composer-attachments"].tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 3))
+        XCTAssertFalse(app.buttons["attachment-photos"].exists)
+        XCTAssertEqual(composer(app).value as? String, "Keep this draft")
+    }
+
+    func testStickerControlAndGifTileOpenTheirOwnSections() {
+        let app = demo()
+        app.buttons["chat-weekend@g.us"].tap()
+        app.buttons["composer-stickers"].tap()
+        XCTAssertTrue(app.buttons["Import a .wastickers or ZIP file"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.segmentedControls.buttons["Stickers"].isSelected)
+        app.buttons["Done"].tap()
+        app.buttons["composer-attachments"].tap()
+        app.buttons["attachment-gifs"].tap()
+        XCTAssertTrue(app.staticTexts["Connect GIPHY"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.segmentedControls.buttons["GIFs"].isSelected)
+    }
+
+    func testOfflineCameraKeepsPreviewPrivateAndDraftIntact() {
+        let app = demo()
+        app.buttons["chat-weekend@g.us"].tap()
+        let input = composer(app); input.tap(); input.typeText("Camera draft")
+        app.buttons["composer-camera"].tap()
+        XCTAssertTrue(app.alerts.staticTexts["The offline preview does not open your camera."].waitForExistence(timeout: 3))
+        app.alerts.buttons["OK"].tap()
+        XCTAssertEqual(composer(app).value as? String, "Camera draft")
+    }
+
     func testLightAppearanceAndLargeMessageText() {
         let app = demo()
         app.tabBars.buttons["Settings"].tap()
@@ -132,8 +185,13 @@ final class WhatsappUITests: XCTestCase {
         capture(app, "Refined chat list — light appearance")
         app.buttons["chat-weekend@g.us"].tap()
         XCTAssertTrue(app.staticTexts["Sounds good"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["Sounds good"].isHittable, "Large text must still open at the latest message")
+        assertLatestMessageIsAboveComposer(app)
         capture(app, "Grouped messages — light appearance and large text")
+        app.buttons["composer-attachments"].tap()
+        XCTAssertTrue(app.buttons["attachment-photos"].isHittable)
+        assertLatestMessageIsAboveComposer(app)
+        capture(app, "Reference attachment panel — light appearance")
+        app.buttons["composer-attachments"].tap()
         let input = composer(app)
         input.tap(); input.typeText("A longer draft that should grow naturally across several lines without hiding either the attachment or send controls.")
         XCTAssertTrue(app.buttons["send-message"].isHittable)
