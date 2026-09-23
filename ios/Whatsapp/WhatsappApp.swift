@@ -41,7 +41,7 @@ struct WhatsappApp: App {
             .environmentObject(store)
             .tint(.accentColor)
             .preferredColorScheme(store.preferences.theme == "system" ? nil : (store.preferences.theme == "light" ? .light : .dark))
-            .alert("Whatsapp", isPresented: Binding(get: { store.error != nil }, set: { if !$0 { store.error = nil } })) {
+            .alert("Whatsapp", isPresented: Binding(get: { store.error != nil }, set: { if !$0 && store.error != nil { store.error = nil } })) {
                 Button("OK", role: .cancel) { store.error = nil }
             } message: { Text(store.error ?? "") }
             .task { if phase == .active { store.activate() } }
