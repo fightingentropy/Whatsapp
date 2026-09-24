@@ -115,6 +115,10 @@ The Xcode prebuild phase calls `ios/scripts/build-rust.sh` and links the optimiz
 static library. It uses ARM64 for both device and simulator. The generated Xcode
 project, `build/` and `DerivedData/` are ignored; `project.yml` is the source of truth.
 
+The home-screen icon fills the square with an opaque background; iOS applies its
+own rounded corners. Regenerate its SVG and RGB PNG from the shared brand mark
+with `cargo run --locked --example render_ios_icon`.
+
 For a physical iPhone, select your own Apple development team in `project.yml`,
 connect/unlock the device, and build with automatic provisioning:
 
