@@ -479,6 +479,7 @@ pub fn populate(app: &mut App) {
                 sender: last.sender.clone(),
                 sender_name: last.sender_name.clone(),
                 summary: last.summary(),
+                full: last.content.full_summary(),
                 status: last.status,
             });
         app.conversations.insert(sample.id.to_owned(), conversation);
@@ -765,6 +766,7 @@ pub fn populate(app: &mut App) {
                 sender: last.sender.clone(),
                 sender_name: last.sender_name.clone(),
                 summary: last.summary(),
+                full: last.content.full_summary(),
                 status: last.status,
             });
         }
@@ -841,6 +843,7 @@ pub fn many_chats(app: &mut App, count: usize) {
             sender: "15550002222@s.whatsapp.net".into(),
             sender_name: Some("Sam".into()),
             summary: "The project notes are ready. See https://example.com/notes 👋".into(),
+            full: "The project notes are ready. See https://example.com/notes 👋".into(),
             status: Delivery::None,
         });
         if group {
@@ -870,6 +873,51 @@ pub fn apply_flags(app: &mut App, page: Option<&str>) {
                 }
             }
             "settings" => app.page = Page::Settings,
+            "settings-search" => {
+                app.page = Page::Settings;
+                app.settings_search = "read receipts".into();
+            }
+            "image-preview" => {
+                let (path, _) = sample_files(app);
+                app.image_preview = Some(crate::image_preview::PreviewState::new(path));
+                app.focus_composer = false;
+            }
+            "chat-search" | "chat-search-day" => {
+                app.chat_search.chat = app.open_chat.clone();
+                app.chat_search.query = "engine".into();
+                if let Some(conversation) = app
+                    .open_chat
+                    .as_ref()
+                    .and_then(|id| app.conversations.get(id))
+                {
+                    app.chat_search.hits = conversation
+                        .messages
+                        .iter()
+                        .rev()
+                        .filter(|message| {
+                            message
+                                .content
+                                .full_summary()
+                                .to_lowercase()
+                                .contains("engine")
+                        })
+                        .cloned()
+                        .collect();
+                }
+                if part == "chat-search-day" {
+                    let today = jiff::Zoned::now().date();
+                    app.chat_search.day = Some(today);
+                    if let Ok((start, end)) =
+                        crate::app::chat_search::day_range(today, jiff::tz::TimeZone::system())
+                    {
+                        app.chat_search.hits.retain(|message| {
+                            message.timestamp >= start && message.timestamp < end
+                        });
+                    }
+                }
+                app.focus_composer = false;
+            }
+
             "update" => {
                 app.update = Some(crate::updates::Release {
                     version: "99.0.0".to_owned(),
@@ -1297,6 +1345,10 @@ mod tests {
             "many-chats",
             "empty",
             "settings",
+            "settings-search",
+            "image-preview",
+            "chat-search",
+            "chat-search-day",
             "update",
             "shortcuts",
             "about",
@@ -1404,6 +1456,187 @@ mod tests {
             repeat: false,
             modifiers,
         }
+    }
+
+    #[test]
+    fn multiline_chat_previews_show_the_hidden_line_on_hover() {
+        let mut app = app();
+        app.typing.clear();
+        let ctx = egui::Context::default();
+        app.attach(&ctx);
+        let chat = SAMPLES[0].id;
+        let last = app
+            .chats
+            .iter_mut()
+            .find(|row| row.id == chat)
+            .unwrap()
+            .last
+            .as_mut()
+            .unwrap();
+        last.summary = "Short first line".into();
+        last.full = "Short first line\nHidden preview tail marker".into();
+        render(&mut app, &ctx);
+        let area = ctx
+            .read_response(crate::ui::chats::preview_id(chat))
+            .expect("multiline preview hover area")
+            .rect;
+        let mut text = Vec::new();
+        for step in 0..8 {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1180.0, 780.0),
+                    )),
+                    time: Some(10.0 + f64::from(step) * 0.3),
+                    events: if step == 0 {
+                        vec![egui::Event::PointerMoved(area.center())]
+                    } else {
+                        Vec::new()
+                    },
+                    ..Default::default()
+                },
+                |ui| {
+                    app.background_frame(ui.ctx());
+                    app.frame_ui(ui);
+                },
+            );
+            output.textures_delta.clear();
+            text = output
+                .shapes
+                .into_iter()
+                .filter_map(|shape| match shape.shape {
+                    egui::Shape::Text(text) => Some(text.galley.text().to_owned()),
+                    _ => None,
+                })
+                .collect();
+        }
+        assert!(
+            text.iter()
+                .any(|line| line.contains("Hidden preview tail marker")),
+            "tooltip paints the hidden line: {text:?}"
+        );
+        let last = app
+            .chats
+            .iter_mut()
+            .find(|row| row.id == chat)
+            .unwrap()
+            .last
+            .as_mut()
+            .unwrap();
+        last.full = last.summary.clone();
+        render(&mut app, &ctx);
+        assert!(
+            ctx.read_response(crate::ui::chats::preview_id(chat))
+                .is_none(),
+            "a short preview needs no tooltip"
+        );
+    }
+
+    #[test]
+    fn a_photo_preview_keeps_keyboard_input_out_of_the_draft() {
+        let mut app = app();
+        let ctx = egui::Context::default();
+        app.attach(&ctx);
+        app.composer = "Keep this draft".into();
+        render(&mut app, &ctx);
+        app.actions
+            .push(crate::model::Action::PreviewImage(sample_files(&app).0));
+        frame_with(&mut app, &ctx, Vec::new());
+        assert!(app.image_preview.is_some());
+        frame_with(
+            &mut app,
+            &ctx,
+            vec![
+                egui::Event::Text("unwanted".into()),
+                egui::Event::Paste("paste".into()),
+                key(egui::Key::Enter, egui::Modifiers::NONE),
+            ],
+        );
+        assert_eq!(app.composer, "Keep this draft");
+        frame_with(
+            &mut app,
+            &ctx,
+            vec![key(egui::Key::Escape, egui::Modifiers::NONE)],
+        );
+        assert!(app.image_preview.is_none());
+        assert_eq!(app.composer, "Keep this draft");
+    }
+
+    #[test]
+    fn find_shortcuts_keep_chat_and_settings_search_separate() {
+        let mut app = app();
+        let ctx = egui::Context::default();
+        app.attach(&ctx);
+        render(&mut app, &ctx);
+        frame_with(
+            &mut app,
+            &ctx,
+            vec![key(egui::Key::F, egui::Modifiers::COMMAND)],
+        );
+        assert_eq!(app.chat_search.chat, app.open_chat);
+        frame_with(&mut app, &ctx, Vec::new());
+        assert!(ctx.memory(|m| m.has_focus(egui::Id::new("conversation-search"))));
+        if let Some(chat) = &app.open_chat {
+            app.chat_search.hits = app.conversations[chat]
+                .messages
+                .iter()
+                .rev()
+                .take(2)
+                .cloned()
+                .collect();
+        }
+        frame_with(
+            &mut app,
+            &ctx,
+            vec![key(egui::Key::Enter, egui::Modifiers::NONE)],
+        );
+        assert_eq!(app.chat_search.selected, Some(0));
+        frame_with(
+            &mut app,
+            &ctx,
+            vec![key(egui::Key::Enter, egui::Modifiers::SHIFT)],
+        );
+        assert_eq!(app.chat_search.selected, Some(1));
+        frame_with(
+            &mut app,
+            &ctx,
+            vec![key(egui::Key::Escape, egui::Modifiers::NONE)],
+        );
+        assert!(app.chat_search.chat.is_none());
+        frame_with(
+            &mut app,
+            &ctx,
+            vec![key(egui::Key::F, egui::Modifiers::COMMAND)],
+        );
+        assert_eq!(app.chat_search.chat, app.open_chat);
+        frame_with(
+            &mut app,
+            &ctx,
+            vec![key(
+                egui::Key::F,
+                egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+            )],
+        );
+        frame_with(&mut app, &ctx, Vec::new());
+        assert!(app.chat_search.chat.is_none());
+        assert!(ctx.memory(|m| m.has_focus(egui::Id::new("chat-search"))));
+        app.page = Page::Settings;
+        frame_with(
+            &mut app,
+            &ctx,
+            vec![key(egui::Key::F, egui::Modifiers::COMMAND)],
+        );
+        frame_with(&mut app, &ctx, Vec::new());
+        assert!(ctx.memory(|m| m.has_focus(egui::Id::new("settings-search"))));
+        app.settings_search = "receipts".into();
+        frame_with(
+            &mut app,
+            &ctx,
+            vec![key(egui::Key::Escape, egui::Modifiers::NONE)],
+        );
+        assert!(app.settings_search.is_empty());
+        assert_eq!(app.page, Page::Settings);
     }
 
     #[test]
@@ -1808,6 +2041,25 @@ mod tests {
         let mut app = app();
         let ctx = egui::Context::default();
         app.attach(&ctx);
+        // Compare settled layouts. The fixture's file loader is asynchronous;
+        // under a parallel suite the photo could finish between the two reads,
+        // legitimately changing the scroll position by a fraction of a point.
+        let (photo, _) = sample_files(&app);
+        let image = egui::Image::new(crate::ui::conversation::file_uri(&photo));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if matches!(
+                image.load_for_size(&ctx, egui::vec2(320.0, 260.0)),
+                Ok(egui::load::TexturePoll::Ready { .. })
+            ) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "fixture photo must decode before comparing layouts"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
         render(&mut app, &ctx);
         // Let initial composer/viewport sizing and the resulting scroll offset settle.
         render(&mut app, &ctx);

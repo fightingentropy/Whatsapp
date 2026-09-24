@@ -83,6 +83,8 @@ See [PERFORMANCE.md](PERFORMANCE.md) for measurements, remaining costs and valid
 ## What it does
 
 - **Links to your phone.** Scan a QR code or link with your phone number.
+  The connection is renewed after sleep or two minutes without incoming network
+  frames; the protocol library also times out stalled keepalive writes.
   Recent history is copied to this computer after linking and stored here.
 - **Chats.** See pinned, unread, muted, and archived chats, typing indicators,
   and message status. Archived stays hidden during normal scrolling. Once you
@@ -90,10 +92,18 @@ See [PERFORMANCE.md](PERFORMANCE.md) for measurements, remaining costs and valid
   or by dragging the list to reveal it. The list follows the pull with resistance,
   then smoothly settles open when pulled far enough or slides back after a short
   pull. Scrolling away hides it again; returning to the top keeps it hidden until
-  another pull. Search chats, saved messages, and contacts.
+  another pull. Search chats, saved messages, and contacts. Hover a cut-short or
+  multiline last-message preview to see more of it, including the sender in groups
+  (up to twelve lines).
   Phone-number and privacy IDs for the same person combine into one chat as
   WhatsApp supplies their mapping. Existing duplicates are repaired on startup,
   preserving saved messages, attachment keys and downloads.
+- **Search within a chat.** Press `⌘F` or click the header search icon. A side
+  pane searches the local archive while the conversation stays visible. Choose a
+  calendar day to narrow the results or browse that day without a search term.
+  Click a result to jump to it; Enter/Shift+Enter or the up/down arrows in the
+  search field walk the matches. Results show the matching line; searches with
+  more than 200 matches explain the limit. `⌘K` and `⌘Shift+F` search all chats.
 - **Read state across devices.** Reading a chat syncs its unread badge with
   your phone and other linked devices, including when read receipts are off.
   Replies from another device clear preceding unread messages. The read-receipt
@@ -113,6 +123,8 @@ See [PERFORMANCE.md](PERFORMANCE.md) for measurements, remaining costs and valid
   messages are larger.
 - **Send attachments with captions.** Paste a picture, drop files, or use the
   file picker. They stay in the composer until you send them or press Escape.
+  WAV, FLAC and other audio formats phones cannot play inline are sent as
+  documents, preserving the original file; compatible audio keeps its player.
 - **Mute chats** for eight hours, one week, or indefinitely. The setting also
   applies on your phone and to desktop notifications.
 - **Voice messages.** Play, seek, record, reply with, and send voice messages
@@ -127,7 +139,10 @@ See [PERFORMANCE.md](PERFORMANCE.md) for measurements, remaining costs and valid
   delivered, or read.
 - **View attachments.** Whatsapp downloads files up to 64 MB automatically or
   on click. Photos, stickers, GIFs, voice messages, audio, locations, contacts,
-  polls, and link previews appear in the chat. Videos and documents open in
+  polls, and link previews appear in the chat. Click a downloaded photo to open
+  an in-app preview with zoom, fit, original size, and an external-app button.
+  Escape closes the preview; typing and paste cannot alter the draft behind it.
+  Videos and documents open in
   their default desktop apps. If an attachment has expired, Whatsapp asks your
   phone to upload it again.
 - **Emoji, GIF, and sticker picker.** Search emoji and GIFs, use recent emoji
@@ -155,7 +170,8 @@ See [PERFORMANCE.md](PERFORMANCE.md) for measurements, remaining costs and valid
 - **Update notices.** Whatsapp checks GitHub once a day and shows a download
   link when a newer release is available. You can turn this off in Settings.
 - **Dark by default**, with light and system options. Zoom with ⌘plus and
-  ⌘minus.
+  ⌘minus. Settings has its own search field (`⌘F`), matching setting names,
+  descriptions and section names. Escape clears that search before leaving Settings.
 - **Copy text.** Select part of a message or copy across messages in
   WhatsApp's `[time, date] Name:` format. Contact names and numbers are also
   selectable.
@@ -172,6 +188,9 @@ See [PERFORMANCE.md](PERFORMANCE.md) for measurements, remaining costs and valid
 - Play ordinary videos in the app (they open in your player), or reply to
   a message with an attachment.
 - Calls, status posts, communities, newsletters, and group administration.
+
+The selected September 2026 upstream ports and deferred changes are recorded in
+[UPSTREAM_UPDATES.md](UPSTREAM_UPDATES.md).
 
 ## Build and run
 

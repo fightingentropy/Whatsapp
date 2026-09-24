@@ -20,6 +20,7 @@ use crate::theme::Palette;
 use crate::tray::{TrayCommand, TrayService};
 
 mod cache;
+pub mod chat_search;
 mod identities;
 
 /// Initial and incremental message-page size.
@@ -185,6 +186,9 @@ pub struct App {
     composing: bool,
     last_keystroke: Option<Instant>,
     pub search: String,
+    pub chat_search: chat_search::ChatSearch,
+    pub settings_search: String,
+    pub focus_settings_search: bool,
     /// Message search results, newest first.
     pub search_hits: Vec<Message>,
     search_due: Option<Instant>,
@@ -213,6 +217,8 @@ pub struct App {
     pub player: Player,
     /// Active voice recorder.
     pub recording: Option<Recorder>,
+    /// Downloaded image in the native preview.
+    pub image_preview: Option<crate::image_preview::PreviewState>,
     /// Voice messages with a sent played receipt.
     played_told: HashSet<String>,
     /// Message bodies registered for transcript copy formatting.
@@ -394,6 +400,9 @@ impl App {
             composing: false,
             last_keystroke: None,
             search: String::new(),
+            chat_search: Default::default(),
+            settings_search: String::new(),
+            focus_settings_search: false,
             search_hits: Vec::new(),
             search_due: None,
             typing: HashMap::new(),
@@ -411,6 +420,7 @@ impl App {
             pending: Vec::new(),
             player: Player::new(waker.clone()),
             recording: None,
+            image_preview: None,
             played_told: HashSet::new(),
             copy_rows: Default::default(),
             selection_view: Default::default(),
@@ -1009,6 +1019,7 @@ impl App {
                     self.chats = chats;
                     if let Some(open) = self.open_chat.clone() {
                         if self.chat(&open).is_none() {
+                            self.chat_search.close();
                             self.open_chat = None;
                         } else {
                             // Show archived messages immediately, including offline.
@@ -1024,6 +1035,9 @@ impl App {
                     complete,
                     requested,
                 } => {
+                    if !requested && self.chat_search.chat.as_ref() == Some(&chat) {
+                        self.chat_search.changed();
+                    }
                     // Every row is already durable in SQLite. Do not recreate
                     // an evicted/unopened history for a background update.
                     let Some(conversation) =
@@ -1094,6 +1108,14 @@ impl App {
                         self.search_hits = messages;
                     }
                 }
+                Event::ChatSearchHits {
+                    chat,
+                    request,
+                    result,
+                    truncated,
+                } => {
+                    self.chat_search.accept(&chat, request, result, truncated);
+                }
                 Event::Incoming { chat, message } => self.maybe_notify(&chat, &message),
                 Event::Picked { chat, paths } => {
                     if self.open_chat.as_deref() == Some(chat.as_str()) {
@@ -1102,6 +1124,9 @@ impl App {
                 }
                 Event::MessageUpdated(message) => {
                     let message = *message;
+                    if self.chat_search.chat.as_ref() == Some(&message.chat) {
+                        self.chat_search.changed();
+                    }
                     if let Some(conversation) = self.conversations.get_mut(&message.chat)
                         && let Some(existing) = conversation.message_mut(&message.id)
                     {
@@ -1173,6 +1198,9 @@ impl App {
                     self.sticker_import_pending = false;
                 }
                 Event::MessageDeleted { chat, id } => {
+                    if self.chat_search.chat.as_ref() == Some(&chat) {
+                        self.chat_search.changed();
+                    }
                     if let Some(conversation) = self.conversations.get_mut(&chat) {
                         conversation.invalidate_row(&id);
                         conversation.messages.retain(|message| message.id != id);
@@ -1254,6 +1282,8 @@ impl App {
                 }
             }
             LinkStatus::LoggedOut => {
+                self.chat_search.close();
+                self.image_preview = None;
                 self.notifications.clear_all();
                 self.chats.clear();
                 self.conversations.clear();
@@ -1413,6 +1443,7 @@ impl App {
     fn open_chat(&mut self, id: ChatId) {
         let id = self.chat_aliases.get(&id).cloned().unwrap_or(id);
         if self.open_chat.as_deref() != Some(id.as_str()) {
+            self.chat_search.close();
             if let Some(previous) = self.open_chat.take() {
                 if let Some(conversation) = self.conversations.get_mut(&previous) {
                     // Its view may have added row measurements since the last visit.
@@ -1471,6 +1502,8 @@ impl App {
             && self.picker.is_none()
             && self.recording.is_none()
             && self.open_chat.is_some()
+            && self.image_preview.is_none()
+            && self.chat_search.chat.is_none()
             && self.search.trim().is_empty()
             && !self.focus_search
             && !search_focused
@@ -1659,6 +1692,7 @@ impl App {
     }
 
     fn pump_search(&mut self, now: Instant, ctx: &egui::Context) {
+        self.pump_chat_search(now, ctx);
         if let Some(due) = self.search_due {
             if now >= due {
                 self.search_due = None;
@@ -1797,6 +1831,7 @@ impl App {
                 }
             }
             Action::CloseChat => {
+                self.chat_search.close();
                 if let Some(chat) = self.open_chat.take() {
                     self.stop_composing(&chat);
                     let draft = std::mem::take(&mut self.composer);
@@ -1840,6 +1875,50 @@ impl App {
                     media.state = MediaState::Downloading;
                 }
                 self.backend.send(Command::Download { chat, message });
+            }
+            Action::PreviewImage(path) => {
+                if crate::image_preview::can_preview_image(&path) && path.is_file() {
+                    self.image_preview = Some(crate::image_preview::PreviewState::new(path));
+                    self.dialog = None;
+                    self.picker = None;
+                    // egui drops the focus of widgets behind a modal only from
+                    // the frame after it first shows; until then a focused
+                    // composer would still take Enter and send the draft.
+                    ctx.memory_mut(|memory| {
+                        if let Some(focused) = memory.focused() {
+                            memory.surrender_focus(focused);
+                        }
+                    });
+                } else {
+                    self.actions.push(Action::OpenFile(path));
+                }
+            }
+            Action::ZoomImageIn => {
+                if let Some(preview) = &mut self.image_preview {
+                    preview.zoom_in();
+                }
+            }
+            Action::ZoomImageOut => {
+                if let Some(preview) = &mut self.image_preview {
+                    preview.zoom_out();
+                }
+            }
+            Action::FitImage => {
+                if let Some(preview) = &mut self.image_preview {
+                    preview.fit();
+                }
+            }
+            Action::ImageActualSize => {
+                if let Some(preview) = &mut self.image_preview {
+                    preview.actual_size();
+                }
+            }
+            Action::CloseImagePreview => {
+                self.image_preview = None;
+                if self.chat_search.chat.is_some() {
+                    self.chat_search.focus = true;
+                }
+                self.refocus_composer(ctx);
             }
             Action::OpenFile(path) => {
                 if let Err(error) = open::that_detached(&path) {
@@ -2179,8 +2258,68 @@ impl App {
                     to_phone: self.settings.save_contacts_to_phone,
                 });
             }
-            Action::ToggleSidebar => self.sidebar_visible = !self.sidebar_visible,
+            Action::ToggleSidebar => {
+                if self.sidebar_visible
+                    && self.chat_search.chat.is_some()
+                    && !crate::ui::shows_sidebar(self, ctx)
+                {
+                    self.chat_search.close();
+                } else {
+                    self.sidebar_visible = !self.sidebar_visible;
+                }
+            }
+            Action::OpenChatSearch => {
+                if let Some(chat) = self.open_chat.clone() {
+                    if self.chat_search.chat.as_ref() != Some(&chat) {
+                        self.chat_search.close();
+                        self.chat_search.chat = Some(chat);
+                    }
+                    self.page = Page::Chats;
+                    self.chat_search.focus = true;
+                    self.focus_composer = false;
+                    self.focus_search = false;
+                }
+            }
+            Action::CloseChatSearch => {
+                self.chat_search.close();
+                self.refocus_composer(ctx);
+            }
+            Action::SearchChat(query) => {
+                self.chat_search.query = query;
+                self.chat_search.changed();
+                self.pump_chat_search(Instant::now(), ctx);
+            }
+            Action::SearchChatDay(day) => {
+                self.chat_search.day = day;
+                self.chat_search.changed();
+                self.pump_chat_search(Instant::now(), ctx);
+            }
+            Action::StepChatSearch(step) => {
+                if let Some(id) = self.chat_search.step(step) {
+                    self.actions.push(Action::ScrollTo(id));
+                }
+            }
+            Action::FocusSettingsSearch => {
+                self.focus_settings_search = true;
+                self.focus_composer = false;
+            }
+            // AppKit menus intercept Cmd+F before egui receives it. Resolve
+            // both paths here so Find always follows the visible page.
+            Action::Find => {
+                if self.image_preview.is_none() {
+                    let action = match self.page {
+                        Page::Settings => Action::FocusSettingsSearch,
+                        Page::Chats if self.open_chat.is_some() => Action::OpenChatSearch,
+                        _ => Action::FocusSearch,
+                    };
+                    self.apply(action, ctx);
+                }
+            }
             Action::FocusSearch => {
+                if self.image_preview.is_some() {
+                    return;
+                }
+                self.chat_search.close();
                 self.sidebar_visible = true;
                 self.page = Page::Chats;
                 self.focus_composer = false;
@@ -2223,11 +2362,23 @@ impl App {
             }
             Action::SettingsChanged => self.mark_settings_dirty(),
             Action::ZoomBy(delta) => {
+                if let Some(preview) = &mut self.image_preview {
+                    if delta > 0.0 {
+                        preview.zoom_in();
+                    } else if delta < 0.0 {
+                        preview.zoom_out();
+                    }
+                    return;
+                }
                 self.settings.zoom = (self.settings.zoom + delta).clamp(0.6, 2.0);
                 self.zoom_applied = false;
                 self.mark_settings_dirty();
             }
             Action::ResetZoom => {
+                if let Some(preview) = &mut self.image_preview {
+                    preview.fit();
+                    return;
+                }
                 self.settings.zoom = 1.0;
                 self.zoom_applied = false;
                 self.mark_settings_dirty();
@@ -2499,6 +2650,10 @@ impl App {
 
     /// Handles dropped files and pasted images for the open chat.
     fn take_drops_and_pastes(&mut self, ctx: &egui::Context) {
+        if self.image_preview.is_some() {
+            self.dropping = false;
+            return;
+        }
         let (dropped, hovering, paste) = ctx.input(|input| {
             let dropped: Vec<PathBuf> = input
                 .raw
@@ -2856,6 +3011,62 @@ mod tests {
             forwarded: false,
             thumbnail: None,
         }
+    }
+
+    #[test]
+    fn image_preview_opens_zooms_fits_and_closes() {
+        let ctx = egui::Context::default();
+        let mut app = app();
+        let file = tempfile::NamedTempFile::with_suffix(".png").unwrap();
+        std::fs::write(file.path(), b"not a real image").unwrap();
+
+        app.apply(Action::PreviewImage(file.path().to_owned()), &ctx);
+        let preview = app.image_preview.as_ref().expect("preview opens");
+        assert_eq!(preview.path(), file.path());
+        assert!(preview.is_fit());
+
+        app.apply(Action::ZoomImageIn, &ctx);
+        assert_eq!(app.image_preview.as_ref().unwrap().zoom(), 1.25);
+        let app_zoom = app.settings.zoom;
+        app.apply(Action::ZoomBy(0.1), &ctx);
+        assert_eq!(app.image_preview.as_ref().unwrap().zoom(), 1.5625);
+        assert_eq!(
+            app.settings.zoom, app_zoom,
+            "native menu zoom belongs to the preview"
+        );
+        app.apply(Action::ResetZoom, &ctx);
+        assert!(app.image_preview.as_ref().unwrap().is_fit());
+        app.apply(Action::Find, &ctx);
+        app.apply(Action::FocusSearch, &ctx);
+        assert!(!app.focus_search && app.chat_search.chat.is_none());
+        app.apply(Action::FitImage, &ctx);
+        assert!(app.image_preview.as_ref().unwrap().is_fit());
+
+        app.image_preview.as_mut().unwrap().zoom_in();
+        app.apply(Action::CloseImagePreview, &ctx);
+        assert!(app.image_preview.is_none());
+        assert!(app.dialog.is_none());
+    }
+
+    #[test]
+    fn unsupported_media_falls_back_to_the_external_opener() {
+        let ctx = egui::Context::default();
+        let mut app = app();
+        let file = tempfile::NamedTempFile::with_suffix(".heic").unwrap();
+        std::fs::write(file.path(), b"not a real image").unwrap();
+
+        app.apply(Action::PreviewImage(file.path().to_owned()), &ctx);
+
+        assert!(
+            app.image_preview.is_none(),
+            "no preview for unsupported media"
+        );
+        assert!(
+            app.actions
+                .iter()
+                .any(|action| matches!(action, Action::OpenFile(path) if path == file.path())),
+            "the external opener is queued instead"
+        );
     }
 
     #[test]

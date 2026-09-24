@@ -24,7 +24,7 @@ serde_json = "1"
 log = "0.4"
 directories = "6"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
-whatsapp-rust = { git = "https://github.com/oxidezap/whatsapp-rust", rev = "1ace865716726daec8d0f00335453fcb8de35d1b", default-features = false, features = ["sqlite-storage", "tokio-transport", "tokio-runtime", "ureq-client", "tokio-native"] }
+whatsapp-rust = { git = "https://github.com/oxidezap/whatsapp-rust", rev = "f7468ae2920a2b0aedbd0848cf121de56a07f93c", default-features = false, features = ["sqlite-storage", "tokio-transport", "tokio-runtime", "ureq-client", "tokio-native"] }
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros", "fs"] }
 rusqlite = { version = "0.40", features = ["bundled"] }
 ureq = { version = "3", default-features = false, features = ["rustls"] }
@@ -45,4 +45,5 @@ objc2 = "0.6"
 core-foundation-sys = "0.8"
 
 [dev-dependencies]
+tempfile = "3"
 png = "0.18"

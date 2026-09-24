@@ -6,6 +6,10 @@ use crate::app::App;
 use crate::model::{Action, Dialog, Page};
 
 pub fn handle(app: &mut App, ctx: &egui::Context) {
+    if app.image_preview.is_some() {
+        preview_keys(app, ctx);
+        return;
+    }
     let mut actions = Vec::new();
     ctx.input_mut(|input| {
         let mut key = |modifiers: Modifiers, key: Key, action: Action| {
@@ -13,7 +17,12 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
                 actions.push(action);
             }
         };
-        key(Modifiers::COMMAND, Key::F, Action::FocusSearch);
+        key(
+            Modifiers::COMMAND | Modifiers::SHIFT,
+            Key::F,
+            Action::FocusSearch,
+        );
+        key(Modifiers::COMMAND, Key::F, Action::Find);
         key(Modifiers::COMMAND, Key::K, Action::FocusSearch);
         key(Modifiers::COMMAND, Key::B, Action::ToggleSidebar);
         key(Modifiers::COMMAND, Key::Comma, Action::Open(Page::Settings));
@@ -30,6 +39,24 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         key(Modifiers::COMMAND, Key::Num0, Action::ResetZoom);
         key(Modifiers::COMMAND, Key::End, Action::ScrollToBottom);
     });
+    if ctx.memory(|memory| memory.has_focus(egui::Id::new("conversation-search"))) {
+        let step = ctx.input_mut(|input| {
+            if input.consume_key(Modifiers::SHIFT, Key::Enter)
+                || input.consume_key(Modifiers::NONE, Key::ArrowUp)
+            {
+                -1
+            } else if input.consume_key(Modifiers::NONE, Key::Enter)
+                || input.consume_key(Modifiers::NONE, Key::ArrowDown)
+            {
+                1
+            } else {
+                0
+            }
+        });
+        if step != 0 {
+            actions.push(Action::StepChatSearch(step));
+        }
+    }
     // Escape cancels the topmost state. Menus handle Escape themselves.
     let menu_open = egui::Popup::is_any_open(ctx);
     let search_focused = ctx.memory(|memory| memory.has_focus(egui::Id::new("chat-search")));
@@ -53,7 +80,14 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         } else if app.reply_to.is_some() {
             actions.push(Action::CancelReply);
         } else if app.page == Page::Settings {
-            actions.push(Action::Open(Page::Chats));
+            if app.settings_search.is_empty() {
+                actions.push(Action::Open(Page::Chats));
+            } else {
+                app.settings_search.clear();
+                app.focus_settings_search = true;
+            }
+        } else if app.chat_search.chat.is_some() {
+            actions.push(Action::CloseChatSearch);
         } else if search_focused || !app.search.is_empty() {
             if !app.search.is_empty() {
                 actions.push(Action::Search(String::new()));
@@ -98,9 +132,39 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
     app.actions.extend(actions);
 }
 
+/// Handles keys while the image preview is open. No chat shortcut runs, and
+/// typing and clipboard input are swallowed; Tab, Enter, Space and the arrows
+/// stay for the preview's own controls.
+fn preview_keys(app: &mut App, ctx: &egui::Context) {
+    let mut actions = Vec::new();
+    ctx.input_mut(|input| {
+        if input.consume_key(Modifiers::NONE, Key::Escape) {
+            actions.push(Action::CloseImagePreview);
+        }
+        let mut event_actions = Vec::new();
+        for event in &input.events {
+            if let egui::Event::Key {
+                key,
+                modifiers,
+                pressed: true,
+                ..
+            } = event
+            {
+                event_actions.extend(crate::image_preview::preview_action(*key, *modifiers));
+            }
+        }
+        actions.extend(event_actions);
+        input
+            .events
+            .retain(|event| !crate::image_preview::consumes_key(event));
+    });
+    app.actions.extend(actions);
+}
+
 /// Shortcuts shown in the help dialog.
 pub const SHORTCUTS: &[(&str, &str)] = &[
-    ("Ctrl+F / Ctrl+K", "Search chats"),
+    ("Ctrl+F", "Search this chat or Settings"),
+    ("Ctrl+K / Ctrl+Shift+F", "Search all chats"),
     ("Alt+↑ / Alt+↓", "Previous / next chat"),
     (
         "Escape",

@@ -66,6 +66,9 @@ Silicon Mac to build. This is a personal-device build, not an App Store release.
   downloads and Notifications. Appearance includes a live message-size preview.
 - Local SQLite history and device keys in Application Support/Whatsapp, excluded
   from backup with iOS data protection. No desktop credentials are copied.
+- Shared connection recovery detects a silent link while the app is active and
+  includes the protocol library's stalled-write timeout. WAV, FLAC and other
+  unsupported inline audio attachments are sent as documents to preserve the file.
 - Reconnect and confirmed unlink controls. Calls, status posts, group
   administration and poll voting are unsupported, as on the desktop client.
 

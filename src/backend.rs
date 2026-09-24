@@ -123,6 +123,13 @@ pub enum Command {
     SearchMessages {
         query: String,
     },
+    /// Local archive search scoped to a chat and optional day.
+    SearchChat {
+        chat: ChatId,
+        query: String,
+        day: Option<(i64, i64)>,
+        request: u64,
+    },
     /// Creates an archive chat before its first message is sent.
     EnsureChat {
         chat: ChatId,
@@ -399,6 +406,12 @@ pub enum Event {
     SearchHits {
         query: String,
         messages: Vec<Message>,
+    },
+    ChatSearchHits {
+        chat: ChatId,
+        request: u64,
+        result: Result<Vec<Message>, String>,
+        truncated: bool,
     },
     Typing {
         chat: ChatId,

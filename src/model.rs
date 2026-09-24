@@ -58,6 +58,8 @@ pub struct LastMessage {
     /// Group-message sender.
     pub sender_name: Option<String>,
     pub summary: String,
+    /// Text behind the one-line chat preview, including captions and newlines.
+    pub full: String,
     pub status: Delivery,
 }
 
@@ -253,6 +255,29 @@ impl Content {
             text: text.into(),
             preview: None,
         }
+    }
+
+    pub fn full_summary(&self) -> String {
+        let captioned = |label: &str, caption: &Option<String>| match caption.as_deref() {
+            Some(caption) if !caption.trim().is_empty() => format!("{label}: {caption}"),
+            _ => label.to_owned(),
+        };
+        let full = match self {
+            Self::Text { text, .. } => text.clone(),
+            Self::Image { caption, .. } => captioned("Photo", caption),
+            Self::Video { caption, gif, .. } => {
+                captioned(if *gif { "GIF" } else { "Video" }, caption)
+            }
+            _ => self.summary(),
+        };
+        // Chat-list rows stay resident even when their conversation is evicted.
+        // Keep only what the bounded hover preview can display.
+        let mut chars = full.chars();
+        let mut preview: String = chars.by_ref().take(2_000).collect();
+        if chars.next().is_some() {
+            preview.push('…');
+        }
+        preview
     }
 
     pub fn summary(&self) -> String {
@@ -496,6 +521,12 @@ pub enum Action {
     StartRecording,
     CancelRecording,
     SendRecording,
+    PreviewImage(PathBuf),
+    ZoomImageIn,
+    ZoomImageOut,
+    FitImage,
+    ImageActualSize,
+    CloseImagePreview,
     OpenFile(PathBuf),
     OpenUrl(String),
     CopyText(String),
@@ -583,6 +614,13 @@ pub enum Action {
     ShowDialog(Dialog),
     CloseDialog,
     ToggleSidebar,
+    OpenChatSearch,
+    CloseChatSearch,
+    SearchChat(String),
+    SearchChatDay(Option<jiff::civil::Date>),
+    StepChatSearch(i32),
+    FocusSettingsSearch,
+    Find,
     FocusSearch,
     FocusComposer,
     ScrollToBottom,
@@ -670,6 +708,29 @@ mod tests {
             .summary(),
             "Voice message (1:05)"
         );
+    }
+
+    #[test]
+    fn full_summaries_keep_every_line_behind_the_summary_label() {
+        assert_eq!(Content::text("hi\nthere").full_summary(), "hi\nthere");
+        assert_eq!(
+            Content::Image {
+                caption: Some("look\nat this".into()),
+                media: media()
+            }
+            .full_summary(),
+            "Photo: look\nat this"
+        );
+        let voice = Content::Audio {
+            media: media(),
+            seconds: Some(65),
+            voice_note: true,
+            waveform: Vec::new(),
+        };
+        assert_eq!(voice.full_summary(), voice.summary());
+        let long = Content::text("界".repeat(20_000)).full_summary();
+        assert_eq!(long.chars().count(), 2_001);
+        assert!(long.ends_with('…'));
     }
 
     #[test]
