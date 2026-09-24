@@ -70,6 +70,10 @@ impl App {
             conversation.loading_initial = false;
             conversation.phone_exhausted = false;
         }
+        if self.chat_search.chat.as_deref() == Some(from.as_str()) {
+            self.chat_search.chat = Some(into.clone());
+            self.chat_search.changed();
+        }
         for message in &mut self.search_hits {
             remap_message(message, &from, &into);
         }

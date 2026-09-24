@@ -1,8 +1,10 @@
 //! Window layout: panels, overlays, keyboard shortcuts.
 
+pub mod chat_search;
 pub mod chats;
 pub mod conversation;
 pub mod dialogs;
+pub mod image_preview;
 pub mod keys;
 pub mod login;
 pub mod picker;
@@ -31,8 +33,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     if !macos {
         banner(app, ui);
     }
-    if app.sidebar_visible {
+    if shows_sidebar(app, ctx) {
         chats::show(app, ui);
+    }
+    if app.page == Page::Chats {
+        chat_search::show(app, ui);
     }
     let palette = app.palette;
     egui::CentralPanel::default()
@@ -43,8 +48,17 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         });
     picker::show(app, ctx);
     dialogs::show(app, ctx);
+    image_preview::show(app, ctx);
     drop_target(app, ctx);
     toasts(app, ctx);
+}
+
+/// Give search the chat-list space in narrow windows without changing the saved preference.
+pub(crate) fn shows_sidebar(app: &App, ctx: &egui::Context) -> bool {
+    app.sidebar_visible
+        && (app.page != Page::Chats
+            || app.chat_search.chat.is_none()
+            || ctx.content_rect().width() >= app.settings.sidebar_width + 640.0)
 }
 
 /// Shows where dragged files will be sent.
@@ -284,7 +298,7 @@ pub fn titlebar_drag(ui: &mut egui::Ui, rect: egui::Rect) {
 
 /// Header for pages without a conversation toolbar and with the sidebar hidden.
 pub fn standalone_header(app: &mut App, ui: &mut egui::Ui) {
-    if !theme::macos_chrome(ui.ctx()) || app.sidebar_visible {
+    if !theme::macos_chrome(ui.ctx()) || shows_sidebar(app, ui.ctx()) {
         return;
     }
     let palette = app.palette;

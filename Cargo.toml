@@ -74,7 +74,7 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 # 0.7.0 on crates.io enables `simd`, which needs nightly Rust. This commit builds
 # on stable. Selected features provide Tokio transport, ureq media downloads,
 # and the SQLite device store. The window handles shutdown instead of `signal`.
-whatsapp-rust = { git = "https://github.com/oxidezap/whatsapp-rust", rev = "1ace865716726daec8d0f00335453fcb8de35d1b", default-features = false, features = ["sqlite-storage", "tokio-transport", "tokio-runtime", "ureq-client", "tokio-native"] }
+whatsapp-rust = { git = "https://github.com/oxidezap/whatsapp-rust", rev = "f7468ae2920a2b0aedbd0848cf121de56a07f93c", default-features = false, features = ["sqlite-storage", "tokio-transport", "tokio-runtime", "ureq-client", "tokio-native"] }
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros", "fs"] }
 # Local message archive. `bundled` uses the same SQLite build as the device
 # store.
@@ -137,6 +137,7 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["std
 windows-sys = { version = "0.60", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
 
 [dev-dependencies]
+tempfile = "3"
 # Creates small APNGs in sticker-import tests. Already included through image.
 png = "0.18"
 

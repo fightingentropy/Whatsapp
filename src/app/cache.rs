@@ -66,6 +66,7 @@ impl App {
             .flat_map(|conversation| &conversation.messages)
             .filter_map(|message| message.content.media()?.path.as_deref())
             .collect();
+        retained_paths.extend(self.image_preview.as_ref().map(|preview| preview.path()));
         retained_paths.extend(self.pending.iter().filter_map(|pending| match pending {
             Pending::File(path) => Some(path.as_path()),
             Pending::Picture { .. } => None,

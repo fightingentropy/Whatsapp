@@ -135,6 +135,7 @@ fn chat_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Chat> {
                 sender: row.get::<_, Option<String>>(12)?.unwrap_or_default(),
                 sender_name: row.get(9)?,
                 summary: content.summary(),
+                full: content.full_summary(),
                 status: status_from_rank(row.get(11)?),
             })
         }
@@ -666,7 +667,7 @@ impl Archive {
             // across the entire archive, including older matches.
             let recent = self.search_rows(
                 "AND rowid IN (SELECT rowid FROM messages ORDER BY timestamp DESC, rowid DESC LIMIT 256) AND ?3 IS NULL",
-                &pattern, limit, None,
+                &pattern, limit, None, None, None,
             )?;
             if recent.len() == limit {
                 return Ok(recent);
@@ -677,7 +678,41 @@ impl Archive {
         } else {
             "AND ?3 IS NULL"
         };
-        self.search_rows(candidates, &pattern, limit, phrase.as_deref())
+        self.search_rows(candidates, &pattern, limit, phrase.as_deref(), None, None)
+    }
+
+    /// Searches one conversation, optionally within a half-open local-day range.
+    /// Filtering happens before the result limit; older hits use the same FTS
+    /// index as global search. An empty query browses all messages on a day.
+    pub fn search_chat_messages(
+        &self,
+        chat: &str,
+        needle: &str,
+        day: Option<(i64, i64)>,
+        limit: usize,
+    ) -> Result<Vec<Message>> {
+        let normalized = needle.to_lowercase();
+        let pattern = format!(
+            "%{}%",
+            normalized
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_")
+        );
+        let phrase = search::phrase(&normalized);
+        let candidates = if phrase.is_some() {
+            "AND rowid IN (SELECT rowid FROM message_search WHERE message_search MATCH ?3)"
+        } else {
+            "AND ?3 IS NULL"
+        };
+        self.search_rows(
+            candidates,
+            &pattern,
+            limit,
+            phrase.as_deref(),
+            Some(chat),
+            day,
+        )
     }
 
     fn search_rows(
@@ -686,40 +721,62 @@ impl Archive {
         pattern: &str,
         limit: usize,
         phrase: Option<&str>,
+        chat: Option<&str>,
+        day: Option<(i64, i64)>,
     ) -> Result<Vec<Message>> {
+        let scope = if chat.is_some() {
+            "AND chat = ?4"
+        } else {
+            "AND ?4 IS NULL"
+        };
+        let dates = if day.is_some() {
+            "AND timestamp >= ?5 AND timestamp < ?6"
+        } else {
+            "AND ?5 IS NULL AND ?6 IS NULL"
+        };
         let sql = format!(
             "SELECT chat, id, sender, sender_name, from_me, timestamp, content, status, quoted, reactions, edited, thumbnail, mentions, forwarded, delivered_at, read_at
-             FROM messages WHERE json_valid(content) AND search_text LIKE ?1 ESCAPE '\\' {candidates}
+             FROM messages WHERE json_valid(content) AND search_text LIKE ?1 ESCAPE '\\' {candidates} {scope} {dates}
              ORDER BY timestamp DESC, rowid DESC LIMIT ?2"
         );
         let mut statement = self.connection.prepare_cached(&sql)?;
-        let rows = statement.query_map(params![pattern, limit as i64, phrase], |row| {
-            let chat: String = row.get(0)?;
-            let content: String = row.get(6)?;
-            let quoted: Option<String> = row.get(8)?;
-            let reactions: String = row.get(9)?;
-            let mentions: String = row.get(12)?;
-            Ok(Message {
-                id: row.get(1)?,
+        let rows = statement.query_map(
+            params![
+                pattern,
+                limit as i64,
+                phrase,
                 chat,
-                sender: row.get(2)?,
-                sender_name: row.get(3)?,
-                from_me: row.get(4)?,
-                timestamp: row.get(5)?,
-                content: serde_json::from_str(&content).unwrap_or(Content::Unsupported {
-                    what: "unreadable".into(),
-                }),
-                status: status_from_rank(row.get(7)?),
-                delivered_at: row.get(14)?,
-                read_at: row.get(15)?,
-                quoted: quoted.and_then(|quoted| serde_json::from_str(&quoted).ok()),
-                reactions: serde_json::from_str(&reactions).unwrap_or_default(),
-                edited: row.get(10)?,
-                mentions: serde_json::from_str(&mentions).unwrap_or_default(),
-                forwarded: row.get(13)?,
-                thumbnail: row.get(11)?,
-            })
-        })?;
+                day.map(|d| d.0),
+                day.map(|d| d.1)
+            ],
+            |row| {
+                let chat: String = row.get(0)?;
+                let content: String = row.get(6)?;
+                let quoted: Option<String> = row.get(8)?;
+                let reactions: String = row.get(9)?;
+                let mentions: String = row.get(12)?;
+                Ok(Message {
+                    id: row.get(1)?,
+                    chat,
+                    sender: row.get(2)?,
+                    sender_name: row.get(3)?,
+                    from_me: row.get(4)?,
+                    timestamp: row.get(5)?,
+                    content: serde_json::from_str(&content).unwrap_or(Content::Unsupported {
+                        what: "unreadable".into(),
+                    }),
+                    status: status_from_rank(row.get(7)?),
+                    delivered_at: row.get(14)?,
+                    read_at: row.get(15)?,
+                    quoted: quoted.and_then(|quoted| serde_json::from_str(&quoted).ok()),
+                    reactions: serde_json::from_str(&reactions).unwrap_or_default(),
+                    edited: row.get(10)?,
+                    mentions: serde_json::from_str(&mentions).unwrap_or_default(),
+                    forwarded: row.get(13)?,
+                    thumbnail: row.get(11)?,
+                })
+            },
+        )?;
         let messages: Vec<Message> = rows.collect::<Result<_>>()?;
         Ok(messages)
     }
@@ -1189,6 +1246,39 @@ mod tests {
             forwarded: false,
             thumbnail: None,
         }
+    }
+
+    #[test]
+    fn chat_search_filters_before_limiting_and_uses_half_open_days() {
+        let archive = Archive::in_memory().unwrap();
+        for chat in ["target", "other"] {
+            archive.ensure_chat(chat, chat).unwrap();
+        }
+        for (id, stamp) in [("before", 99), ("start", 100), ("end", 199), ("after", 200)] {
+            let mut row = message("target", id, stamp, false);
+            row.content = Content::text("Heading\nFind the engine at 100% snake_case");
+            archive.insert_message(&row, None).unwrap();
+        }
+        for index in 0..300 {
+            let mut row = message("other", &format!("other-{index}"), 300 + index, false);
+            row.content = Content::text("engine");
+            archive.insert_message(&row, None).unwrap();
+        }
+        let search = |query, day, limit| {
+            archive
+                .search_chat_messages("target", query, day, limit)
+                .unwrap()
+                .into_iter()
+                .map(|row| row.id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(search("ENGINE", Some((100, 200)), 10), ["end", "start"]);
+        assert_eq!(search("", Some((100, 200)), 1), ["end"]);
+        assert_eq!(search("e", Some((100, 200)), 10), ["end", "start"]);
+        assert_eq!(search("100%", None, 2), ["after", "end"]);
+        assert_eq!(search("snake_case", None, 1), ["after"]);
+        assert!(search("100&", None, 10).is_empty());
+        assert_eq!(search("engine", None, 1), ["after"]);
     }
 
     #[test]

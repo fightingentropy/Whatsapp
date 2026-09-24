@@ -93,7 +93,7 @@ fn header(app: &mut App, ui: &mut egui::Ui, chat: &Chat) {
         .show(ui, |ui| {
             if theme::macos_chrome(ui.ctx()) {
                 let mut drag = ui.max_rect();
-                if !app.sidebar_visible {
+                if !super::shows_sidebar(app, ui.ctx()) {
                     drag.min.x += theme::traffic_light_inset(ui.ctx());
                 }
                 super::titlebar_drag(ui, drag);
@@ -101,10 +101,10 @@ fn header(app: &mut App, ui: &mut egui::Ui, chat: &Chat) {
             ui.horizontal(|ui| {
                 // Give both rows a fixed height so their contents align.
                 ui.set_min_height(HEADER_ROW);
-                if !app.sidebar_visible && theme::macos_chrome(ui.ctx()) {
+                if !super::shows_sidebar(app, ui.ctx()) && theme::macos_chrome(ui.ctx()) {
                     ui.add_space((theme::traffic_light_inset(ui.ctx()) - 14.0).max(0.0));
                 }
-                if !app.sidebar_visible
+                if !super::shows_sidebar(app, ui.ctx())
                     && theme::icon_button(
                         ui,
                         Icon::PanelLeft,
@@ -119,7 +119,7 @@ fn header(app: &mut App, ui: &mut egui::Ui, chat: &Chat) {
                 }
                 let picture = app.avatar(&chat.id);
                 let (subtitle, color) = subtitle(app, chat);
-                let right_controls = 52.0;
+                let right_controls = 34.0 + 52.0;
                 // Treat the avatar, name, and subtitle as one info button.
                 let block = ui
                     .scope(|ui| {
@@ -190,6 +190,22 @@ fn header(app: &mut App, ui: &mut egui::Ui, chat: &Chat) {
                         .push(Action::ShowDialog(Dialog::ChatInfo(chat.id.clone())));
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if theme::icon_button(
+                        ui,
+                        Icon::Search,
+                        18.0,
+                        palette.secondary,
+                        palette.text,
+                        "Search this chat (⌘F)",
+                    )
+                    .clicked()
+                    {
+                        app.actions.push(if app.chat_search.chat.is_some() {
+                            Action::CloseChatSearch
+                        } else {
+                            Action::OpenChatSearch
+                        });
+                    }
                     let more = theme::icon_button(
                         ui,
                         Icon::Ellipsis,
@@ -951,7 +967,7 @@ fn composer(app: &mut App, ui: &mut egui::Ui, chat: &Chat) {
                                 {
                                     app.mention_start = None;
                                 }
-                                if app.focus_composer {
+                                if app.focus_composer && app.image_preview.is_none() {
                                     app.focus_composer = false;
                                     response.request_focus();
                                 }
@@ -3073,7 +3089,16 @@ fn picture(
                     .on_hover_cursor(egui::CursorIcon::PointingHand)
                     .clicked()
                 {
-                    actions.push(Action::OpenFile(path.clone()));
+                    actions.push(
+                        match crate::image_preview::open_target(path, sticker.is_none()) {
+                            crate::image_preview::OpenTarget::Preview => {
+                                Action::PreviewImage(path.clone())
+                            }
+                            crate::image_preview::OpenTarget::External => {
+                                Action::OpenFile(path.clone())
+                            }
+                        },
+                    );
                 }
                 size.x
             }
@@ -3677,7 +3702,7 @@ fn recording_strip(app: &mut App, ui: &mut egui::Ui) {
     );
 }
 
-fn file_uri(path: &Path) -> String {
+pub(crate) fn file_uri(path: &Path) -> String {
     format!("file://{}", path.display())
 }
 

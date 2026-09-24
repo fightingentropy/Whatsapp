@@ -571,6 +571,17 @@ fn event_json(event: Event) -> Option<Value> {
         Event::SearchHits { query, messages } => {
             json!({"type":"search","query":query,"messages":messages.iter().map(message_json).collect::<Vec<_>>()})
         }
+        Event::ChatSearchHits {
+            chat,
+            request,
+            result,
+            truncated,
+        } => match result {
+            Ok(messages) => {
+                json!({"type":"chat_search","chat":chat,"request":request,"messages":messages.iter().map(message_json).collect::<Vec<_>>(),"truncated":truncated})
+            }
+            Err(error) => json!({"type":"chat_search","chat":chat,"request":request,"error":error}),
+        },
         Event::Typing {
             chat,
             sender,

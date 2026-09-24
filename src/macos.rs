@@ -60,6 +60,7 @@ fn build_menu() -> tray_icon::menu::Result<Menu> {
         &item("select-all", "Select All", Some("Super+KeyA")),
         &Native::separator(),
         &item("search", "Find…", Some("Super+KeyF")),
+        &item("search-all", "Search All Chats…", Some("Super+Shift+KeyF")),
     ])?;
     let view = Submenu::new("View", true);
     view.append_items(&[
@@ -196,7 +197,8 @@ fn action(id: &str, hidden: bool) -> Option<Action> {
         "new" => Action::ShowDialog(Dialog::NewContact),
         "close" => Action::CloseWindow,
         "quit" => Action::Quit,
-        "search" => Action::FocusSearch,
+        "search" => Action::Find,
+        "search-all" => Action::FocusSearch,
         "sidebar" => Action::ToggleSidebar,
         "zoom-in" => Action::ZoomBy(0.1),
         "zoom-out" => Action::ZoomBy(-0.1),
@@ -244,7 +246,7 @@ pub fn drain(ctx: &egui::Context, hidden: bool) -> Vec<Action> {
             if hidden
                 && matches!(
                     action,
-                    Action::ShowDialog(_) | Action::Open(_) | Action::FocusSearch
+                    Action::ShowDialog(_) | Action::Open(_) | Action::Find | Action::FocusSearch
                 )
             {
                 actions.push(Action::ShowWindow);
@@ -327,6 +329,11 @@ mod tests {
         assert!(matches!(action("close", false), Some(Action::CloseWindow)));
         assert!(matches!(action("quit", true), Some(Action::Quit)));
         assert!(matches!(action("show", true), Some(Action::ShowWindow)));
+        assert!(matches!(action("search", false), Some(Action::Find)));
+        assert!(matches!(
+            action("search-all", false),
+            Some(Action::FocusSearch)
+        ));
         assert!(matches!(edit_event("copy"), Some(egui::Event::Copy)));
         assert!(
             matches!(edit_event("redo"), Some(egui::Event::Key { key: egui::Key::Z, modifiers, .. }) if modifiers.command && modifiers.shift)
@@ -337,6 +344,7 @@ mod tests {
             "Super+Equal",
             "Super+Digit0",
             "Super+Shift+KeyZ",
+            "Super+Shift+KeyF",
         ] {
             shortcut
                 .parse::<tray_icon::menu::accelerator::Accelerator>()

@@ -15,6 +15,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         super::banner(app, ui);
     }
     let palette = app.palette;
+    let mut filter = Filter::new(&app.settings_search);
     egui::ScrollArea::vertical()
         .id_salt("settings")
         .auto_shrink([false, false])
@@ -38,10 +39,21 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                         }
                         theme::text(ui, "Settings", theme::bold(24.0), palette.text);
                     });
-                    ui.add_space(18.0);
+                    ui.add_space(12.0);
+                    let search = ui.add(
+                        egui::TextEdit::singleline(&mut app.settings_search)
+                            .id(egui::Id::new("settings-search"))
+                            .hint_text("Search settings")
+                            .desired_width(f32::INFINITY),
+                    );
+                    if std::mem::take(&mut app.focus_settings_search) {
+                        search.request_focus();
+                    }
+                    filter.query = app.settings_search.trim().to_lowercase();
+                    ui.add_space(12.0);
 
-                    section(ui, app, "Appearance");
-                    widgets::setting_row(ui, &palette, "Theme", "", |ui| {
+                    filter.section("Appearance");
+                    filter.row(ui, &palette, "Theme", "", |ui| {
                         for choice in ThemeChoice::ALL.iter().rev() {
                             let active = app.settings.theme == *choice;
                             if theme::soft_button(ui, &palette, None, choice.label(), active).clicked()
@@ -52,7 +64,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                             }
                         }
                     });
-                    widgets::setting_row(
+                    filter.row(
                         ui,
                         &palette,
                         "Zoom",
@@ -73,27 +85,27 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                         },
                     );
 
-                    section(ui, app, "Chats");
-                    toggle(ui, app, "Enter sends", &super::keys::label("When off, Enter adds a line and Ctrl+Enter sends."), |settings| &mut settings.enter_sends);
+                    filter.section("Chats");
+                    toggle(ui, app, &mut filter, "Enter sends", &super::keys::label("When off, Enter adds a line and Ctrl+Enter sends."), |settings| &mut settings.enter_sends);
                     let receipts_note = if app.account_receipts_off {
                         "Read receipts are disabled for your WhatsApp account. Direct chats will not send them. When this switch is on, groups still do. Read state syncs between your devices either way."
                     } else {
                         "Let people see when you read messages or play voice messages. Your WhatsApp privacy setting still applies. Read state syncs between your devices either way."
                     };
-                    toggle(ui, app, "Send read receipts", receipts_note, |settings| &mut settings.send_read_receipts);
-                    toggle(ui, app, "Show when you are typing", "", |settings| &mut settings.send_typing);
-                    toggle(ui, app, "Download attachments automatically", "Download pictures, videos, voice messages, and documents up to 64 MB when they enter view. When off, click a file to download it.", |settings| &mut settings.auto_download);
-                    toggle(ui, app, "Show sender pictures in every chat", "WhatsApp shows them in groups only.", |settings| &mut settings.show_sender_pictures);
-                    toggle(ui, app, "Names from your address book", "Prefer saved contact names. When off, prefer public WhatsApp profile names. This applies throughout the app.", |settings| &mut settings.names_from_contacts);
-                    toggle(ui, app, "Save contacts to the phone's address book", "Also add contacts saved here to your phone's address book. When off, they remain WhatsApp contacts. Names sync to linked devices either way.", |settings| &mut settings.save_contacts_to_phone);
-                    toggle(ui, app, "Show shortcut hints", "Show keyboard tips when no chat is open.", |settings| &mut settings.show_shortcut_hints);
+                    toggle(ui, app, &mut filter, "Send read receipts", receipts_note, |settings| &mut settings.send_read_receipts);
+                    toggle(ui, app, &mut filter, "Show when you are typing", "", |settings| &mut settings.send_typing);
+                    toggle(ui, app, &mut filter, "Download attachments automatically", "Download pictures, videos, voice messages, and documents up to 64 MB when they enter view. When off, click a file to download it.", |settings| &mut settings.auto_download);
+                    toggle(ui, app, &mut filter, "Show sender pictures in every chat", "WhatsApp shows them in groups only.", |settings| &mut settings.show_sender_pictures);
+                    toggle(ui, app, &mut filter, "Names from your address book", "Prefer saved contact names. When off, prefer public WhatsApp profile names. This applies throughout the app.", |settings| &mut settings.names_from_contacts);
+                    toggle(ui, app, &mut filter, "Save contacts to the phone's address book", "Also add contacts saved here to your phone's address book. When off, they remain WhatsApp contacts. Names sync to linked devices either way.", |settings| &mut settings.save_contacts_to_phone);
+                    toggle(ui, app, &mut filter, "Show shortcut hints", "Show keyboard tips when no chat is open.", |settings| &mut settings.show_shortcut_hints);
 
-                    section(ui, app, "Window");
-                    toggle(ui, app, "Keep running when the window closes", "Keep Whatsapp linked in the menu bar. Quit from the menu or with ⌘Q.", |settings| &mut settings.keep_running_in_background);
-                    toggle(ui, app, "Notify about new messages", "Show desktop notifications when the window is hidden, in the background, or showing another chat. Muted chats do not notify you.", |settings| &mut settings.notifications);
-                    toggle(ui, app, "Check for updates", "Ask GitHub once a day whether a newer Whatsapp release exists. The request identifies only Whatsapp and its version.", |settings| &mut settings.check_for_updates);
+                    filter.section("Window");
+                    toggle(ui, app, &mut filter, "Keep running when the window closes", "Keep Whatsapp linked in the menu bar. Quit from the menu or with ⌘Q.", |settings| &mut settings.keep_running_in_background);
+                    toggle(ui, app, &mut filter, "Notify about new messages", "Show desktop notifications when the window is hidden, in the background, or showing another chat. Muted chats do not notify you.", |settings| &mut settings.notifications);
+                    toggle(ui, app, &mut filter, "Check for updates", "Ask GitHub once a day whether a newer Whatsapp release exists. The request identifies only Whatsapp and its version.", |settings| &mut settings.check_for_updates);
 
-                    widgets::setting_row(
+                    filter.row(
                         ui,
                         &palette,
                         "GIPHY API key",
@@ -115,7 +127,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                         },
                     );
 
-                    section(ui, app, "Account");
+                    filter.section("Account");
                     let name = app.me_name.clone().unwrap_or_default();
                     let me = app.me.clone().unwrap_or_default();
                     let phone = crate::model::phone_of(&me)
@@ -125,12 +137,17 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                         Some(about) => format!("{phone} · {about}"),
                         None => phone,
                     };
-                    ui.horizontal(|ui| {
-                        let picture = app.avatar_full(&me).or_else(|| app.avatar(&me));
-                        widgets::avatar(ui, &palette, &name, &me, 56.0, picture.as_deref());
-                    });
-                    ui.add_space(6.0);
-                    widgets::setting_row(
+                    if filter.matches(&name, &description) {
+                        if std::mem::take(&mut filter.heading_pending) {
+                            section(ui, &palette, filter.section);
+                        }
+                        ui.horizontal(|ui| {
+                            let picture = app.avatar_full(&me).or_else(|| app.avatar(&me));
+                            widgets::avatar(ui, &palette, &name, &me, 56.0, picture.as_deref());
+                        });
+                        ui.add_space(6.0);
+                    }
+                    filter.row(
                         ui,
                         &palette,
                         if name.is_empty() { "Linked device" } else { &name },
@@ -142,9 +159,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                         },
                     );
 
-                    section(ui, app, "Files");
+                    filter.section("Files");
                     let archive = app.dirs.archive_db();
-                    widgets::setting_row(
+                    filter.row(
                         ui,
                         &palette,
                         "Message archive",
@@ -156,7 +173,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                         },
                     );
                     let media = app.dirs.media_cache_dir();
-                    widgets::setting_row(
+                    filter.row(
                         ui,
                         &palette,
                         "Downloaded attachments",
@@ -169,14 +186,14 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                         },
                     );
                     let log = app.dirs.log_file();
-                    widgets::setting_row(ui, &palette, "Log of this run", &log.display().to_string(), |ui| {
+                    filter.row(ui, &palette, "Log of this run", &log.display().to_string(), |ui| {
                         if theme::soft_button(ui, &palette, Some(Icon::FileText), "Open", false).clicked() {
                             app.actions.push(Action::OpenFile(log.clone()));
                         }
                     });
 
-                    section(ui, app, "About");
-                    widgets::setting_row(
+                    filter.section("About");
+                    filter.row(
                         ui,
                         &palette,
                         &format!("Whatsapp {}", env!("CARGO_PKG_VERSION")),
@@ -190,12 +207,14 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                             }
                         },
                     );
+                    if !filter.found {
+                        widgets::rich_text(ui, "No settings match your search.", theme::regular(14.0), palette.secondary);
+                    }
                 });
         });
 }
 
-fn section(ui: &mut egui::Ui, app: &App, label: &str) {
-    let palette = app.palette;
+fn section(ui: &mut egui::Ui, palette: &theme::Palette, label: &str) {
     ui.add_space(10.0);
     Frame::new()
         .fill(palette.panel)
@@ -211,6 +230,7 @@ fn section(ui: &mut egui::Ui, app: &App, label: &str) {
 fn toggle(
     ui: &mut egui::Ui,
     app: &mut App,
+    filter: &mut Filter,
     label: &str,
     description: &str,
     field: impl Fn(&mut crate::settings::Settings) -> &mut bool,
@@ -218,11 +238,78 @@ fn toggle(
     let palette = app.palette;
     let mut value = *field(&mut app.settings);
     let mut changed = false;
-    widgets::setting_row(ui, &palette, label, description, |ui| {
+    filter.row(ui, &palette, label, description, |ui| {
         changed = widgets::switch(ui, &palette, &mut value).changed();
     });
     if changed {
         *field(&mut app.settings) = value;
         app.actions.push(Action::SettingsChanged);
+    }
+}
+
+struct Filter {
+    query: String,
+    section: &'static str,
+    heading_pending: bool,
+    found: bool,
+}
+
+impl Filter {
+    fn new(query: &str) -> Self {
+        Self {
+            query: query.trim().to_lowercase(),
+            section: "",
+            heading_pending: false,
+            found: false,
+        }
+    }
+
+    fn section(&mut self, section: &'static str) {
+        self.section = section;
+        self.heading_pending = true;
+    }
+
+    fn matches(&self, label: &str, description: &str) -> bool {
+        self.query.is_empty()
+            || [self.section, label, description]
+                .iter()
+                .any(|text| text.to_lowercase().contains(&self.query))
+    }
+
+    fn row(
+        &mut self,
+        ui: &mut egui::Ui,
+        palette: &theme::Palette,
+        label: &str,
+        description: &str,
+        controls: impl FnOnce(&mut egui::Ui),
+    ) {
+        if !self.matches(label, description) {
+            return;
+        }
+        if std::mem::take(&mut self.heading_pending) {
+            section(ui, palette, self.section);
+        }
+        self.found = true;
+        widgets::setting_row(ui, palette, label, description, controls);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Filter;
+
+    #[test]
+    fn settings_search_matches_titles_descriptions_and_whole_sections() {
+        let mut filter = Filter::new(" READ receipts ");
+        filter.section("Chats");
+        assert!(filter.matches("Send read receipts", "Privacy"));
+        assert!(!filter.matches("Download attachments automatically", "Download pictures"));
+        filter.query = "privacy".into();
+        assert!(filter.matches("Send read receipts", "Your privacy setting applies"));
+        filter.query = "chats".into();
+        assert!(filter.matches("Enter sends", ""));
+        filter.section("Window");
+        assert!(!filter.matches("Check for updates", ""));
     }
 }

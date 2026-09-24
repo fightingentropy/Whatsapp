@@ -16,8 +16,7 @@ use whatsapp_rust::media::{
 };
 use whatsapp_rust::pair_code::PairCodeOptions;
 use whatsapp_rust::prelude::{
-    Bot, BotHandle, Client, Jid, MessageBuilderExt, MessageExt, MessageField, SendOptions,
-    SqliteStore, wa,
+    Bot, BotHandle, Client, Jid, MessageBuilderExt, MessageExt, MessageField, SendOptions, wa,
 };
 use whatsapp_rust::send::RevokeType;
 use whatsapp_rust::types::events as wa_events;
@@ -30,6 +29,11 @@ use whatsapp_rust::wacore::store::DevicePropsOverride;
 use whatsapp_rust::wacore_binary::jid::JidExt;
 use whatsapp_rust::waproto::buffa::Message as _;
 use whatsapp_rust::{MediaRetryResult, MediaReuploadRequest};
+
+#[path = "worker/device_store.rs"]
+mod device_store;
+#[path = "worker/link_watch.rs"]
+mod link_watch;
 
 use super::PAGE;
 use super::{Command, Event, LinkStatus, Waker};
@@ -206,6 +210,7 @@ pub async fn run(
         sticker_fetches: HashSet::new(),
         sticker_downloads: HashSet::new(),
         read_syncs: HashMap::new(),
+        link_watch: Default::default(),
     };
     worker.load_state();
     worker.backfill();
@@ -234,6 +239,7 @@ pub async fn run(
                 worker.emit_chats();
             }
             _ = tick.tick() => {
+                worker.watch_link();
                 worker.expire_older_requests();
                 worker.retry_avatars();
                 worker.pump_group_info();
@@ -247,6 +253,7 @@ pub async fn run(
 struct Worker {
     /// None while in flight, otherwise the next retry time.
     read_syncs: HashMap<ChatId, Option<Instant>>,
+    link_watch: link_watch::LinkWatch,
     dirs: AppDirs,
     events: std::sync::mpsc::Sender<Event>,
     commands: mpsc::UnboundedSender<Command>,
@@ -381,6 +388,7 @@ impl Worker {
         if let Some(last) = chat.last.as_mut() {
             last.sender = self.canonical_str(&last.sender);
             last.summary = self.pn_tokens(&last.summary);
+            last.full = self.pn_tokens(&last.full);
         }
     }
 
@@ -396,6 +404,39 @@ impl Worker {
             self.status = status.clone();
             self.emit(Event::Link(status));
         }
+    }
+
+    /// Reconnects a link that the machine slept under, or that has received
+    /// nothing for longer than a working one can. See `link_watch`.
+    fn watch_link(&mut self) {
+        let client = self
+            .client
+            .clone()
+            .filter(|_| matches!(self.status, LinkStatus::Connected));
+        let frames = client.as_ref().map(|client| client.stats().frames_received);
+        let verdict = self
+            .link_watch
+            .check(Instant::now(), std::time::SystemTime::now(), frames);
+        let Some(client) = client else {
+            return;
+        };
+        match verdict {
+            link_watch::Verdict::Healthy => return,
+            link_watch::Verdict::Slept(asleep) => {
+                log::info!(
+                    "link: resumed after {} s asleep, reconnecting",
+                    asleep.as_secs()
+                );
+            }
+            link_watch::Verdict::Silent(quiet) => {
+                log::warn!(
+                    "link: nothing received for {} s, reconnecting",
+                    quiet.as_secs()
+                );
+            }
+        }
+        self.set_status(LinkStatus::Connecting);
+        tokio::spawn(async move { client.reconnect_immediately().await });
     }
 
     fn set_syncing(&mut self, syncing: bool) {
@@ -571,7 +612,7 @@ impl Worker {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let store = match SqliteStore::new(&path.to_string_lossy()).await {
+        let store = match device_store::open(&path).await {
             Ok(store) => store,
             Err(error) => {
                 self.set_status(LinkStatus::Failed(format!(
@@ -933,7 +974,7 @@ impl Worker {
             .collect();
         let lids = self.lid_to_pn.clone();
         tokio::spawn(async move {
-            match client.groups().get_metadata(&jid).await {
+            match client.groups().fetch_metadata(&jid).await {
                 Ok(metadata) => {
                     let canonical = |jid: &Jid| -> String {
                         if jid.is_lid()
@@ -964,7 +1005,10 @@ impl Worker {
                     }
                     let _ = commands.send(Command::GroupInfo {
                         chat,
-                        name: (!metadata.subject.is_empty()).then(|| metadata.subject.clone()),
+                        name: metadata
+                            .subject
+                            .clone()
+                            .filter(|name| !name.trim().is_empty()),
                         participants,
                         read_only: metadata.is_announcement && !admin,
                     });
@@ -1506,10 +1550,14 @@ impl Worker {
         let quoted = self.quoted_of(base);
         let mentions = self.mentions_of(&mentioned_of(base));
         let row = Message {
-            id: info.id.clone(),
+            id: info.id.to_string(),
             chat: chat.clone(),
             sender,
-            sender_name: if from_me { None } else { push_name.clone() },
+            sender_name: if from_me {
+                None
+            } else {
+                push_name.as_ref().map(ToString::to_string)
+            },
             from_me,
             timestamp: info.timestamp.timestamp(),
             content,
@@ -1547,10 +1595,10 @@ impl Worker {
         }
         let push_name = (!info.push_name.is_empty()).then(|| info.push_name.clone());
         let row = Message {
-            id: info.id.clone(),
+            id: info.id.to_string(),
             chat,
             sender: self.canonical(&info.source.sender),
-            sender_name: push_name.clone(),
+            sender_name: push_name.as_ref().map(ToString::to_string),
             from_me: false,
             timestamp: info.timestamp.timestamp(),
             content: Content::Unsupported {
@@ -2163,6 +2211,33 @@ impl Worker {
             Command::FetchOlder(chat) => self.fetch_older(chat),
             Command::LoadUntil { chat, id, before } => self.load_until(chat, id, before),
             Command::SearchMessages { query } => self.search_messages(query),
+            Command::SearchChat {
+                chat,
+                query,
+                day,
+                request,
+            } => {
+                let chat = self.canonical_str(&chat);
+                let mut truncated = false;
+                let result = self
+                    .archive
+                    .search_chat_messages(&chat, &query, day, 201)
+                    .map(|mut messages| {
+                        truncated = messages.len() > 200;
+                        messages.truncate(200);
+                        for message in &mut messages {
+                            self.polish(message);
+                        }
+                        messages
+                    })
+                    .map_err(|_| "Could not search this chat. Try again.".to_owned());
+                self.emit(Event::ChatSearchHits {
+                    chat,
+                    request,
+                    result,
+                    truncated,
+                });
+            }
             Command::EnsureChat { chat, name } => {
                 if let Err(error) = self.archive.ensure_chat(&chat, &name) {
                     log::warn!("could not create the chat: {error}");
@@ -2785,7 +2860,7 @@ impl Worker {
         };
         // whatsapp-rust owns the forwarding rules: unwrap transient wrappers,
         // strip quote chains and secrets, and retain reusable media metadata.
-        let message = *original.get_base_message().prepare_for_forward();
+        let message = original.get_base_message().prepare_for_forward();
         let id = client.generate_message_id();
         let mentions = self.mentions_of(&mentioned_of(&message));
         let thumbnail = thumbnail_of(&message).or_else(|| source.thumbnail.clone());
@@ -3945,7 +4020,7 @@ async fn send_outgoing(
             // exactly as encryption would. No separate burst of metadata queries.
             let group = client
                 .groups()
-                .query_info(&jid)
+                .routing_info(&jid)
                 .await
                 .map_err(|error| error.to_string())?;
             let lids = group
@@ -4460,6 +4535,21 @@ async fn prepare_voice(
     })
 }
 
+/// The mimetype an attached audio file is sent under as an audio message,
+/// or `None` when phones cannot play it inline (WAV, FLAC, AIFF, WMA and the
+/// like), so it goes as a document and arrives as the original file (#162).
+/// WhatsApp's audio messages are MP3, AAC, M4A, AMR and OGG.
+fn whatsapp_audio_mime(mime: &str) -> Option<&'static str> {
+    match mime {
+        "audio/mpeg" | "audio/mp3" => Some("audio/mpeg"),
+        "audio/mp4" | "audio/m4a" | "audio/x-m4a" => Some("audio/mp4"),
+        "audio/aac" => Some("audio/aac"),
+        "audio/amr" => Some("audio/amr"),
+        "audio/ogg" => Some("audio/ogg"),
+        _ => None,
+    }
+}
+
 /// Uploads a file and builds its message. Images are encoded as JPEG.
 async fn prepare_media(
     client: &Client,
@@ -4550,7 +4640,8 @@ async fn prepare_media(
             file_name: file_name.map(str::to_owned),
         });
     }
-    if kind == "audio" {
+    if let Some(audio_mime) = whatsapp_audio_mime(mime) {
+        let mime_owned = audio_mime.to_owned();
         let upload = client
             .upload(bytes.clone(), MediaType::Audio, UploadOptions::default())
             .await
@@ -5048,6 +5139,26 @@ fn parse_conversation(conversation: wa::Conversation) -> ParsedChat {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn only_phone_playable_audio_is_sent_as_an_audio_message() {
+        let sent_as = |name: &str| {
+            let mime = mime_guess2::from_path(name)
+                .first_or_octet_stream()
+                .to_string();
+            whatsapp_audio_mime(&mime)
+        };
+        assert_eq!(sent_as("song.mp3"), Some("audio/mpeg"));
+        assert_eq!(sent_as("memo.m4a"), Some("audio/mp4"));
+        assert_eq!(sent_as("clip.aac"), Some("audio/aac"));
+        assert_eq!(sent_as("note.ogg"), Some("audio/ogg"));
+        assert_eq!(sent_as("note.opus"), Some("audio/ogg"));
+        // These would arrive as an unplayable audio message converted on the
+        // phone, not as the file that was attached (#162).
+        for document in ["take.wav", "album.flac", "loop.aiff", "old.wma", "x.weba"] {
+            assert_eq!(sent_as(document), None, "{document}");
+        }
+    }
+
     use super::*;
 
     #[test]
@@ -5325,6 +5436,7 @@ mod receipt_tests {
             sticker_fetches: HashSet::new(),
             sticker_downloads: HashSet::new(),
             read_syncs: HashMap::new(),
+            link_watch: Default::default(),
         };
         (worker, events_rx, inbox, wa_events)
     }
@@ -5536,7 +5648,7 @@ mod receipt_tests {
     fn receipt(chat: &str, ids: &[&str], kind: ReceiptType) -> wa_events::Receipt {
         let chat: Jid = chat.parse().expect("jid");
         wa_events::Receipt::builder()
-            .message_ids(ids.iter().map(|id| (*id).to_owned()).collect())
+            .message_ids(ids.iter().map(|id| (*id).into()).collect())
             .source(MessageSource {
                 chat: chat.clone(),
                 sender: chat,
