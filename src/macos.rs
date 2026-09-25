@@ -226,7 +226,7 @@ pub fn drain(ctx: &egui::Context, hidden: bool) -> Vec<Action> {
             if !hidden {
                 ctx.input_mut(|input| input.events.push(event));
                 if id == "paste" {
-                    // Image paste follows the same key-release path as Cmd+V.
+                    // Attachments follow the same key-release path as Cmd+V.
                     ctx.input_mut(|input| {
                         input.events.push(egui::Event::Key {
                             key: egui::Key::V,
