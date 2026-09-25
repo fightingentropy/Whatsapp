@@ -5,7 +5,7 @@ struct ChatComposer: View {
     let chatID: String
     @Binding var draft: String
     @ObservedObject var audio: NativeAudio
-    @EnvironmentObject private var store: ChatStore
+    @Environment(ChatStore.self) private var store
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @FocusState private var focused: Bool
     @State private var sending = false

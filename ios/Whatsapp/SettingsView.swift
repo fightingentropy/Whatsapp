@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct SettingsView: View {
-    @EnvironmentObject private var store: ChatStore
+    @Environment(ChatStore.self) private var store
     @State private var unlinkPresented = false
 
     var body: some View {
@@ -60,8 +60,9 @@ private struct SettingsLabel: View {
 }
 
 private struct AppearanceSettings: View {
-    @EnvironmentObject private var store: ChatStore
+    @Environment(ChatStore.self) private var store
     var body: some View {
+        @Bindable var store = store
         List {
             Section {
                 VStack(alignment: .trailing, spacing: 3) {
@@ -93,8 +94,9 @@ private struct AppearanceSettings: View {
 }
 
 private struct PrivacySettings: View {
-    @EnvironmentObject private var store: ChatStore
+    @Environment(ChatStore.self) private var store
     var body: some View {
+        @Bindable var store = store
         List {
             Section {
                 Toggle("Send read receipts", isOn: $store.sendReadReceipts)
@@ -110,8 +112,9 @@ private struct PrivacySettings: View {
 }
 
 private struct MediaSettings: View {
-    @EnvironmentObject private var store: ChatStore
+    @Environment(ChatStore.self) private var store
     var body: some View {
+        @Bindable var store = store
         List {
             Section {
                 Toggle("Download attachments automatically", isOn: $store.preferences.autoDownload)
@@ -125,8 +128,9 @@ private struct MediaSettings: View {
 }
 
 private struct NotificationSettings: View {
-    @EnvironmentObject private var store: ChatStore
+    @Environment(ChatStore.self) private var store
     var body: some View {
+        @Bindable var store = store
         List {
             Section {
                 Toggle("Notify about new messages", isOn: $store.preferences.notifications)

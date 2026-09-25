@@ -112,9 +112,9 @@ final class FeatureParityTests: XCTestCase {
         XCTAssertEqual(store.searchHits.map(\.id), ["wanted"])
         store.messages = [message("latest")]
         store.navigate(to: "fixture@g.us", message: "wanted")
-        XCTAssertEqual(engine.commands.last?["type"] as? String, "until")
+        XCTAssertEqual(engine.commands.last?["type"] as? String, "around")
         XCTAssertTrue(store.loading)
-        var loaded = CoreEvent(type: "messages"); loaded.chat = "fixture@g.us"; loaded.messages = [message("wanted")]; loaded.requested = true
+        var loaded = CoreEvent(type: "around"); loaded.chat = "fixture@g.us"; loaded.messages = [message("wanted")]; loaded.complete = false; loaded.more = true
         store.apply([loaded])
         XCTAssertEqual(store.scrollTarget, "wanted")
         XCTAssertNil(store.pendingJump)

@@ -2,7 +2,7 @@ import CoreImage.CIFilterBuiltins
 import SwiftUI
 
 struct PairingView: View {
-    @EnvironmentObject private var store: ChatStore
+    @Environment(ChatStore.self) private var store
     @State private var phone = ""
     @State private var showQR = false
 

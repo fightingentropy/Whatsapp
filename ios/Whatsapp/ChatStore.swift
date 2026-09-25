@@ -1,68 +1,80 @@
 import SwiftUI
+import Observation
 
 @MainActor
-final class ChatStore: ObservableObject {
-    @Published var chats: [Chat] = []
-    @Published var messages: [Message] = []
-    @Published var selectedChat: String?
-    @Published var status = "starting"
-    @Published var hasSession: Bool
-    @Published var qr: String?
-    @Published var pairingCode: String?
-    @Published var pairingBusy = false
-    @Published var pairingInterrupted = false
-    @Published var loading = false
-    @Published var fetchingPhone = false
-    @Published var archiveComplete = false
-    @Published var phoneComplete = false
-    @Published var syncProgress: Int?
-    @Published var error: String?
-    @Published var avatars: [String: String] = [:]
-    @Published var contactNames: [String: String] = [:]
-    @Published var aliases: [String: String] = [:]
-    @Published var drafts: [String: String] = [:]
-    @Published var reply: Message?
-    @Published var accountName = "Your account"
-    @Published var accountID: String?
-    @Published var accountAbout: String?
-    @Published var navigation: [String] = []
-    @Published var selectedTab = "chats"
-    @Published var preferences: Preferences { didSet {
+@Observable
+final class ChatStore {
+    var chats: [Chat] = []
+    var messages: [Message] = []
+    var selectedChat: String?
+    var status = "starting"
+    var hasSession: Bool
+    var qr: String?
+    var pairingCode: String?
+    var pairingBusy = false
+    var pairingInterrupted = false
+    var loading = false
+    var fetchingPhone = false
+    var archiveComplete = false
+    var phoneComplete = false
+    var syncProgress: Int?
+    var error: String?
+    var avatars: [String: String] = [:]
+    var contactNames: [String: String] = [:]
+    var aliases: [String: String] = [:]
+    var drafts: [String: String] = [:]
+    var reply: Message?
+    var accountName = "Your account"
+    var accountID: String?
+    var accountAbout: String?
+    var navigation: [String] = []
+    var selectedTab = "chats"
+    var preferences: Preferences { didSet {
         if !isDemo, let data = try? JSONEncoder().encode(preferences) { defaults.set(data, forKey: "preferences") }
     } }
-    @Published var searchQuery = ""
-    @Published var searchHits: [Message] = []
-    @Published var searching = false
-    @Published var editing: Message?
-    @Published var attachments: [String: [PendingAttachment]] = [:]
-    @Published var typing: [String: [String: Date]] = [:]
-    @Published var presence: [String: (online: Bool, lastSeen: TimeInterval?)] = [:]
-    @Published var fullAvatars: [String: String] = [:]
-    @Published var contacts: [CoreEvent.Contact] = []
-    @Published var scrollTarget: String?
-    @Published var infoChatID: String?
-    @Published var gifQuery = ""
-    @Published var gifs: [GifItem] = []
-    @Published var gifError: String?
-    @Published var gifsLoading = false
-    @Published var savedStickers: [String] = []
-    @Published var recentStickers: [String] = []
-    @Published var stickerPacks: [StickerPack] = []
-    @Published var newContactBusy = false
-    @Published var voiceSending = false
+    var searchQuery = ""
+    var searchHits: [Message] = []
+    var searching = false
+    var editing: Message?
+    var attachments: [String: [PendingAttachment]] = [:]
+    var typing: [String: [String: Date]] = [:]
+    var presence: [String: (online: Bool, lastSeen: TimeInterval?)] = [:]
+    var fullAvatars: [String: String] = [:]
+    var contacts: [CoreEvent.Contact] = []
+    var scrollTarget: String?
+    var newerComplete = true
+    var loadingNewer = false
+    var restoredAnchor: String?
+    @ObservationIgnored var visibleMessageIDs: [String] = []
+    @ObservationIgnored var visibleMessageFrames: [String: CGRect] = [:]
+    @ObservationIgnored var messageViewport = CGRect.zero
+    @ObservationIgnored var selectionActive = false
+    @ObservationIgnored var loadLatestAfterPage = false
+    @ObservationIgnored var recentConversations = ConversationCache()
+    @ObservationIgnored var phoneHistory: [String: (complete: Bool, retryAfter: Date)] = [:]
+    var infoChatID: String?
+    var gifQuery = ""
+    var gifs: [GifItem] = []
+    var gifError: String?
+    var gifsLoading = false
+    var savedStickers: [String] = []
+    var recentStickers: [String] = []
+    var stickerPacks: [StickerPack] = []
+    var newContactBusy = false
+    var voiceSending = false
     let audio = NativeAudio()
     let notifications = LocalNotifications()
-    var pendingJump: String?
-    var pendingJumpChat: String?
-    var jumpRequested = false
-    var typingExpiry: DispatchWorkItem?
-    var audioRequest = UUID()
-    var playedMessages: Set<String> = []
-    var draftBeforeEditing: String?
-    var demoConversations: [String: [Message]] = [:]
-    var composingWork: DispatchWorkItem?
-    var lastComposing = Date.distantPast
-    @Published var sendReadReceipts: Bool {
+    @ObservationIgnored var pendingJump: String?
+    @ObservationIgnored var pendingJumpChat: String?
+    @ObservationIgnored var jumpRequested = false
+    @ObservationIgnored var typingExpiry: DispatchWorkItem?
+    @ObservationIgnored var audioRequest = UUID()
+    @ObservationIgnored var playedMessages: Set<String> = []
+    @ObservationIgnored var draftBeforeEditing: String?
+    @ObservationIgnored var demoConversations: [String: [Message]] = [:]
+    @ObservationIgnored var composingWork: DispatchWorkItem?
+    @ObservationIgnored var lastComposing = Date.distantPast
+    var sendReadReceipts: Bool {
         didSet { if !isDemo { defaults.set(sendReadReceipts, forKey: "readReceipts") } }
     }
 
@@ -71,17 +83,17 @@ final class ChatStore: ObservableObject {
     let engine: MessagingEngine
     private let backgroundActivity: BackgroundActivityManaging
     private let diagnostics: ConnectionDiagnostics
-    private var root: URL?
-    private var observer: NSObjectProtocol?
-    private var engineStarted = false
-    var foreground = false
-    private var receiptsDisabled = false
-    private var requestedAvatars: Set<String> = []
-    private var phoneRetryAfter = Date.distantPast
-    private var suspendWork: DispatchWorkItem?
-    private var backgroundTask = UIBackgroundTaskIdentifier.invalid
-    private var backgroundGeneration = 0
-    private var stoppingBackgroundTasks: [Int: BackgroundActivityCompletion] = [:]
+    @ObservationIgnored private var root: URL?
+    @ObservationIgnored private var observer: NSObjectProtocol?
+    @ObservationIgnored private var engineStarted = false
+    @ObservationIgnored var foreground = false
+    @ObservationIgnored private var receiptsDisabled = false
+    @ObservationIgnored private var requestedAvatars: Set<String> = []
+    @ObservationIgnored var phoneRetryAfter = Date.distantPast
+    @ObservationIgnored private var suspendWork: DispatchWorkItem?
+    @ObservationIgnored private var backgroundTask = UIBackgroundTaskIdentifier.invalid
+    @ObservationIgnored private var backgroundGeneration = 0
+    @ObservationIgnored private var stoppingBackgroundTasks: [Int: BackgroundActivityCompletion] = [:]
 
     var connected: Bool { status == "connected" }
     var canPost: Bool { (connected || isDemo) && selectedChat != nil && currentChat?.readOnly != true }
@@ -142,10 +154,15 @@ final class ChatStore: ObservableObject {
             guard let root else { return }
             if status == "suspended" || status == "suspending" { status = "connecting" }
             engineStarted = true
+            recentConversations.removeAll()
+            requestedAvatars.removeAll()
             engine.start(root: root)
             if let selectedChat {
                 loading = true
-                engine.send(["type": "load", "chat": selectedChat])
+                if !newerComplete, let anchor = visibleMessageIDs.first ?? messages.first?.id {
+                    restoredAnchor = anchor
+                    engine.send(["type": "around", "chat": selectedChat, "id": anchor])
+                } else { engine.send(["type": "load", "chat": selectedChat]) }
             }
         } catch { self.error = "Could not create private storage on this iPhone." }
     }
@@ -252,25 +269,38 @@ final class ChatStore: ObservableObject {
         guard selectedChat != chat else { return }
         stopComposing()
         audioRequest = UUID()
+        if let current = selectedChat { rememberConversation(current) }
         selectedChat = chat
         if pendingJumpChat != chat { pendingJump = nil; pendingJumpChat = nil }
         messages = []
         reply = nil
         editing = nil
         archiveComplete = false
-        phoneComplete = false
-        phoneRetryAfter = .distantPast
+        phoneComplete = phoneHistory[chat]?.complete ?? false
+        phoneRetryAfter = phoneHistory[chat]?.retryAfter ?? .distantPast
         fetchingPhone = false
+        loadingNewer = false; newerComplete = true; restoredAnchor = nil
+        visibleMessageIDs = []; visibleMessageFrames = [:]; messageViewport = .zero; selectionActive = false; loadLatestAfterPage = false
         if isDemo { messages = demoConversations[chat] ?? Self.demoMessages(chat: chat); archiveComplete = true; phoneComplete = true; loading = false; resolveJump(); return }
-        loading = true
-        engine.send(["type": "load", "chat": chat])
+        if let page = recentConversations.take(chat) {
+            messages = page.messages; archiveComplete = page.archiveComplete
+            phoneComplete = page.phoneComplete; phoneRetryAfter = page.phoneRetryAfter
+            newerComplete = page.newerComplete; restoredAnchor = page.anchor
+            loading = false
+            resolveJump()
+        } else {
+            loading = true
+            engine.send(["type": "load", "chat": chat])
+        }
         markRead()
     }
 
     func close(_ chat: String) {
         guard selectedChat == canonical(chat) else { return }
         if isDemo { demoConversations[canonical(chat)] = messages }
+        else { rememberConversation(canonical(chat)) }
         selectedChat = nil
+        loadLatestAfterPage = false
         audioRequest = UUID()
         stopComposing(chat: canonical(chat))
         audio.pauseForBackground()
@@ -284,7 +314,7 @@ final class ChatStore: ObservableObject {
     }
 
     func loadOlder() {
-        guard let selectedChat, !loading, !fetchingPhone, !isDemo else { return }
+        guard let selectedChat, !loading, !loadingNewer, !fetchingPhone, !isDemo else { return }
         if !archiveComplete, let first = messages.first {
             loading = true
             engine.send(["type": "load", "chat": selectedChat, "before": [Int64(first.timestamp), first.id]])
@@ -350,7 +380,7 @@ final class ChatStore: ObservableObject {
     }
 
     func avatar(_ id: String) {
-        guard !isDemo, connected, requestedAvatars.insert(id).inserted else { return }
+        guard !isDemo, requestedAvatars.insert(id).inserted else { return }
         engine.send(["type": "avatar", "id": id])
     }
 
@@ -375,6 +405,12 @@ final class ChatStore: ObservableObject {
 
     func apply(_ events: [CoreEvent]) {
         for event in CoreEvent.coalescing(events) {
+            // The worker archives all changes. Drop an inactive snapshot when its
+            // contents change so a later open cannot revive deleted/edited data.
+            if ["messages", "message", "deleted", "media", "older", "newer", "around"].contains(event.type),
+               let id = (event.chat ?? event.message?.chat).map(canonical), id != selectedChat {
+                recentConversations.remove(id)
+            }
             switch event.type {
             case "link":
                 // A code queued before shutdown no longer belongs to a live
@@ -397,7 +433,8 @@ final class ChatStore: ObservableObject {
                     requestedAvatars = []
                     markRead()
                 } else if status == "unlinked" || status == "logged_out" {
-                    MessageText.clearCache()
+                    clearMemoryCaches()
+                    phoneHistory.removeAll()
                     hasSession = false
                     defaults.set(false, forKey: "hasLinkedSession")
                     chats = []; messages = []; selectedChat = nil; drafts = [:]; reply = nil
@@ -419,7 +456,16 @@ final class ChatStore: ObservableObject {
                 chats = OrderedUpdates.merge(chats, event.chats ?? []) { $0.pinned != $1.pinned ? $0.pinned : ($0.timestamp == $1.timestamp ? $0.id < $1.id : $0.timestamp > $1.timestamp) }
             case "messages":
                 guard event.chat.map(canonical) == selectedChat else { continue }
-                messages = ConversationMessages.merge(messages, (event.messages ?? []).map { message in
+                let incoming = event.messages ?? []
+                if !newerComplete, event.requested != true,
+                   incoming.contains(where: { $0.fromMe && $0.status == "pending" }) {
+                    loadLatest(); continue
+                }
+                // Live messages beyond an older window are already in SQLite;
+                // do not join two non-contiguous ranges and skip the gap.
+                let accepted = !newerComplete && event.requested != true
+                    ? incoming.filter { update in messages.contains { $0.id == update.id } } : incoming
+                messages = ConversationMessages.merge(messages, accepted.map { message in
                     var message = message; message.chat = canonical(message.chat); return message
                 })
                 if event.requested == true {
@@ -428,7 +474,18 @@ final class ChatStore: ObservableObject {
                     if messages.isEmpty && archiveComplete { loadOlder() }
                     resolveJump()
                 }
+                trimConversation(towardOlder: event.older == true)
                 markRead()
+            case "around":
+                guard event.chat.map(canonical) == selectedChat else { continue }
+                messages = event.messages ?? []; loading = false; loadingNewer = false
+                archiveComplete = event.complete ?? false; newerComplete = event.more != true
+                resolveJump()
+            case "newer":
+                guard event.chat.map(canonical) == selectedChat, loadingNewer else { continue }
+                messages = ConversationMessages.merge(messages, event.messages ?? [])
+                newerComplete = event.complete ?? false; loadingNewer = false
+                trimConversation(towardOlder: false)
             case "message":
                 if var message = event.message, canonical(message.chat) == selectedChat,
                    let index = messages.firstIndex(where: { $0.id == message.id }) {
@@ -439,9 +496,15 @@ final class ChatStore: ObservableObject {
                     }
                 }
             case "load_failed":
-                if event.chat.map(canonical) == selectedChat { loading = false; error = event.detail ?? "Could not load this chat." }
+                if event.chat.map(canonical) == selectedChat {
+                    loading = false; loadingNewer = false
+                    pendingJump = nil; pendingJumpChat = nil; jumpRequested = false
+                    error = event.detail ?? "Could not load this chat."
+                }
             case "merged":
                 guard let from = event.from, let into = event.into else { continue }
+                recentConversations.remove(from); recentConversations.remove(into)
+                phoneHistory.removeValue(forKey: from); phoneHistory.removeValue(forKey: into)
                 aliases[from] = into
                 chats.removeAll { $0.id == from }
                 if let draft = drafts.removeValue(forKey: from), drafts[into, default: ""].isEmpty { drafts[into] = draft }
@@ -503,6 +566,9 @@ final class ChatStore: ObservableObject {
                 if !isDemo { diagnostics.record(event.active == true ? .syncStarted : .syncFinished) }
             case "progress": syncProgress = event.progress
             case "older":
+                if let chat = event.chat.map(canonical) {
+                    phoneHistory[chat] = (event.more == false, phoneHistory[chat]?.retryAfter ?? .distantPast)
+                }
                 if event.chat.map(canonical) == selectedChat {
                     fetchingPhone = false
                     phoneComplete = event.more == false
@@ -517,6 +583,7 @@ final class ChatStore: ObservableObject {
                 if !isDemo && event.type == "error" { diagnostics.record(.updateError) }
             default: break
             }
+            if loadLatestAfterPage && !loading && !loadingNewer { loadLatest() }
         }
     }
 }

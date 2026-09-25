@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct ChatsView: View {
-    @EnvironmentObject private var store: ChatStore
+    @Environment(ChatStore.self) private var store
     @State private var query = ""
     @State private var archived = false
     @State private var archivedRevealed = false
@@ -14,6 +14,7 @@ struct ChatsView: View {
     }
 
     var body: some View {
+        @Bindable var store = store
         NavigationStack(path: $store.navigation) {
             List {
                 if store.isDemo || !store.connected || store.syncProgress != nil {
@@ -31,48 +32,7 @@ struct ChatsView: View {
                     }.tint(.primary)
                 }
                 ForEach(visible) { chat in
-                    Button { store.navigation.append(chat.id) } label: {
-                        HStack(spacing: 12) {
-                            AvatarView(name: store.chatTitle(chat), url: store.localURL(store.avatars[chat.id]), group: chat.kind == "group", size: 52)
-                            VStack(alignment: .leading, spacing: 5) {
-                                HStack(alignment: .firstTextBaseline) {
-                                    Text(store.chatTitle(chat)).font(.system(.body, weight: .semibold)).foregroundStyle(.primary).lineLimit(1)
-                                    Spacer(minLength: 8)
-                                    Text(ChatDate.preview(chat.timestamp))
-                                        .font(.caption2).foregroundStyle(chat.unread > 0 ? Color.accentColor : .secondary).fixedSize()
-                                }
-                                HStack(alignment: .center, spacing: 5) {
-                                    Text(store.typing[chat.id]?.isEmpty == false ? store.presenceLabel(chat) ?? chat.preview : chat.preview.isEmpty ? "No messages yet" : chat.preview)
-                                        .font(.subheadline).foregroundStyle(store.typing[chat.id]?.isEmpty == false ? Color.accentColor : .secondary).lineLimit(2)
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                    if chat.pinned { Image(systemName: "pin.fill").font(.system(size: 10)).rotationEffect(.degrees(35)).foregroundStyle(.tertiary).accessibilityLabel("Pinned") }
-                                    if chat.muted { Image(systemName: "bell.slash.fill").font(.caption2).foregroundStyle(.tertiary) }
-                                    if chat.unread > 0 {
-                                        Text(chat.unread > 99 ? "99+" : "\(chat.unread)").font(.system(size: 11, weight: .semibold)).foregroundStyle(Color(.systemBackground))
-                                            .padding(.horizontal, 5).frame(minWidth: 18, minHeight: 18).background(Color.accentColor, in: Capsule())
-                                            .accessibilityLabel("\(chat.unread) unread messages")
-                                    }
-                                }
-                            }
-                        }.padding(.vertical, 7).contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .alignmentGuide(.listRowSeparatorLeading) { _ in 64 }
-                    .task(id: store.connected) { store.avatar(chat.id) }
-                    .accessibilityIdentifier("chat-\(chat.id)")
-                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                        Button(chat.archived ? "Unarchive" : "Archive") { store.setArchived(chat) }.tint(.indigo)
-                        Button(chat.pinned ? "Unpin" : "Pin") { store.setPinned(chat) }.tint(.orange)
-                    }
-                    .swipeActions(edge: .leading, allowsFullSwipe: false) {
-                        Button("Read") { store.markChatRead(chat) }.tint(.green)
-                    }
-                    .contextMenu {
-                        Button(chat.pinned ? "Unpin chat" : "Pin chat") { store.setPinned(chat) }
-                        Button(chat.archived ? "Unarchive chat" : "Archive chat") { store.setArchived(chat) }
-                        ChatMuteMenu(chat: chat)
-                        Button("Mark as read") { store.markChatRead(chat) }
-                    }
+                    ChatListRow(chat: chat)
                 }
                 if !query.isEmpty {
                     Section("Messages in downloaded history") {
@@ -132,5 +92,55 @@ struct AvatarView: View {
                     .font(.system(size: size * 0.34, weight: .medium, design: .rounded)).foregroundStyle(color)
             }
         }.frame(width: size, height: size).clipShape(Circle()).accessibilityHidden(true)
+    }
+}
+
+/// Row-specific observation keeps avatar/typing updates out of the list container.
+private struct ChatListRow: View {
+    @Environment(ChatStore.self) private var store
+    let chat: Chat
+    var body: some View {
+        Button { store.navigation.append(chat.id) } label: {
+            HStack(spacing: 12) {
+                AvatarView(name: store.chatTitle(chat), url: store.localURL(store.avatars[chat.id]), group: chat.kind == "group", size: 52)
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(store.chatTitle(chat)).font(.system(.body, weight: .semibold)).foregroundStyle(.primary).lineLimit(1)
+                        Spacer(minLength: 8)
+                        Text(ChatDate.preview(chat.timestamp))
+                            .font(.caption2).foregroundStyle(chat.unread > 0 ? Color.accentColor : .secondary).fixedSize()
+                    }
+                    HStack(alignment: .center, spacing: 5) {
+                        Text(store.typing[chat.id]?.isEmpty == false ? store.presenceLabel(chat) ?? chat.preview : chat.preview.isEmpty ? "No messages yet" : chat.preview)
+                            .font(.subheadline).foregroundStyle(store.typing[chat.id]?.isEmpty == false ? Color.accentColor : .secondary).lineLimit(2)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        if chat.pinned { Image(systemName: "pin.fill").font(.system(size: 10)).rotationEffect(.degrees(35)).foregroundStyle(.tertiary).accessibilityLabel("Pinned") }
+                        if chat.muted { Image(systemName: "bell.slash.fill").font(.caption2).foregroundStyle(.tertiary) }
+                        if chat.unread > 0 {
+                            Text(chat.unread > 99 ? "99+" : "\(chat.unread)").font(.system(size: 11, weight: .semibold)).foregroundStyle(Color(.systemBackground))
+                                .padding(.horizontal, 5).frame(minWidth: 18, minHeight: 18).background(Color.accentColor, in: Capsule())
+                                .accessibilityLabel("\(chat.unread) unread messages")
+                        }
+                    }
+                }
+            }.padding(.vertical, 7).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .alignmentGuide(.listRowSeparatorLeading) { _ in 64 }
+        .task(id: store.connected) { store.avatar(chat.id) }
+        .accessibilityIdentifier("chat-\(chat.id)")
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            Button(chat.archived ? "Unarchive" : "Archive") { store.setArchived(chat) }.tint(.indigo)
+            Button(chat.pinned ? "Unpin" : "Pin") { store.setPinned(chat) }.tint(.orange)
+        }
+        .swipeActions(edge: .leading, allowsFullSwipe: false) {
+            Button("Read") { store.markChatRead(chat) }.tint(.green)
+        }
+        .contextMenu {
+            Button(chat.pinned ? "Unpin chat" : "Pin chat") { store.setPinned(chat) }
+            Button(chat.archived ? "Unarchive chat" : "Archive chat") { store.setArchived(chat) }
+            ChatMuteMenu(chat: chat)
+            Button("Mark as read") { store.markChatRead(chat) }
+        }
     }
 }

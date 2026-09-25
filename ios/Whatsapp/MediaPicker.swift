@@ -4,7 +4,7 @@ import UniformTypeIdentifiers
 struct MediaPicker: View {
     enum Tab: String, Identifiable { case emoji, gifs, stickers; var id: String { rawValue } }
     var insertEmoji: (String) -> Void
-    @EnvironmentObject private var store: ChatStore
+    @Environment(ChatStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     @State private var tab: Tab
     @State private var query = ""

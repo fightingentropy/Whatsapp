@@ -3,7 +3,7 @@ import SwiftUI
 
 struct ChatDetails: View {
     let id: String
-    @EnvironmentObject private var store: ChatStore
+    @Environment(ChatStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     @State private var editingName = false
     @State private var name = ""
@@ -63,7 +63,7 @@ struct ChatDetails: View {
 
 struct ChatMuteMenu: View {
     let chat: Chat
-    @EnvironmentObject private var store: ChatStore
+    @Environment(ChatStore.self) private var store
     var body: some View {
         Menu {
             if chat.muted { Button("Unmute") { store.setMuted(chat, seconds: nil) } }
@@ -75,7 +75,7 @@ struct ChatMuteMenu: View {
 }
 
 struct NewChatView: View {
-    @EnvironmentObject private var store: ChatStore
+    @Environment(ChatStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     @State private var phone = ""
     @State private var name = ""
@@ -105,7 +105,7 @@ struct NewChatView: View {
 
 struct MessageDetails: View {
     let message: Message
-    @EnvironmentObject private var store: ChatStore
+    @Environment(ChatStore.self) private var store
     var body: some View {
         List {
             Section {
@@ -127,7 +127,7 @@ struct MessageDetails: View {
 
 struct ForwardPicker: View {
     let message: Message
-    @EnvironmentObject private var store: ChatStore
+    @Environment(ChatStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
     @State private var target: Chat?
@@ -155,7 +155,7 @@ struct ForwardPicker: View {
 
 struct ContactCard: View {
     let vcard: String
-    @EnvironmentObject private var store: ChatStore
+    @Environment(ChatStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     private var contact: CNContact? { try? CNContactVCardSerialization.contacts(with: Data(vcard.utf8)).first }
     var body: some View {

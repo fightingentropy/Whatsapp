@@ -66,6 +66,7 @@ CREATE TABLE IF NOT EXISTS messages (
     PRIMARY KEY (chat, id)
 );
 CREATE INDEX IF NOT EXISTS messages_by_time ON messages (chat, timestamp);
+CREATE INDEX IF NOT EXISTS messages_by_window ON messages (chat, timestamp, id);
 CREATE TABLE IF NOT EXISTS contacts (
     id TEXT PRIMARY KEY,
     full_name TEXT,
@@ -607,14 +608,53 @@ impl Archive {
         before: Option<(i64, &str)>,
         limit: usize,
     ) -> Result<Vec<Message>> {
-        let mut statement = self.connection.prepare(
+        self.message_page(chat, before, limit, false, false)
+    }
+
+    /// iPhone windows use message IDs for deterministic ties in both UI and SQLite.
+    pub fn message_window(
+        &self,
+        chat: &str,
+        before: Option<(i64, &str)>,
+        limit: usize,
+    ) -> Result<Vec<Message>> {
+        self.message_page(chat, before, limit, false, true)
+    }
+
+    /// Returns the next local page after a timestamp/id boundary, oldest first.
+    pub fn messages_after(
+        &self,
+        chat: &str,
+        after: (i64, &str),
+        limit: usize,
+    ) -> Result<Vec<Message>> {
+        self.message_page(chat, Some(after), limit, true, true)
+    }
+
+    fn message_page(
+        &self,
+        chat: &str,
+        before: Option<(i64, &str)>,
+        limit: usize,
+        newer: bool,
+        stable_ids: bool,
+    ) -> Result<Vec<Message>> {
+        let tie = if stable_ids { "id" } else { "rowid" };
+        let boundary = if stable_ids {
+            "?3"
+        } else {
+            "(SELECT rowid FROM messages WHERE chat = ?1 AND id = ?3)"
+        };
+        let comparison = if newer { ">" } else { "<" };
+        let order = if newer { "ASC" } else { "DESC" };
+        let mut statement = self.connection.prepare(&format!(
             "SELECT id, sender, sender_name, from_me, timestamp, content, status, quoted, reactions, edited, thumbnail, mentions, forwarded, delivered_at, read_at
              FROM messages
-             WHERE chat = ?1 AND (timestamp < ?2 OR (timestamp = ?2 AND rowid <
-                 (SELECT rowid FROM messages WHERE chat = ?1 AND id = ?3)))
-             ORDER BY timestamp DESC, rowid DESC
-             LIMIT ?4",
-        )?;
+             WHERE chat = ?1 AND (timestamp {comparison} ?2 OR (timestamp = ?2 AND {tie} {comparison}
+                 {boundary}))
+             ORDER BY timestamp {order}, {tie} {order}
+             LIMIT ?4"
+        ))?;
         let (before_time, before_id) = before.unwrap_or((i64::MAX, ""));
         let rows =
             statement.query_map(params![chat, before_time, before_id, limit as i64], |row| {
@@ -644,7 +684,9 @@ impl Archive {
                 })
             })?;
         let mut messages: Vec<Message> = rows.collect::<Result<_>>()?;
-        messages.reverse();
+        if !newer {
+            messages.reverse();
+        }
         Ok(messages)
     }
 
@@ -1715,6 +1757,34 @@ mod tests {
             ]
         );
         assert_eq!(messages[0].read_at, Some(400));
+    }
+
+    #[test]
+    fn iphone_windows_page_both_ways_with_nonmonotonic_ids_and_deleted_boundary() {
+        let archive = Archive::in_memory().unwrap();
+        let chat = "fixture@lid";
+        archive.ensure_chat(chat, "Fixture").unwrap();
+        for id in ["z", "a", "k", "b", "x"] {
+            archive
+                .insert_message(&message(chat, id, 100, false), None)
+                .unwrap();
+        }
+        let page = archive.message_window(chat, None, 2).unwrap();
+        assert_eq!(
+            page.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            ["x", "z"]
+        );
+        let older = archive.message_window(chat, Some((100, "x")), 2).unwrap();
+        assert_eq!(
+            older.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            ["b", "k"]
+        );
+        archive.delete_message(chat, "k").unwrap();
+        let newer = archive.messages_after(chat, (100, "k"), 2).unwrap();
+        assert_eq!(
+            newer.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            ["x", "z"]
+        );
     }
 
     #[test]
