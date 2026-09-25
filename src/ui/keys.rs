@@ -170,10 +170,7 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
         "Escape",
         "Dismiss suggestions, cancel the current action, or return from search",
     ),
-    (
-        "Ctrl+V",
-        "Paste text or attach a picture from the clipboard",
-    ),
+    ("Ctrl+V", "Paste text or attach copied files or a picture"),
     ("Ctrl+B", "Show or hide the chat list"),
     ("Ctrl+End", "Jump to the newest message"),
     ("Ctrl+,", "Settings"),

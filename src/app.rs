@@ -2649,13 +2649,21 @@ impl App {
         self.mark_settings_dirty();
     }
 
-    /// Handles dropped files and pasted images for the open chat.
+    /// Handles dropped files and pasted attachments for the open chat.
     fn take_drops_and_pastes(&mut self, ctx: &egui::Context) {
+        self.take_drops_and_pastes_with(ctx, clipboard_attachment);
+    }
+
+    fn take_drops_and_pastes_with(
+        &mut self,
+        ctx: &egui::Context,
+        read_clipboard: impl FnOnce(bool) -> Option<Action>,
+    ) {
         if self.image_preview.is_some() {
             self.dropping = false;
             return;
         }
-        let (dropped, hovering, paste) = ctx.input(|input| {
+        let (dropped, hovering, paste, text_paste) = ctx.input(|input| {
             let dropped: Vec<PathBuf> = input
                 .raw
                 .dropped_files
@@ -2663,24 +2671,37 @@ impl App {
                 .map(|file| file.path().to_path_buf())
                 .collect();
             let hovering = !input.raw.hovered_files.is_empty();
-            (dropped, hovering, wants_paste(input))
+            let text_paste = input
+                .events
+                .iter()
+                .any(|event| matches!(event, egui::Event::Paste(_)));
+            (dropped, hovering, wants_paste(input), text_paste)
         });
         self.dropping = hovering && self.open_chat.is_some();
         if !dropped.is_empty() {
             self.actions.push(Action::SendFiles(dropped));
         }
-        // Handle image paste only when the composer or no field has focus.
+        // Handle attachments only when the composer or no field has focus.
         let composing = ctx.memory(|memory| {
             memory.has_focus(egui::Id::new("composer-text")) || memory.focused().is_none()
         });
-        if paste && composing && self.open_chat.is_some() {
-            // egui handles text paste; the app handles clipboard images.
-            if let Some(image) = clipboard_image() {
-                self.actions.push(Action::PasteImage {
-                    width: image.0,
-                    height: image.1,
-                    rgba: image.2,
+        if (paste || text_paste)
+            && composing
+            && self.open_chat.is_some()
+            && let Some(attachment) = read_clipboard(paste)
+        {
+            if matches!(attachment, Action::SendFiles(_)) {
+                // Finder supplies a filename as text as well as the file URL.
+                // Suppress it on key-down, before TextEdit can make it a caption;
+                // stage once on key-up (also synthesized by Edit > Paste).
+                ctx.input_mut(|input| {
+                    input
+                        .events
+                        .retain(|event| !matches!(event, egui::Event::Paste(_)));
                 });
+            }
+            if paste {
+                self.actions.push(attachment);
             }
         }
     }
@@ -2788,8 +2809,6 @@ impl App {
     }
 }
 
-/// Detects paste from the key release. egui consumes the press and emits a
-/// `Paste` event only for text, so image paste has no key-press event.
 /// Builds WhatsApp's full and short contact names. A first name is required.
 fn compose_name(first: &str, last: &str) -> (Option<String>, Option<String>) {
     let first = first.trim();
@@ -2848,6 +2867,8 @@ fn mention_refs(ids: &[String]) -> Vec<crate::model::MentionRef> {
         .collect()
 }
 
+/// Detects paste from the key release. egui consumes the press and emits a
+/// `Paste` event only for text, so image paste has no key-press event.
 pub fn wants_paste(input: &egui::InputState) -> bool {
     input.events.iter().any(|event| {
         matches!(
@@ -2862,14 +2883,31 @@ pub fn wants_paste(input: &egui::InputState) -> bool {
     })
 }
 
-/// Clipboard image as width, height, and straight-alpha RGBA.
-fn clipboard_image() -> Option<(usize, usize, Vec<u8>)> {
+/// Copied files take precedence over Finder's rendered file-icon image.
+fn clipboard_attachment(include_image: bool) -> Option<Action> {
     let mut clipboard = arboard::Clipboard::new().ok()?;
-    let image = clipboard.get_image().ok()?;
+    let files = clipboard.get().file_list().unwrap_or_default();
+    attachment_from_clipboard(files, || {
+        include_image.then(|| clipboard.get_image().ok()).flatten()
+    })
+}
+
+fn attachment_from_clipboard(
+    files: Vec<PathBuf>,
+    image: impl FnOnce() -> Option<arboard::ImageData<'static>>,
+) -> Option<Action> {
+    if !files.is_empty() {
+        return Some(Action::SendFiles(files));
+    }
+    let image = image()?;
     if image.width == 0 || image.height == 0 {
         return None;
     }
-    Some((image.width, image.height, image.bytes.into_owned()))
+    Some(Action::PasteImage {
+        width: image.width,
+        height: image.height,
+        rgba: image.bytes.into_owned(),
+    })
 }
 
 impl Delivery {
@@ -2887,6 +2925,150 @@ mod tests {
     fn app() -> App {
         let root = std::env::temp_dir().join(format!("whatsapp-app-{}", std::process::id()));
         App::headless(AppDirs::under(&root), Settings::default()).0
+    }
+
+    fn paste_release() -> egui::Event {
+        egui::Event::Key {
+            key: egui::Key::V,
+            physical_key: None,
+            pressed: false,
+            repeat: false,
+            modifiers: egui::Modifiers::COMMAND,
+        }
+    }
+
+    fn paste_frame(
+        app: &mut App,
+        ctx: &egui::Context,
+        events: Vec<egui::Event>,
+        clipboard: impl FnOnce(bool) -> Option<Action>,
+    ) -> Vec<egui::Event> {
+        ctx.begin_pass(egui::RawInput {
+            events,
+            ..Default::default()
+        });
+        app.take_drops_and_pastes_with(ctx, clipboard);
+        app.apply_actions(ctx);
+        let remaining = ctx.input(|input| input.events.clone());
+        ctx.end_pass().textures_delta.clear();
+        remaining
+    }
+
+    #[test]
+    fn clipboard_files_win_over_their_icon_image_and_keep_original_names() {
+        let files = vec![
+            PathBuf::from("/tmp/Trip café.pdf"),
+            PathBuf::from("/tmp/tickets.pdf"),
+        ];
+        let attachment = attachment_from_clipboard(files.clone(), || {
+            panic!("a copied PDF must never decode or send its Finder icon")
+        });
+        assert!(matches!(attachment, Some(Action::SendFiles(paths)) if paths == files));
+    }
+
+    #[test]
+    fn clipboard_screenshot_fallback_preserves_pixels() {
+        let attachment = attachment_from_clipboard(Vec::new(), || {
+            Some(arboard::ImageData {
+                width: 2,
+                height: 1,
+                bytes: std::borrow::Cow::Owned(vec![200; 8]),
+            })
+        });
+        assert!(
+            matches!(attachment, Some(Action::PasteImage { width: 2, height: 1, rgba }) if rgba == vec![200; 8])
+        );
+        assert!(attachment_from_clipboard(Vec::new(), || None).is_none());
+    }
+
+    #[test]
+    fn copied_pdf_suppresses_filename_then_stages_once_on_key_release() {
+        let mut app = app();
+        app.open_chat = Some("fixture@lid".into());
+        app.composer = "My caption".into();
+        let ctx = egui::Context::default();
+        let path = PathBuf::from("/tmp/Trip café.pdf");
+        let remaining = paste_frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::Paste("Trip café.pdf".into())],
+            |include_image| {
+                assert!(!include_image);
+                Some(Action::SendFiles(vec![path.clone()]))
+            },
+        );
+        assert!(
+            !remaining
+                .iter()
+                .any(|event| matches!(event, egui::Event::Paste(_)))
+        );
+        assert!(
+            app.pending.is_empty(),
+            "key-down must not stage a second copy"
+        );
+        paste_frame(&mut app, &ctx, vec![paste_release()], |include_image| {
+            assert!(include_image);
+            Some(Action::SendFiles(vec![path.clone()]))
+        });
+        assert!(matches!(app.pending.as_slice(), [Pending::File(found)] if found == &path));
+        assert_eq!(app.composer, "My caption");
+    }
+
+    #[test]
+    fn menu_paste_stages_multiple_documents_without_a_filename_caption() {
+        let mut app = app();
+        app.open_chat = Some("fixture@lid".into());
+        let ctx = egui::Context::default();
+        let files = vec![PathBuf::from("/tmp/one.pdf"), PathBuf::from("/tmp/two.pdf")];
+        let remaining = paste_frame(
+            &mut app,
+            &ctx,
+            vec![
+                egui::Event::Paste("one.pdf\ntwo.pdf".into()),
+                paste_release(),
+            ],
+            |_| Some(Action::SendFiles(files.clone())),
+        );
+        assert!(
+            !remaining
+                .iter()
+                .any(|event| matches!(event, egui::Event::Paste(_)))
+        );
+        assert_eq!(app.pending.len(), 2);
+        for (item, path) in app.pending.iter().zip(&files) {
+            assert!(matches!(item, Pending::File(found) if found == path));
+        }
+        assert!(app.composer.is_empty());
+    }
+
+    #[test]
+    fn text_paste_and_other_text_fields_keep_their_normal_behavior() {
+        let mut app = app();
+        app.open_chat = Some("fixture@lid".into());
+        let ctx = egui::Context::default();
+        let remaining = paste_frame(
+            &mut app,
+            &ctx,
+            vec![
+                egui::Event::Paste("https://example.com/trip.pdf".into()),
+                paste_release(),
+            ],
+            |_| None,
+        );
+        assert!(remaining.iter().any(|event| matches!(event, egui::Event::Paste(text) if text == "https://example.com/trip.pdf")));
+        ctx.memory_mut(|memory| memory.request_focus(egui::Id::new("search")));
+        let remaining = paste_frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::Paste("Trip.pdf".into()), paste_release()],
+            |_| panic!("search fields must not inspect attachment clipboard data"),
+        );
+        assert!(
+            remaining
+                .iter()
+                .any(|event| matches!(event, egui::Event::Paste(text) if text == "Trip.pdf"))
+        );
+        assert!(app.pending.is_empty());
     }
 
     #[test]
