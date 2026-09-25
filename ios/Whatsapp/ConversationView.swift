@@ -5,9 +5,10 @@ struct ConversationView: View {
     private struct Viewport: Equatable {
         let height: CGFloat
         let nearBottom: Bool
+        let rect: CGRect
     }
     let chatID: String
-    @EnvironmentObject private var store: ChatStore
+    @Environment(ChatStore.self) private var store
     @Environment(\.scenePhase) private var phase
     @State private var nearBottom = true
     @State private var didInitialScroll = false
@@ -18,6 +19,7 @@ struct ConversationView: View {
     @State private var selection = Set<String>()
     @State private var selecting = false
 
+    private var pageBounds: String { (store.messages.first?.id ?? "") + ":" + (store.messages.last?.id ?? "") }
     private var chat: Chat? { store.chats.first { $0.id == store.canonical(chatID) } }
     var body: some View {
         ScrollViewReader { proxy in
@@ -55,9 +57,18 @@ struct ConversationView: View {
                                 .padding(.top, startsDay(index) || joinsPrevious(index) ? 0 : 7)
                             }
                             .id(message.id)
+                            .onGeometryChange(for: CGRect.self) { geometry in
+                                geometry.frame(in: .named("conversation-content"))
+                            } action: { rect in store.trackFrame(message.id, chat: chatID, frame: rect) }
+                            .onDisappear { store.trackFrame(message.id, chat: chatID, frame: nil) }
+                        }
+                        if !store.newerComplete {
+                            Button(store.loadingNewer ? "Loading…" : "Load newer messages") {
+                                historyAnchor = store.visibleMessageIDs.first; store.loadNewer()
+                            }.disabled(store.loadingNewer || store.loading).font(.caption).padding(12)
                         }
                         Color.clear.frame(height: 1).id("conversation-bottom")
-                    }.padding(.horizontal, 12).padding(.bottom, 8)
+                    }.coordinateSpace(name: "conversation-content").padding(.horizontal, 12).padding(.bottom, 8)
                 }
                 .background(ChatAppearance.canvas)
                 .accessibilityIdentifier("conversation-scroll")
@@ -66,9 +77,10 @@ struct ConversationView: View {
                 .defaultScrollAnchor(.bottom, for: .alignment)
                 .defaultScrollAnchor(.bottom, for: .sizeChanges)
                 .onScrollGeometryChange(for: Viewport.self) { geometry in
-                    Viewport(height: geometry.containerSize.height, nearBottom: geometry.contentSize.height - geometry.visibleRect.maxY < 100)
+                    Viewport(height: geometry.containerSize.height, nearBottom: geometry.contentSize.height - geometry.visibleRect.maxY < 100, rect: geometry.visibleRect)
                 } action: { old, new in
-                    nearBottom = new.nearBottom
+                    if nearBottom != new.nearBottom { nearBottom = new.nearBottom }
+                    store.trackViewport(new.rect, chat: chatID)
                     // Anchor after the resized viewport has been laid out. A
                     // composer panel can shrink it without changing any rows.
                     if old.height > 0 && old.height != new.height && old.nearBottom {
@@ -76,22 +88,31 @@ struct ConversationView: View {
                     }
                 }
                 .onChange(of: store.messages.last?.id) { _, _ in
-                    guard !store.messages.isEmpty else { return }
+                    guard !store.messages.isEmpty, historyAnchor == nil, store.newerComplete, store.restoredAnchor == nil, store.scrollTarget == nil else { return }
                     if !didInitialScroll || nearBottom || store.messages.last?.fromMe == true {
                         didInitialScroll = true
                         DispatchQueue.main.async { proxy.scrollTo("conversation-bottom", anchor: .bottom) }
                     }
                 }
                 .onChange(of: store.scrollTarget) { _, id in
-                    if let id { withAnimation { proxy.scrollTo(id, anchor: .center) }; store.scrollTarget = nil }
+                    if let id { didInitialScroll = true; nearBottom = false; withAnimation { proxy.scrollTo(id, anchor: .center) }; store.scrollTarget = nil }
                 }
                 .onScrollGeometryChange(for: Bool.self) { geometry in geometry.visibleRect.minY < 80 } action: { _, nearTop in
-                    if nearTop && didInitialScroll && !nearBottom && !store.loading && !store.fetchingPhone && !(store.archiveComplete && store.phoneComplete) { historyAnchor = store.messages.first?.id; store.loadOlder() }
+                    if nearTop && didInitialScroll && !nearBottom && !store.loading && !store.loadingNewer && !store.fetchingPhone && !(store.archiveComplete && store.phoneComplete) { historyAnchor = store.messages.first?.id; store.loadOlder() }
                 }
-                .onChange(of: store.messages.first?.id) { _, _ in
-                    if let historyAnchor {
+                .onChange(of: pageBounds) { _, _ in
+                    if let restored = store.restoredAnchor {
+                        didInitialScroll = true; nearBottom = false; historyAnchor = nil
+                        DispatchQueue.main.async { proxy.scrollTo(restored, anchor: .top) }
+                        store.restoredAnchor = nil
+                    } else if let historyAnchor {
                         DispatchQueue.main.async { proxy.scrollTo(historyAnchor, anchor: .top) }
                         self.historyAnchor = nil
+                    }
+                }
+                .onChange(of: nearBottom) { _, atBottom in
+                    if atBottom && !store.newerComplete && !store.loading && !store.loadingNewer && !store.fetchingPhone && !selecting {
+                        historyAnchor = store.visibleMessageIDs.first; store.loadNewer()
                     }
                 }
                 .overlay {
@@ -102,8 +123,11 @@ struct ConversationView: View {
                     }
                 }
                 .overlay(alignment: .bottomTrailing) {
-                    if !nearBottom && !store.messages.isEmpty {
-                        Button { withAnimation { proxy.scrollTo("conversation-bottom", anchor: .bottom) } } label: {
+                    if (!nearBottom || !store.newerComplete) && !store.messages.isEmpty {
+                        Button {
+                            if !store.newerComplete { didInitialScroll = false; store.loadLatest() }
+                            else { withAnimation { proxy.scrollTo("conversation-bottom", anchor: .bottom) } }
+                        } label: {
                             Image(systemName: "chevron.down").font(.system(size: 15, weight: .semibold)).foregroundStyle(.primary).frame(width: 44, height: 44)
                                 .background(.regularMaterial, in: Circle())
                         }.padding(14).accessibilityLabel("Jump to latest message")
@@ -115,12 +139,7 @@ struct ConversationView: View {
         .navigationTitle(chat.map(store.chatTitle) ?? "Chat")
         .toolbar {
             ToolbarItem(placement: .principal) {
-                Button { infoPresented = true } label: {
-                    VStack(spacing: 2) {
-                        Text(chat.map(store.chatTitle) ?? "Chat").font(.headline).foregroundStyle(Color.primary)
-                        if let chat, let label = store.presenceLabel(chat) { Text(label).font(.caption2).foregroundStyle(Color.secondary).lineLimit(1) }
-                    }.lineLimit(1)
-                }.accessibilityLabel("Chat information")
+                ConversationTitle(chatID: chatID) { infoPresented = true }
             }
             ToolbarItem(placement: .topBarTrailing) {
                 if selecting {
@@ -146,6 +165,10 @@ struct ConversationView: View {
             draftText = store.drafts[store.canonical(chatID), default: ""]
             store.open(chatID)
         }
+        .onChange(of: selecting) { _, value in
+            store.selectionActive = value
+            if !value { store.trimConversation(towardOlder: false) }
+        }
         .onDisappear {
             store.drafts[store.canonical(chatID)] = store.draftBeforeEditing ?? draftText
             store.close(chatID)
@@ -170,4 +193,22 @@ struct ConversationView: View {
     }
 
 
+}
+
+/// Presence changes invalidate this small title, not the conversation transcript.
+private struct ConversationTitle: View {
+    let chatID: String
+    let showInfo: () -> Void
+    @Environment(ChatStore.self) private var store
+    private var chat: Chat? { store.chats.first { $0.id == store.canonical(chatID) } }
+    var body: some View {
+        Button(action: showInfo) {
+            VStack(spacing: 2) {
+                Text(chat.map(store.chatTitle) ?? "Chat").font(.headline).foregroundStyle(Color.primary)
+                if let chat, let label = store.presenceLabel(chat) {
+                    Text(label).font(.caption2).foregroundStyle(Color.secondary).lineLimit(1)
+                }
+            }.lineLimit(1)
+        }.accessibilityLabel("Chat information")
+    }
 }

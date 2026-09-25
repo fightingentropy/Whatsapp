@@ -7,32 +7,57 @@ struct AnimatedMedia: View {
     var video = false
     @State private var visible = false
     @State private var image: UIImage?
+    @State private var client = UUID()
+    @State private var videoAllowed = false
+    @State private var lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    private var playing: Bool { visible && phase == .active && !lowPower && !reduceMotion }
     @Environment(\.scenePhase) private var phase
     var body: some View {
         Group {
-            if video { LoopingVideo(url: url, playing: visible && phase == .active) }
-            else if let image { AnimatedImage(image: image, playing: visible && phase == .active) }
+            if video && videoAllowed { LoopingVideo(url: url, playing: playing) }
+            else if let image { AnimatedImage(image: image, playing: playing) }
             else { LocalImage(url: url, maximumSize: 360).scaledToFit() }
         }
         .onAppear { visible = true }
-        .onDisappear { visible = false; image = nil }
-        .task(id: visible) {
-            guard visible, !video else { return }
-            let decoder = Task.detached(priority: .utility) { Self.decode(url) }
-            let result = await withTaskCancellationHandler { await decoder.value } onCancel: { decoder.cancel() }
-            if !Task.isCancelled { image = result }
+        .onScrollVisibilityChange(threshold: 0.1) { visible = $0 }
+        .onDisappear { visible = false; release() }
+        .onReceive(NotificationCenter.default.publisher(for: .NSProcessInfoPowerStateDidChange)) { _ in
+            lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didReceiveMemoryWarningNotification)) { _ in
+            release(); AnimatedMediaPool.shared.clearIdle()
+        }
+        .task(id: playing) {
+            guard playing else {
+                release()
+                if phase != .active { AnimatedMediaPool.shared.clearIdle() }
+                return
+            }
+            let token = UUID(); client = token
+            if video { videoAllowed = AnimatedMediaPool.shared.video(token); return }
+            let result = await AnimatedMediaPool.shared.image(url, client: token)
+            if !Task.isCancelled && client == token { image = result }
+            else { AnimatedMediaPool.shared.release(url, client: token) }
         }
     }
 
-    nonisolated private static func decode(_ url: URL) -> UIImage? {
+    private func release() {
+        image = nil; videoAllowed = false
+        AnimatedMediaPool.shared.release(url, client: client)
+        AnimatedMediaPool.shared.releaseVideo(client)
+    }
+
+    nonisolated static func decode(_ url: URL, budget: Int) -> UIImage? {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary) else { return nil }
         let count = CGImageSourceGetCount(source)
         guard count > 1, count <= 10_000 else { return nil }
-        // Keep visible animated stickers within 24 MiB, including long packs.
+        // Each retained animation fits its reservation in the shared pool.
         let step = max(1, Int(ceil(Double(count) / 120)))
-        let edge = min(360, Int(sqrt(Double(24 * 1024 * 1024) / Double(min(count, 120) * 4))))
+        let edge = min(360, Int(sqrt(Double(budget) * 0.9 / Double(min(count, 120) * 4))))
         var frames: [UIImage] = []
         var duration = 0.0
+        var cost = 0
         for index in 0..<count {
             guard !Task.isCancelled else { return nil }
             let props = CGImageSourceCopyPropertiesAtIndex(source, index, nil) as? [String: Any] ?? [:]
@@ -40,6 +65,8 @@ struct AnimatedMedia: View {
             duration += max(0.02, timing["UnclampedDelayTime"] as? Double ?? timing["DelayTime"] as? Double ?? 0.1)
             guard index % step == 0 else { continue }
             if let cg = CGImageSourceCreateThumbnailAtIndex(source, index, [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: edge, kCGImageSourceShouldCacheImmediately: true] as CFDictionary) {
+                cost += cg.bytesPerRow * cg.height
+                guard cost <= budget else { return nil }
                 frames.append(UIImage(cgImage: cg))
             }
         }

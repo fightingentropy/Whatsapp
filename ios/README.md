@@ -55,7 +55,23 @@ Silicon Mac to build. This is a personal-device build, not an App Store release.
   or .wastickers/ZIP files. Imported pack deletion asks for confirmation.
 - New conversations by phone number, synced contact names, optional saving to the
   primary phone's address book, full profile pictures and group member details.
-- Page local history, then request older history from the primary phone.
+- Recent conversations reopen from a memory cache of at most four chats and
+  approximately 16 MiB of owned message data, restoring the visible message.
+  Inactive snapshots are invalidated by message changes, identity merges,
+  worker restarts and memory warnings. History remains in SQLite.
+- Page local history in both directions, then request older history from the
+  primary phone. Active history targets 600 messages / approximately 8 MiB;
+  visible messages, selections, quotes, edits and pending sends/downloads are
+  protected. Search and quote jumps load a bounded window around their target.
+- SwiftUI observes individual store properties and separate chat rows, keeping
+  typing, connection and avatar changes out of unrelated screen updates.
+- Reconnection repairs attachment paths only when their messages are loaded;
+  cached profile pictures can appear before the network reconnects.
+- Animated stickers share at most 32 MiB of decoded-frame reservations, reuse
+  matching decodes and evict idle clips first. Decoding is serialized and video
+  loops are limited to two at once. Low Power Mode and Reduce Motion use still
+  previews; backgrounding releases active playback and memory warnings clear
+  reusable caches.
 - Download and share attachments; preview images and files supported by iOS Quick
   Look. Visible attachments up to 64 MB can download automatically. Failed
   downloads remain in their message with a retry action.

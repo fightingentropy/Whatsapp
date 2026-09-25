@@ -1088,6 +1088,7 @@ impl App {
                         }
                     }
                 }
+                Event::WindowAround { .. } | Event::NewerMessages { .. } => {} // Only requested by the iPhone window.
                 Event::ChatLoadFailed {
                     chat,
                     initial,

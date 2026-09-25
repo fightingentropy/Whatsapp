@@ -30,6 +30,17 @@ and archive. This is an explicit additional target; keep the Mac build intact.
   activation restarts it. Do not claim background delivery. Test with `--demo`
   and fixtures, never send live messages as an automated check.
 
+- The iPhone uses Observation for property-scoped view updates. Recent chat
+  snapshots are bounded to four chats / approximately 16 MiB and invalidated on
+  inactive message mutations, identity merges, worker restart and memory pressure.
+  Active history uses bidirectional SQLite windows (600 messages / approximately
+  8 MiB), protecting visible rows and selection/quote/edit/in-flight operations.
+  iPhone windows order equal timestamps by message ID in both Swift and SQLite;
+  desktop paging retains its existing ordering. Quote jumps replace the window
+  around their target. Never join a live message onto an older window across an
+  unloaded gap. Attachment paths are repaired on access, not by a startup scan.
+  Animated sticker reservations share a 32 MiB cap; pause/release them for
+  backgrounding, Low Power Mode and Reduce Motion.
 - `src/ui/` draws views and pushes `model::Action`s; `src/app.rs` applies
   them after the frame. Never mutate application state from inside a view
   beyond the view's own fields (composer text, search text, flags).

@@ -214,7 +214,6 @@ pub async fn run(
     };
     worker.load_state();
     worker.backfill();
-    worker.relocate_media();
     worker.start_bot().await;
     let mut wa_events = wa_events;
     let mut tick = tokio::time::interval(Duration::from_secs(5));
@@ -507,41 +506,30 @@ impl Worker {
         self.emit_chats();
     }
 
-    /// Re-derives archived rows from raw protobufs after parser changes. Also
-    /// repairs moved attachment paths or clears missing files for redownload.
-    fn relocate_media(&mut self) {
-        let dir = self.dirs.media_cache_dir();
-        let rows = match self.archive.media_paths() {
-            Ok(rows) => rows,
-            Err(error) => {
-                log::warn!("could not list attachments: {error}");
-                return;
-            }
+    /// Repair only attachments in requested messages. The iOS container may move
+    /// on upgrade; checking the entire archive on every reconnect is unnecessary.
+    fn repair_media_path(&self, message: &mut Message) {
+        let Some(media) = message.content.media_mut() else {
+            return;
         };
-        let (mut moved, mut forgotten) = (0, 0);
-        for (chat, id, path) in rows {
-            if path.exists() {
-                continue;
-            }
-            let candidate = path.file_name().map(|name| dir.join(name));
-            match candidate.filter(|candidate| candidate.exists()) {
-                Some(candidate) => {
-                    if self.archive.set_media_path(&chat, &id, &candidate).is_ok() {
-                        moved += 1;
-                    }
-                }
-                None => {
-                    if self.archive.clear_media_path(&chat, &id).is_ok() {
-                        forgotten += 1;
-                    }
-                }
-            }
+        let Some(path) = media.path.as_ref() else {
+            return;
+        };
+        if path.is_file() {
+            return;
         }
-        if moved + forgotten > 0 {
-            log::info!(
-                "attachments: {moved} re-pointed to {}, {forgotten} to fetch again",
-                dir.display()
-            );
+        let candidate = path
+            .file_name()
+            .map(|name| self.dirs.media_cache_dir().join(name));
+        media.path = candidate.filter(|path| path.is_file());
+        let result = match &media.path {
+            Some(path) => self
+                .archive
+                .set_media_path(&message.chat, &message.id, path),
+            None => self.archive.clear_media_path(&message.chat, &message.id),
+        };
+        if let Err(error) = result {
+            log::warn!("could not repair an attachment path: {error}");
         }
     }
 
@@ -2120,6 +2108,9 @@ impl Worker {
             | Command::MarkRead { chat, .. }
             | Command::ReadSyncFinished { chat, .. }
             | Command::LoadChat { chat, .. }
+            | Command::LoadNewer { chat, .. }
+            | Command::LoadWindow { chat, .. }
+            | Command::LoadWindowAround { chat, .. }
             | Command::FetchOlder(chat)
             | Command::LoadUntil { chat, .. }
             | Command::EnsureChat { chat, .. }
@@ -2208,6 +2199,9 @@ impl Worker {
                 }
             }
             Command::LoadChat { chat, before } => self.load_chat(chat, before),
+            Command::LoadNewer { chat, after } => self.load_newer(chat, after),
+            Command::LoadWindowAround { chat, id } => self.load_window_around(chat, id),
+            Command::LoadWindow { chat, before } => self.load_chat_page(chat, before, true),
             Command::FetchOlder(chat) => self.fetch_older(chat),
             Command::LoadUntil { chat, id, before } => self.load_until(chat, id, before),
             Command::SearchMessages { query } => self.search_messages(query),
@@ -2980,6 +2974,7 @@ impl Worker {
 
     /// Refreshes stored quote ids and names with current mappings.
     fn polish(&self, message: &mut Message) {
+        self.repair_media_path(message);
         message.chat = self.canonical_str(&message.chat);
         message.sender = self.canonical_str(&message.sender);
         for reaction in &mut message.reactions {
@@ -3005,11 +3000,17 @@ impl Worker {
     }
 
     fn load_chat(&mut self, chat: ChatId, before: Option<super::PageKey>) {
-        match self.archive.messages(
-            &chat,
-            before.as_ref().map(|(time, id)| (*time, id.as_str())),
-            PAGE + 1,
-        ) {
+        self.load_chat_page(chat, before, false);
+    }
+
+    fn load_chat_page(&mut self, chat: ChatId, before: Option<super::PageKey>, window: bool) {
+        let boundary = before.as_ref().map(|(time, id)| (*time, id.as_str()));
+        let result = if window {
+            self.archive.message_window(&chat, boundary, PAGE + 1)
+        } else {
+            self.archive.messages(&chat, boundary, PAGE + 1)
+        };
+        match result {
             Ok(mut messages) => {
                 let complete = messages.len() <= PAGE;
                 if !complete {
@@ -3047,6 +3048,76 @@ impl Worker {
                     log::debug!("presence not subscribed: {error}");
                 }
             });
+        }
+    }
+
+    fn load_window_around(&self, chat: ChatId, id: String) {
+        let result = (|| -> rusqlite::Result<_> {
+            let Some(target) = self.archive.message(&chat, &id)? else {
+                return Ok(None);
+            };
+            let boundary = (target.timestamp, target.id.as_str());
+            let mut older = self
+                .archive
+                .message_window(&chat, Some(boundary), PAGE + 1)?;
+            let older_complete = older.len() <= PAGE;
+            if !older_complete {
+                older.remove(0);
+            }
+            let mut newer = self.archive.messages_after(&chat, boundary, PAGE + 1)?;
+            let newer_complete = newer.len() <= PAGE;
+            newer.truncate(PAGE);
+            older.push(target);
+            older.extend(newer);
+            for message in &mut older {
+                self.polish(message);
+            }
+            Ok(Some((older, older_complete, newer_complete)))
+        })();
+        match result {
+            Ok(Some((messages, older_complete, newer_complete))) => {
+                self.emit(Event::WindowAround {
+                    chat,
+                    messages,
+                    older_complete,
+                    newer_complete,
+                })
+            }
+            Ok(None) => self.emit(Event::ChatLoadFailed {
+                chat,
+                initial: false,
+                error: "That message is not in the downloaded history yet".to_owned(),
+            }),
+            Err(error) => self.emit(Event::ChatLoadFailed {
+                chat,
+                initial: false,
+                error: format!("Could not read the chat: {error}"),
+            }),
+        }
+    }
+
+    fn load_newer(&self, chat: ChatId, after: super::PageKey) {
+        match self
+            .archive
+            .messages_after(&chat, (after.0, &after.1), PAGE + 1)
+        {
+            Ok(mut messages) => {
+                let complete = messages.len() <= PAGE;
+                messages.truncate(PAGE);
+                for message in &mut messages {
+                    self.polish(message);
+                }
+                self.emit(Event::NewerMessages {
+                    chat,
+                    messages,
+                    complete,
+                });
+            }
+            Err(error) => self.emit(Event::ChatLoadFailed {
+                chat,
+                initial: false,
+                error: format!("Could not read the chat: {error}"),
+            }),
         }
     }
 
@@ -3433,16 +3504,21 @@ impl Worker {
 
     fn fetch_avatar(&mut self, id: String, full: bool) {
         let path = self.avatar_file(&id, full);
-        if let Ok(metadata) = std::fs::metadata(&path)
-            && metadata
+        if let Ok(metadata) = std::fs::metadata(&path) {
+            // Show the local picture even when offline or while refreshing it.
+            self.emit(Event::Avatar {
+                id: id.clone(),
+                full,
+                path: (metadata.len() > 0).then_some(path.clone()),
+            });
+            if metadata
                 .modified()
                 .ok()
                 .and_then(|modified| modified.elapsed().ok())
                 .is_some_and(|age| age < AVATAR_FRESH)
-        {
-            let path = (metadata.len() > 0).then_some(path);
-            self.emit(Event::Avatar { id, full, path });
-            return;
+            {
+                return;
+            }
         }
         // Try both of our ids for our profile picture.
         let candidates: Vec<Jid> = if self.is_me(&id) || id == self.me() {
@@ -5439,6 +5515,103 @@ mod receipt_tests {
             link_watch: Default::default(),
         };
         (worker, events_rx, inbox, wa_events)
+    }
+
+    #[test]
+    fn requested_media_repairs_moved_files_and_clears_missing_files() {
+        let (mut worker, _events, _inbox, _wa) = worker();
+        worker.dirs = AppDirs::under(
+            &std::env::temp_dir().join(format!("whatsapp-media-test-{}", std::process::id())),
+        );
+        worker.archive.ensure_chat(PEER, "Fixture").unwrap();
+        let dir = worker.dirs.media_cache_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("fixture.jpg");
+        std::fs::write(&path, b"fixture").unwrap();
+        let mut message = own_message("image", 100);
+        message.content = Content::Image {
+            caption: None,
+            media: Media {
+                path: Some(dir.join("old-container/fixture.jpg")),
+                ..media(None, None, None, None)
+            },
+        };
+        worker.archive.insert_message(&message, None).unwrap();
+        worker.polish(&mut message);
+        assert_eq!(message.content.media().unwrap().path.as_ref(), Some(&path));
+        assert_eq!(
+            worker
+                .archive
+                .message(PEER, "image")
+                .unwrap()
+                .unwrap()
+                .content
+                .media()
+                .unwrap()
+                .path
+                .as_ref(),
+            Some(&path)
+        );
+        std::fs::remove_file(&path).unwrap();
+        worker.polish(&mut message);
+        assert!(message.content.media().unwrap().path.is_none());
+        assert!(
+            worker
+                .archive
+                .message(PEER, "image")
+                .unwrap()
+                .unwrap()
+                .content
+                .media()
+                .unwrap()
+                .path
+                .is_none()
+        );
+        let _ = std::fs::remove_dir_all(&worker.dirs.cache);
+    }
+
+    #[test]
+    fn cached_avatar_is_available_without_a_network_client() {
+        let (mut worker, events, _inbox, _wa) = worker();
+        worker.dirs = AppDirs::under(
+            &std::env::temp_dir().join(format!("whatsapp-avatar-test-{}", std::process::id())),
+        );
+        let path = worker.avatar_file(PEER, false);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"fixture").unwrap();
+        worker.fetch_avatar(PEER.into(), false);
+        assert!(events.try_iter().any(
+            |event| matches!(event, Event::Avatar { path: Some(found), .. } if found == path)
+        ));
+        let _ = std::fs::remove_dir_all(&worker.dirs.cache);
+    }
+
+    #[test]
+    fn quote_window_contains_target_and_is_bounded_in_both_directions() {
+        let (worker, events, _inbox, _wa) = worker();
+        worker.archive.ensure_chat(PEER, "Fixture").unwrap();
+        for n in 0..1000 {
+            worker
+                .archive
+                .insert_message(&own_message(&format!("{n:05}"), n), None)
+                .unwrap();
+        }
+        worker.load_window_around(PEER.into(), "00500".into());
+        let result = events
+            .try_iter()
+            .find_map(|event| match event {
+                Event::WindowAround {
+                    messages,
+                    older_complete,
+                    newer_complete,
+                    ..
+                } => Some((messages, older_complete, newer_complete)),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(result.0.len(), PAGE * 2 + 1);
+        assert!(result.0.iter().any(|m| m.id == "00500"));
+        assert!(!result.1 && !result.2);
     }
 
     #[tokio::test]

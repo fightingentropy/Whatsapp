@@ -102,6 +102,21 @@ pub enum Command {
         chat: ChatId,
         before: Option<PageKey>,
     },
+    /// Loads an iPhone page with stable timestamp/id boundaries.
+    LoadWindow {
+        chat: ChatId,
+        before: Option<PageKey>,
+    },
+    /// Loads a bounded iPhone window around a quoted/search message.
+    LoadWindowAround {
+        chat: ChatId,
+        id: String,
+    },
+    /// Loads newer local rows for the iPhone's bounded history window.
+    LoadNewer {
+        chat: ChatId,
+        after: PageKey,
+    },
     /// Requests messages before the archive's earliest message.
     FetchOlder(ChatId),
     Download {
@@ -378,6 +393,19 @@ pub enum Event {
         complete: bool,
         /// Completes a local LoadChat/LoadUntil query, not a live or phone-sync event.
         requested: bool,
+    },
+    /// Replaces the iPhone window around a requested message.
+    WindowAround {
+        chat: ChatId,
+        messages: Vec<Message>,
+        older_complete: bool,
+        newer_complete: bool,
+    },
+    /// Ascending local rows after the iPhone history window.
+    NewerMessages {
+        chat: ChatId,
+        messages: Vec<Message>,
+        complete: bool,
     },
     /// A local query failed; release its loading state so reopening can retry.
     ChatLoadFailed {

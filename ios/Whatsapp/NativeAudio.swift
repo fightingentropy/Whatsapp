@@ -186,7 +186,7 @@ final class NativeAudio: NSObject, ObservableObject, AVAudioPlayerDelegate {
 
 struct VoicePlaybackView: View {
     let message: Message
-    @EnvironmentObject private var store: ChatStore
+    @Environment(ChatStore.self) private var store
     @ObservedObject var audio: NativeAudio
     var body: some View {
         VStack(spacing: 6) {

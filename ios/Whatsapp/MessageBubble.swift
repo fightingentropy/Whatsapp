@@ -9,7 +9,7 @@ struct MessageBubble: View {
     var selected = false
     var select: () -> Void = {}
     let openMedia: (Message) -> Void
-    @EnvironmentObject private var store: ChatStore
+    @Environment(ChatStore.self) private var store
     @Environment(\.colorScheme) private var scheme
     @State private var forwardPresented = false
     @State private var infoPresented = false

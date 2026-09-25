@@ -36,6 +36,14 @@ enum Input {
         chat: String,
         before: Option<(i64, String)>,
     },
+    Around {
+        chat: String,
+        id: String,
+    },
+    Newer {
+        chat: String,
+        after: (i64, String),
+    },
     Older {
         chat: String,
     },
@@ -230,7 +238,13 @@ fn parse_command(input: &str, dirs: Option<&AppDirs>) -> Option<Command> {
                     .as_ref()
                     .is_none_or(|(time, id)| *time >= 0 && valid_id(id)) =>
         {
-            Some(Command::LoadChat { chat, before })
+            Some(Command::LoadWindow { chat, before })
+        }
+        Input::Around { chat, id } if valid_chat(&chat) && valid_id(&id) => {
+            Some(Command::LoadWindowAround { chat, id })
+        }
+        Input::Newer { chat, after } if valid_chat(&chat) && after.0 >= 0 && valid_id(&after.1) => {
+            Some(Command::LoadNewer { chat, after })
         }
         Input::Older { chat } if valid_chat(&chat) => Some(Command::FetchOlder(chat)),
         Input::Send {
@@ -553,6 +567,21 @@ fn event_json(event: Event) -> Option<Value> {
             requested,
         } => {
             json!({"type":"messages","chat":chat,"messages":messages.iter().map(message_json).collect::<Vec<_>>(),"older":older,"complete":complete,"requested":requested})
+        }
+        Event::WindowAround {
+            chat,
+            messages,
+            older_complete,
+            newer_complete,
+        } => {
+            json!({"type":"around","chat":chat,"messages":messages.iter().map(message_json).collect::<Vec<_>>(),"complete":older_complete,"more":!newer_complete})
+        }
+        Event::NewerMessages {
+            chat,
+            messages,
+            complete,
+        } => {
+            json!({"type":"newer","chat":chat,"messages":messages.iter().map(message_json).collect::<Vec<_>>(),"complete":complete})
         }
         Event::MessageUpdated(message) => {
             json!({"type":"message","message":message_json(&message)})
@@ -1002,6 +1031,36 @@ mod tests {
             .is_none()
         );
         assert!(parse_command(r#"{"type":"mute","chat":"a@g.us","until":-1}"#, None).is_none());
+    }
+
+    #[test]
+    fn validates_bounded_history_commands() {
+        assert!(matches!(
+            parse_command(r#"{"type":"load","chat":"fixture@lid"}"#, None),
+            Some(Command::LoadWindow { before: None, .. })
+        ));
+        assert!(matches!(
+            parse_command(
+                r#"{"type":"newer","chat":"fixture@lid","after":[10,"message"]}"#,
+                None
+            ),
+            Some(Command::LoadNewer { .. })
+        ));
+        assert!(matches!(
+            parse_command(
+                r#"{"type":"around","chat":"fixture@lid","id":"message"}"#,
+                None
+            ),
+            Some(Command::LoadWindowAround { .. })
+        ));
+        assert!(
+            parse_command(
+                r#"{"type":"newer","chat":"fixture@lid","after":[-1,"message"]}"#,
+                None
+            )
+            .is_none()
+        );
+        assert!(parse_command(r#"{"type":"around","chat":"fixture@lid","id":""}"#, None).is_none());
     }
 
     #[test]

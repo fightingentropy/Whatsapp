@@ -3,7 +3,7 @@ import SwiftUI
 @main
 struct WhatsappApp: App {
     @Environment(\.scenePhase) private var phase
-    @StateObject private var store: ChatStore
+    @State private var store: ChatStore
 
     init() {
         #if BENCHMARK
@@ -25,10 +25,11 @@ struct WhatsappApp: App {
             store.loadInterruptedPairingDemo()
         }
         #endif
-        _store = StateObject(wrappedValue: store)
+        _store = State(initialValue: store)
     }
 
     var body: some Scene {
+        @Bindable var store = store
         WindowGroup {
             Group {
                 if store.hasSession {
@@ -38,7 +39,7 @@ struct WhatsappApp: App {
                     }
                 } else { PairingView() }
             }
-            .environmentObject(store)
+            .environment(store)
             .tint(.accentColor)
             .preferredColorScheme(store.preferences.theme == "system" ? nil : (store.preferences.theme == "light" ? .light : .dark))
             .alert("Whatsapp", isPresented: Binding(get: { store.error != nil }, set: { if !$0 && store.error != nil { store.error = nil } })) {
@@ -51,7 +52,7 @@ struct WhatsappApp: App {
                 else if phase == .background { store.background() }
             }
             .onReceive(NotificationCenter.default.publisher(for: UIApplication.didReceiveMemoryWarningNotification)) { _ in
-                MessageText.clearCache()
+                store.clearMemoryCaches()
             }
         }
     }

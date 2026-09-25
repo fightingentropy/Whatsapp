@@ -58,10 +58,10 @@ extension ChatStore {
             scrollTarget = id
             pendingJump = nil
             pendingJumpChat = nil
-        } else if !jumpRequested, let first = messages.first, let chat = selectedChat, !isDemo {
+        } else if !jumpRequested, let chat = selectedChat, !isDemo {
             jumpRequested = true
             loading = true
-            engine.send(["type": "until", "chat": chat, "id": id, "before": [Int64(first.timestamp), first.id]])
+            engine.send(["type": "around", "chat": chat, "id": id])
         } else {
             pendingJump = nil
             pendingJumpChat = nil
