@@ -517,6 +517,24 @@ pub enum Action {
         path: PathBuf,
         fraction: f32,
     },
+    /// Plays or pauses a video inside its message bubble, downloading on demand.
+    PlayVideo {
+        chat: ChatId,
+        message: String,
+    },
+    PauseVideo {
+        chat: ChatId,
+        message: String,
+    },
+    SeekVideo {
+        chat: ChatId,
+        message: String,
+        fraction: f64,
+    },
+    MuteVideo {
+        chat: ChatId,
+        message: String,
+    },
     /// Starts, cancels, or sends a voice recording.
     StartRecording,
     CancelRecording,

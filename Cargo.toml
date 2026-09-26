@@ -28,6 +28,10 @@ name = "video_probe"
 required-features = ["demo"]
 
 [[example]]
+name = "inline_video_probe"
+required-features = ["demo"]
+
+[[example]]
 name = "conversation_probe"
 required-features = ["demo"]
 
@@ -129,6 +133,7 @@ objc2-core-foundation = { version = "0.3.2", default-features = false, features 
 objc2-core-media = { version = "0.3.2", default-features = false, features = ["std", "CMBlockBuffer", "CMFormatDescription", "CMSampleBuffer", "CMTime"] }
 objc2-core-video = { version = "0.3.2", default-features = false, features = ["std", "CVBase", "CVReturn", "CVBuffer", "CVImageBuffer", "CVPixelBuffer"] }
 objc2-video-toolbox = { version = "0.3.2", default-features = false, features = ["std", "VTErrors", "VTDecompressionSession", "VTDecompressionProperties", "objc2-core-media", "objc2-core-video"] }
+objc2-av-foundation = { version = "0.3.2", default-features = false, features = ["std", "AVPlayer", "AVPlayerItem", "AVPlayerItemOutput", "AVPlayerItemTrack", "AVAssetTrack", "AVMediaFormat", "objc2-core-media", "objc2-core-video", "objc2-core-graphics", "objc2-core-foundation"] }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSButton", "NSControl", "NSEvent", "NSMenu", "NSMenuItem", "NSResponder", "NSRunningApplication", "NSView", "NSWindow"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSDate", "NSGeometry", "NSObjCRuntime", "NSRunLoop", "NSString"] }
 

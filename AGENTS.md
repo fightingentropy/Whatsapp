@@ -112,6 +112,13 @@ and archive. This is an explicit additional target; keep the Mac build intact.
   `--features metal` adds a Metal-only wgpu backend selected with `--renderer metal`.
   Keep the OpenGL option for comparison/recovery. Both are event-driven; the
   offline demo benchmark measures CPU frame time, not GPU time or battery life.
+- `src/video.rs` plays one ordinary video through AVFoundation on the main thread.
+  Audio and seeking share its native clock; egui draws one current texture bounded
+  to 640 pixels per side, honoring the track rotation/mirroring. No whole-movie
+  frame cache or native overlay window. Paused players stop scheduling repaints;
+  scrolling away pauses, while leaving the chat or hiding the window releases it.
+  Only an explicit Play can autoplay after a download. Test with synthetic media
+  and `inline_video_probe`, including decoded pixels and the audio track.
 - Message bodies paint through `markup::paint_selectable` and single lines
   through `widgets::selectable_rich_text`: both hand the galley to
   `egui::text_selection::LabelSelectionState` (which paints it) and only

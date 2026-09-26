@@ -168,12 +168,14 @@ fn main() -> eframe::Result<()> {
         due: std::time::Instant::now() + std::time::Duration::from_millis(cli.demo_shot_delay),
         asked: false,
     });
-    let slot = std::sync::Arc::new(std::sync::Mutex::new(Some(app)));
+    // Windows and AVFoundation players stay on this main thread. The worker
+    // communicates through its own channels and never borrows application state.
+    let slot = std::rc::Rc::new(std::cell::RefCell::new(Some(app)));
 
     // The link, archive, and tray outlive windows. Recreate a window when the
     // tray, notification, or another launch requests one.
     loop {
-        let creator_slot = std::sync::Arc::clone(&slot);
+        let creator_slot = std::rc::Rc::clone(&slot);
         let creator_waker = waker.clone();
         #[cfg(feature = "demo")]
         let creator_shot = shot.clone();
@@ -192,8 +194,7 @@ fn main() -> eframe::Result<()> {
                 }
                 creator_waker.attach(&cc.egui_ctx);
                 let mut app = creator_slot
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
+                    .borrow_mut()
                     .take()
                     .expect("application state present");
                 app.attach(&cc.egui_ctx);
@@ -207,7 +208,7 @@ fn main() -> eframe::Result<()> {
                 }
                 Ok(Box::new(Shell {
                     app: Some(app),
-                    slot: std::sync::Arc::clone(&creator_slot),
+                    slot: std::rc::Rc::clone(&creator_slot),
                     #[cfg(feature = "demo")]
                     shot: creator_shot,
                     #[cfg(feature = "demo")]
@@ -232,7 +233,7 @@ fn main() -> eframe::Result<()> {
         waker.detach();
 
         let hide = {
-            let guard = slot.lock().unwrap_or_else(|p| p.into_inner());
+            let guard = slot.borrow();
             let app = guard.as_ref().expect("application state present");
             !app.quit_requested && app.hide_intent
         };
@@ -242,14 +243,13 @@ fn main() -> eframe::Result<()> {
 
         // Keep updating link, archive, and tray while no window exists.
         let headless = egui::Context::default();
-        slot.lock()
-            .unwrap_or_else(|p| p.into_inner())
+        slot.borrow_mut()
             .as_mut()
             .expect("application state present")
             .window_gone();
         loop {
             let delay = {
-                let mut guard = slot.lock().unwrap_or_else(|p| p.into_inner());
+                let mut guard = slot.borrow_mut();
                 let app = guard.as_mut().expect("application state present");
                 app.background_frame(&headless);
                 if app.quit_requested || app.wants_show {
@@ -260,8 +260,7 @@ fn main() -> eframe::Result<()> {
             whatsapp::tray::idle(delay);
         }
         let quit = slot
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
+            .borrow()
             .as_ref()
             .expect("application state present")
             .quit_requested;
@@ -270,7 +269,7 @@ fn main() -> eframe::Result<()> {
         }
     }
 
-    if let Some(mut app) = slot.lock().unwrap_or_else(|p| p.into_inner()).take() {
+    if let Some(mut app) = slot.borrow_mut().take() {
         app.shutdown();
     }
     drop(instance);
@@ -355,7 +354,7 @@ fn native_options(
 /// eframe adapter that returns the long-lived [`app::App`] when a window closes.
 struct Shell {
     app: Option<app::App>,
-    slot: std::sync::Arc<std::sync::Mutex<Option<app::App>>>,
+    slot: std::rc::Rc<std::cell::RefCell<Option<app::App>>>,
     #[cfg(feature = "demo")]
     shot: Option<Shot>,
     #[cfg(feature = "demo")]
@@ -366,7 +365,7 @@ struct Shell {
 
 impl Drop for Shell {
     fn drop(&mut self) {
-        *self.slot.lock().unwrap_or_else(|p| p.into_inner()) = self.app.take();
+        *self.slot.borrow_mut() = self.app.take();
     }
 }
 
