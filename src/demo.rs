@@ -2174,12 +2174,17 @@ mod tests {
     }
 
     #[test]
-    fn a_paste_is_seen_on_the_key_release() {
-        // Platforms may deliver only the Ctrl+V key release for image paste.
-        let mut app = app();
+    fn paste_uses_the_native_command_on_macos_and_key_release_elsewhere() {
         let ctx = egui::Context::default();
-        app.attach(&ctx);
-        render(&mut app, &ctx);
+        let wants_paste = |event| {
+            ctx.begin_pass(egui::RawInput {
+                events: vec![event],
+                ..Default::default()
+            });
+            let paste = ctx.input(crate::app::wants_paste);
+            ctx.end_pass().textures_delta.clear();
+            paste
+        };
         let release = egui::Event::Key {
             key: egui::Key::V,
             physical_key: None,
@@ -2187,8 +2192,12 @@ mod tests {
             repeat: false,
             modifiers: egui::Modifiers::COMMAND,
         };
-        frame_with(&mut app, &ctx, vec![release]);
-        assert!(ctx.input(crate::app::wants_paste));
+        assert_eq!(wants_paste(release), !cfg!(target_os = "macos"));
+        assert_eq!(
+            wants_paste(egui::Event::Paste(String::new())),
+            cfg!(target_os = "macos"),
+            "the native menu emits Paste even for an image-only clipboard"
+        );
         let plain = egui::Event::Key {
             key: egui::Key::V,
             physical_key: None,
@@ -2196,8 +2205,7 @@ mod tests {
             repeat: false,
             modifiers: egui::Modifiers::NONE,
         };
-        frame_with(&mut app, &ctx, vec![plain]);
-        assert!(!ctx.input(crate::app::wants_paste), "a plain V is typing");
+        assert!(!wants_paste(plain), "a plain V is typing");
     }
 
     #[test]

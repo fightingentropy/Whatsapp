@@ -2692,8 +2692,8 @@ impl App {
         {
             if matches!(attachment, Action::SendFiles(_)) {
                 // Finder supplies a filename as text as well as the file URL.
-                // Suppress it on key-down, before TextEdit can make it a caption;
-                // stage once on key-up (also synthesized by Edit > Paste).
+                // Suppress it before TextEdit can make it a caption, including
+                // on platforms that stage the attachment on key-up instead.
                 ctx.input_mut(|input| {
                     input
                         .events
@@ -2867,19 +2867,24 @@ fn mention_refs(ids: &[String]) -> Vec<crate::model::MentionRef> {
         .collect()
 }
 
-/// Detects paste from the key release. egui consumes the press and emits a
-/// `Paste` event only for text, so image paste has no key-press event.
+/// macOS's native menu emits `Paste` even when the clipboard has no text.
+/// Its Cmd+V key release must not paste the same attachment again. Elsewhere,
+/// egui-winit emits `Paste` only for text, so image paste needs the key release.
 pub fn wants_paste(input: &egui::InputState) -> bool {
     input.events.iter().any(|event| {
-        matches!(
-            event,
-            egui::Event::Key {
-                key: egui::Key::V,
-                pressed: false,
-                modifiers,
-                ..
-            } if modifiers.command
-        )
+        if cfg!(target_os = "macos") {
+            matches!(event, egui::Event::Paste(_))
+        } else {
+            matches!(
+                event,
+                egui::Event::Key {
+                    key: egui::Key::V,
+                    pressed: false,
+                    modifiers,
+                    ..
+                } if modifiers.command
+            )
+        }
     })
 }
 
@@ -2981,8 +2986,50 @@ mod tests {
         assert!(attachment_from_clipboard(Vec::new(), || None).is_none());
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
-    fn copied_pdf_suppresses_filename_then_stages_once_on_key_release() {
+    fn picture_paste_does_not_repeat_when_the_shortcut_key_is_released() {
+        let mut app = app();
+        app.open_chat = Some("fixture@lid".into());
+        let ctx = egui::Context::default();
+        let clipboard = |_| {
+            Some(Action::PasteImage {
+                width: 2,
+                height: 1,
+                rgba: vec![200; 8],
+            })
+        };
+        // The native menu handles Cmd+V first. Winit forwards the physical
+        // key release later, often in a separate frame.
+        paste_frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::Paste(String::new()), paste_release()],
+            clipboard,
+        );
+        assert_eq!(app.pending.len(), 1);
+        paste_frame(&mut app, &ctx, vec![paste_release()], clipboard);
+        assert_eq!(app.pending.len(), 1, "one shortcut must add one picture");
+
+        // Deliberately pasting the same clipboard again must still work,
+        // including Edit > Paste without any keyboard event.
+        for expected in 2..=3 {
+            paste_frame(
+                &mut app,
+                &ctx,
+                vec![egui::Event::Paste(String::new())],
+                clipboard,
+            );
+            assert_eq!(app.pending.len(), expected);
+            paste_frame(&mut app, &ctx, vec![paste_release()], |_| {
+                panic!("the physical key release must not read the clipboard again")
+            });
+            assert_eq!(app.pending.len(), expected);
+        }
+    }
+
+    #[test]
+    fn copied_pdf_suppresses_filename_and_stages_once_per_shortcut() {
         let mut app = app();
         app.open_chat = Some("fixture@lid".into());
         app.composer = "My caption".into();
@@ -2993,7 +3040,7 @@ mod tests {
             &ctx,
             vec![egui::Event::Paste("Trip café.pdf".into())],
             |include_image| {
-                assert!(!include_image);
+                assert_eq!(include_image, cfg!(target_os = "macos"));
                 Some(Action::SendFiles(vec![path.clone()]))
             },
         );
@@ -3002,14 +3049,14 @@ mod tests {
                 .iter()
                 .any(|event| matches!(event, egui::Event::Paste(_)))
         );
-        assert!(
-            app.pending.is_empty(),
-            "key-down must not stage a second copy"
-        );
+        assert_eq!(app.pending.len(), usize::from(cfg!(target_os = "macos")));
+        let mut release_reads = 0;
         paste_frame(&mut app, &ctx, vec![paste_release()], |include_image| {
+            release_reads += 1;
             assert!(include_image);
             Some(Action::SendFiles(vec![path.clone()]))
         });
+        assert_eq!(release_reads, usize::from(!cfg!(target_os = "macos")));
         assert!(matches!(app.pending.as_slice(), [Pending::File(found)] if found == &path));
         assert_eq!(app.composer, "My caption");
     }

@@ -124,6 +124,7 @@ See [PERFORMANCE.md](PERFORMANCE.md) for measurements, remaining costs and valid
 - **Send attachments with captions.** Paste copied files (including PDFs) or a
   picture, drop files, or use the file picker. Copied files attach the original
   document, not Finder's icon preview; filenames do not become captions.
+  Each ⌘V or Edit > Paste adds the copied attachment once.
   They stay in the composer until you send them or press Escape.
   WAV, FLAC and other audio formats phones cannot play inline are sent as
   documents, preserving the original file; compatible audio keeps its player.

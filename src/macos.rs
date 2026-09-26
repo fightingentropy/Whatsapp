@@ -161,6 +161,8 @@ fn edit_event(id: &str) -> Option<egui::Event> {
         "copy" => return Some(egui::Event::Copy),
         "cut" => return Some(egui::Event::Cut),
         "paste" => {
+            // An empty Paste still carries image/file paste from the native
+            // menu, which handles both Cmd+V and a click on Edit > Paste.
             return Some(egui::Event::Paste(
                 arboard::Clipboard::new()
                     .ok()
@@ -225,22 +227,6 @@ pub fn drain(ctx: &egui::Context, hidden: bool) -> Vec<Action> {
         if let Some(event) = edit_event(&id) {
             if !hidden {
                 ctx.input_mut(|input| input.events.push(event));
-                if id == "paste" {
-                    // Attachments follow the same key-release path as Cmd+V.
-                    ctx.input_mut(|input| {
-                        input.events.push(egui::Event::Key {
-                            key: egui::Key::V,
-                            physical_key: None,
-                            pressed: false,
-                            repeat: false,
-                            modifiers: egui::Modifiers {
-                                command: true,
-                                mac_cmd: true,
-                                ..Default::default()
-                            },
-                        })
-                    });
-                }
             }
         } else if let Some(action) = action(&id, hidden) {
             if hidden
