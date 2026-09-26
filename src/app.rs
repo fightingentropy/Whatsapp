@@ -215,6 +215,9 @@ pub struct App {
     pub pending: Vec<Pending>,
     /// In-chat audio player.
     pub player: Player,
+    /// At most one native video, independent of the looping GIF cache.
+    pub video: crate::video::Player,
+    video_to_play: Option<(ChatId, String)>,
     /// Active voice recorder.
     pub recording: Option<Recorder>,
     /// Downloaded image in the native preview.
@@ -419,6 +422,8 @@ impl App {
             picker_focus: false,
             pending: Vec::new(),
             player: Player::new(waker.clone()),
+            video: Default::default(),
+            video_to_play: None,
             recording: None,
             image_preview: None,
             played_told: HashSet::new(),
@@ -475,6 +480,7 @@ impl App {
 
     /// Updates the linked app while no window exists.
     pub fn window_gone(&mut self) {
+        self.stop_video();
         self.window_hidden = true;
         self.window_focused = false;
         self.hide_intent = false;
@@ -1283,6 +1289,7 @@ impl App {
                 }
             }
             LinkStatus::LoggedOut => {
+                self.stop_video();
                 self.chat_search.close();
                 self.image_preview = None;
                 self.notifications.clear_all();
@@ -1444,6 +1451,7 @@ impl App {
     fn open_chat(&mut self, id: ChatId) {
         let id = self.chat_aliases.get(&id).cloned().unwrap_or(id);
         if self.open_chat.as_deref() != Some(id.as_str()) {
+            self.stop_video();
             self.chat_search.close();
             if let Some(previous) = self.open_chat.take() {
                 if let Some(conversation) = self.conversations.get_mut(&previous) {
@@ -1791,6 +1799,9 @@ impl App {
         match action {
             Action::Open(page) => {
                 let opens_chats = page == Page::Chats;
+                if !opens_chats {
+                    self.stop_video();
+                }
                 self.page = page;
                 self.dialog = None;
                 self.emoji_start = None;
@@ -1832,6 +1843,7 @@ impl App {
                 }
             }
             Action::CloseChat => {
+                self.stop_video();
                 self.chat_search.close();
                 if let Some(chat) = self.open_chat.take() {
                     self.stop_composing(&chat);
@@ -1879,6 +1891,7 @@ impl App {
             }
             Action::PreviewImage(path) => {
                 if crate::image_preview::can_preview_image(&path) && path.is_file() {
+                    self.video.pause();
                     self.image_preview = Some(crate::image_preview::PreviewState::new(path));
                     self.dialog = None;
                     self.picker = None;
@@ -1922,6 +1935,13 @@ impl App {
                 self.refocus_composer(ctx);
             }
             Action::OpenFile(path) => {
+                if self
+                    .video
+                    .active()
+                    .is_some_and(|active| active.path == path)
+                {
+                    self.video.pause();
+                }
                 if let Err(error) = open::that_detached(&path) {
                     self.toast_error(format!("Could not open {}: {error}", path.display()));
                 }
@@ -2012,17 +2032,33 @@ impl App {
             }
             Action::ClearPending => self.pending.clear(),
             Action::PlayVoice { message, path } => self.play_voice(message, path),
+            Action::PlayVideo { chat, message } => self.play_video(chat, message),
+            Action::PauseVideo { chat, message } => {
+                if self.video.for_message(&chat, &message).is_some() {
+                    self.video.pause();
+                }
+            }
+            Action::SeekVideo {
+                chat,
+                message,
+                fraction,
+            } => self.video.seek(&chat, &message, fraction),
+            Action::MuteVideo { chat, message } => self.video.toggle_mute(&chat, &message),
             Action::SeekVoice {
                 message,
                 path,
                 fraction,
             } => {
+                self.video.pause();
+                self.video_to_play = None;
                 if let Err(error) = self.player.seek(&message, &path, fraction) {
                     self.toast_error(error);
                 }
             }
             Action::StartRecording => {
                 if self.open_chat.is_some() && self.recording.is_none() {
+                    self.video.pause();
+                    self.video_to_play = None;
                     self.recording = Some(Recorder::start(self.waker.clone()));
                 }
             }
@@ -2458,6 +2494,7 @@ impl App {
         crate::animation::maintain(ctx);
         self.tick(ctx);
         self.tick_audio();
+        self.tick_video(ctx);
         self.apply_actions(ctx);
     }
 
@@ -2515,11 +2552,96 @@ impl App {
 
     /// Plays or pauses audio and sends the first played receipt when needed.
     fn play_voice(&mut self, message: String, path: PathBuf) {
+        self.video.pause();
+        self.video_to_play = None;
         if let Err(error) = self.player.toggle(&message, &path) {
             self.toast_error(error);
             return;
         }
         self.tell_played(message);
+    }
+
+    fn stop_video(&mut self) {
+        self.video.stop();
+        self.video_to_play = None;
+    }
+
+    fn play_video(&mut self, chat: ChatId, message: String) {
+        if self.open_chat.as_ref() != Some(&chat)
+            || self.page != Page::Chats
+            || self.window_hidden
+            || self.image_preview.is_some()
+            || self.dialog.is_some()
+        {
+            return;
+        }
+        if self.recording.is_some() {
+            self.toast("Finish recording before playing a video");
+            return;
+        }
+        let Some(Content::Video {
+            media, gif: false, ..
+        }) = self
+            .conversations
+            .get(&chat)
+            .and_then(|conversation| conversation.message(&message))
+            .map(|row| &row.content)
+        else {
+            return;
+        };
+        if let Some(path) = media.path.clone() {
+            self.video_to_play = None;
+            self.player.stop();
+            if let Err(error) = self.video.toggle(&chat, &message, &path) {
+                self.toast_error(error);
+            }
+        } else {
+            let downloading = matches!(media.state, MediaState::Downloading);
+            self.video.stop();
+            self.video_to_play = Some((chat.clone(), message.clone()));
+            if !downloading {
+                self.actions.push(Action::Download { chat, message });
+            }
+        }
+    }
+
+    fn tick_video(&mut self, ctx: &egui::Context) {
+        if self.window_hidden
+            || self.page != Page::Chats
+            || ctx.input(|input| input.viewport().minimized) == Some(true)
+        {
+            self.stop_video();
+            return;
+        }
+        if self.image_preview.is_some() || self.dialog.is_some() {
+            self.video.pause();
+            self.video_to_play = None;
+        }
+        if let Some((chat, message)) = self.video_to_play.clone() {
+            let media = self
+                .conversations
+                .get(&chat)
+                .and_then(|conversation| conversation.message(&message))
+                .and_then(|row| row.content.media());
+            if self.open_chat.as_ref() != Some(&chat)
+                || media.is_none_or(|media| matches!(media.state, MediaState::Failed(_)))
+            {
+                self.video_to_play = None;
+            } else if media.is_some_and(|media| media.path.is_some()) {
+                self.video_to_play = None;
+                self.actions.push(Action::PlayVideo { chat, message });
+            }
+        }
+        if let Some(active) = self.video.active() {
+            let valid = self.open_chat.as_ref() == Some(&active.chat)
+                && self.conversations.get(&active.chat).and_then(|conversation| conversation.message(&active.message))
+                    .is_some_and(|row| matches!(&row.content, Content::Video { media, gif: false, .. } if media.path.as_ref() == Some(&active.path)));
+            if !valid {
+                self.video.stop();
+                return;
+            }
+        }
+        self.video.poll(ctx);
     }
 
     fn tell_played(&mut self, message: String) {
@@ -3240,6 +3362,110 @@ mod tests {
             mentions: Vec::new(),
             forwarded: false,
             thumbnail: None,
+        }
+    }
+
+    fn app_with_undownloaded_video() -> App {
+        let mut app = app();
+        let mut row = message("fixture", "video", 1);
+        row.content = Content::Video {
+            media: crate::model::Media {
+                mime: "video/mp4".into(),
+                size: 100,
+                width: Some(640),
+                height: Some(360),
+                path: None,
+                state: MediaState::Idle,
+            },
+            caption: None,
+            seconds: Some(6),
+            gif: false,
+        };
+        app.open_chat = Some("fixture".into());
+        app.conversations
+            .entry("fixture".into())
+            .or_default()
+            .messages
+            .push(row);
+        app
+    }
+
+    #[test]
+    fn video_download_starts_playback_only_after_an_explicit_play_request() {
+        let mut app = app_with_undownloaded_video();
+        let ctx = egui::Context::default();
+        let (backend, mut commands) = Backend::recording();
+        app.backend = backend;
+        let play = Action::PlayVideo {
+            chat: "fixture".into(),
+            message: "video".into(),
+        };
+        app.apply(play.clone(), &ctx);
+        app.apply_actions(&ctx);
+        assert!(
+            matches!(commands.try_recv().unwrap(), Command::Download { chat, message } if chat == "fixture" && message == "video")
+        );
+        app.apply(play.clone(), &ctx);
+        app.apply_actions(&ctx);
+        assert!(
+            commands.try_recv().is_err(),
+            "a second click must not duplicate the download"
+        );
+        app.conversations
+            .get_mut("fixture")
+            .unwrap()
+            .message_mut("video")
+            .unwrap()
+            .content
+            .media_mut()
+            .unwrap()
+            .path = Some(PathBuf::from("/tmp/video-fixture.mp4"));
+        app.tick_video(&ctx);
+        assert_eq!(app.actions, vec![play]);
+        app.actions.clear();
+        app.tick_video(&ctx);
+        assert!(
+            app.actions.is_empty(),
+            "a cached or automatic download must not autoplay again"
+        );
+    }
+
+    #[test]
+    fn leaving_the_chat_or_a_failed_download_cancels_pending_video_playback() {
+        for cancel in 0..4 {
+            let mut app = app_with_undownloaded_video();
+            let ctx = egui::Context::default();
+            app.apply(
+                Action::PlayVideo {
+                    chat: "fixture".into(),
+                    message: "video".into(),
+                },
+                &ctx,
+            );
+            app.apply_actions(&ctx);
+            match cancel {
+                0 => app.apply(Action::OpenChat("another-chat".into()), &ctx),
+                1 => app.apply(Action::Open(Page::Settings), &ctx),
+                2 => app.window_gone(),
+                _ => {
+                    app.conversations
+                        .get_mut("fixture")
+                        .unwrap()
+                        .message_mut("video")
+                        .unwrap()
+                        .content
+                        .media_mut()
+                        .unwrap()
+                        .state = MediaState::Failed("fixture failure".into());
+                }
+            }
+            app.tick_video(&ctx);
+            assert!(app.video_to_play.is_none());
+            assert!(
+                !app.actions
+                    .iter()
+                    .any(|action| matches!(action, Action::PlayVideo { .. }))
+            );
         }
     }
 

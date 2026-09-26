@@ -394,6 +394,7 @@ pub enum Icon {
     User,
     Users,
     Video,
+    Volume2,
     VolumeX,
     WifiOff,
     X,
@@ -465,6 +466,7 @@ const ICONS: &[(Icon, &str, &[u8])] = icons! {
     Users => "users",
     Video => "video",
     VolumeX => "volume-x",
+    Volume2 => "volume-2",
     WifiOff => "wifi-off",
     X => "x",
 };

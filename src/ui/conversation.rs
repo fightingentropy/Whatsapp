@@ -1133,6 +1133,8 @@ struct View<'a> {
     avatars: &'a HashMap<String, Option<PathBuf>>,
     now: i64,
     player: &'a crate::audio::Player,
+    video: &'a crate::video::Player,
+    video_visible: &'a std::cell::Cell<bool>,
     copy_rows: &'a Mutex<Vec<Arc<crate::transcript::Row>>>,
     layout_pending: &'a std::cell::Cell<bool>,
     capture_selection: &'a std::cell::Cell<bool>,
@@ -1162,6 +1164,7 @@ fn messages(app: &mut App, ui: &mut egui::Ui, chat: &Chat) {
     let layout_pending = std::cell::Cell::new(false);
     let capture_selection = std::cell::Cell::new(false);
     let selection = std::cell::RefCell::new(None);
+    let video_visible = std::cell::Cell::new(false);
     let names_or = |id: &str, hint: Option<&str>| app.display_name_or(id, hint);
     let mention_names = |id: &str| app.mention_name(id);
     let view = View {
@@ -1180,6 +1183,8 @@ fn messages(app: &mut App, ui: &mut egui::Ui, chat: &Chat) {
         avatars: &avatars,
         now: crate::util::now(),
         player: &app.player,
+        video: &app.video,
+        video_visible: &video_visible,
         copy_rows: app.copy_rows.as_ref(),
         layout_pending: &layout_pending,
         capture_selection: &capture_selection,
@@ -1479,6 +1484,14 @@ fn messages(app: &mut App, ui: &mut egui::Ui, chat: &Chat) {
     let near_top = output.state.offset.y < 80.0;
     if (near_top || fits) && ((!complete && !loading) || (complete && !fetching && !exhausted)) {
         actions.push(Action::LoadOlder(chat.id.clone()));
+    }
+    if !video_visible.get()
+        && let Some(active) = app.video.active().filter(|active| active.is_playing())
+    {
+        actions.push(Action::PauseVideo {
+            chat: active.chat.clone(),
+            message: active.message.clone(),
+        });
     }
     app.actions.extend(actions);
     if edge_scrolled_up {
@@ -2023,8 +2036,8 @@ fn settled_width(ui: &egui::Ui, view: &View<'_>, message: &Message, cap: f32) ->
         || match &message.content {
             Content::Text { preview, .. } => preview.is_some(),
             Content::Document { .. } | Content::Audio { .. } | Content::Poll { .. } => true,
-            // Videos without a poster use the file-row layout.
-            Content::Video { .. } => message.thumbnail.is_none(),
+            // GIFs without a poster use the file-row layout.
+            Content::Video { gif: true, .. } => message.thumbnail.is_none(),
             _ => false,
         };
     card.then(|| {
@@ -3223,7 +3236,7 @@ fn picture(
     size.x
 }
 
-/// Draws a video poster and opens the downloaded video in the default player.
+/// Ordinary videos play on demand; GIFs retain their looping preview.
 #[allow(clippy::too_many_arguments)]
 fn video(
     ui: &mut egui::Ui,
@@ -3235,6 +3248,9 @@ fn video(
     width: f32,
     actions: &mut Vec<Action>,
 ) -> f32 {
+    if !gif {
+        return inline_video(ui, view, message, media, seconds, width, actions);
+    }
     let palette = view.palette;
     let Some(thumbnail) = message.thumbnail.as_deref() else {
         let title = if gif { "GIF" } else { "Video" };
@@ -3354,6 +3370,189 @@ fn video(
             None => {}
         }
     }
+    size.x
+}
+
+/// Keep the native video inside egui, so clipping, scrolling and menus all work
+/// with both renderers. Controls have fixed height before and during playback.
+fn inline_video(
+    ui: &mut egui::Ui,
+    view: &View<'_>,
+    message: &Message,
+    media: &Media,
+    seconds: Option<u32>,
+    width: f32,
+    actions: &mut Vec<Action>,
+) -> f32 {
+    let palette = view.palette;
+    let size = frame_size(media, Some((16, 9)), width.min(PICTURE_WIDTH));
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    let active = view.video.for_message(&message.chat, &message.id);
+    let playing = active.is_some_and(crate::video::Playback::is_playing);
+    let failed = active.is_some_and(|active| active.state == crate::video::State::Failed);
+    if ui.is_rect_visible(rect) {
+        if active.is_some() {
+            view.video_visible.set(true);
+        }
+        ui.painter().rect_filled(rect, 6.0, Color32::BLACK);
+        if let Some(active) = active.filter(|active| active.texture.is_some()) {
+            active.paint(ui.painter(), rect);
+        } else if let Some(thumbnail) = message.thumbnail.as_deref() {
+            egui::Image::new(thumbnail_uri(
+                ui.ctx(),
+                &message.chat,
+                &message.id,
+                thumbnail,
+            ))
+            .fit_to_exact_size(size)
+            .corner_radius(6.0)
+            .paint_at(ui, rect);
+        }
+        if !playing || active.is_some_and(|active| active.state == crate::video::State::Loading) {
+            let disc = Rect::from_center_size(rect.center(), Vec2::splat(48.0));
+            ui.painter()
+                .circle_filled(disc.center(), 24.0, Color32::from_black_alpha(150));
+            if matches!(media.state, MediaState::Downloading)
+                || active.is_some_and(|active| {
+                    active.state == crate::video::State::Loading && active.is_playing()
+                })
+            {
+                theme::paint_spinner(ui, disc, 24.0, Color32::WHITE);
+            } else {
+                theme::paint_icon(
+                    ui,
+                    if failed { Icon::Refresh } else { Icon::Play },
+                    disc,
+                    22.0,
+                    Color32::WHITE,
+                );
+            }
+        }
+        if failed || matches!(media.state, MediaState::Failed(_)) {
+            let label = if failed {
+                "Cannot play · click to retry"
+            } else {
+                "Download failed · click to retry"
+            };
+            ui.painter().text(
+                rect.center_bottom() - vec2(0.0, 12.0),
+                Align2::CENTER_BOTTOM,
+                label,
+                theme::regular(11.0),
+                Color32::WHITE,
+            );
+        }
+    }
+    let response = response
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text(if failed {
+            "Retry playback. Open in another app is available in the message menu."
+        } else if playing {
+            "Pause video"
+        } else {
+            "Play video"
+        });
+    if response.clicked() {
+        actions.push(Action::PlayVideo {
+            chat: message.chat.clone(),
+            message: message.id.clone(),
+        });
+    } else if ui.is_rect_visible(rect)
+        && media.path.is_none()
+        && matches!(media.state, MediaState::Idle)
+        && view.auto_download
+        && media.size <= AUTO_DOWNLOAD_LIMIT
+    {
+        actions.push(Action::Download {
+            chat: message.chat.clone(),
+            message: message.id.clone(),
+        });
+    }
+    let total = active.map_or_else(|| f64::from(seconds.unwrap_or(0)), |active| active.duration);
+    let position = active.map_or(0.0, |active| active.position);
+    let mut fraction = if total > 0.0 {
+        (position / total).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    ui.allocate_ui_with_layout(
+        vec2(size.x, 30.0),
+        Layout::left_to_right(Align::Center),
+        |ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            if theme::icon_button(
+                ui,
+                if playing { Icon::Pause } else { Icon::Play },
+                14.0,
+                palette.secondary,
+                palette.text,
+                if playing { "Pause video" } else { "Play video" },
+            )
+            .clicked()
+            {
+                actions.push(Action::PlayVideo {
+                    chat: message.chat.clone(),
+                    message: message.id.clone(),
+                });
+            }
+            ui.spacing_mut().slider_width = (size.x - 102.0).max(16.0);
+            let slider = ui
+                .add_enabled(
+                    active.is_some_and(|active| active.duration > 0.0 && !failed),
+                    egui::Slider::new(&mut fraction, 0.0..=1.0).show_value(false),
+                )
+                .on_hover_text(format!(
+                    "{} / {}",
+                    crate::util::duration(position as u32),
+                    crate::util::duration(total as u32)
+                ));
+            if slider.changed() {
+                actions.push(Action::SeekVideo {
+                    chat: message.chat.clone(),
+                    message: message.id.clone(),
+                    fraction,
+                });
+            }
+            let label = widgets::line(
+                ui,
+                &crate::util::duration(if active.is_some() { position } else { total } as u32),
+                theme::regular(10.5),
+                palette.secondary,
+                36.0,
+                1,
+            );
+            let (time_rect, _) = ui.allocate_exact_size(vec2(36.0, label.size().y), Sense::hover());
+            if ui.is_rect_visible(time_rect) {
+                label.paint(ui, time_rect.min, palette.secondary);
+            }
+            let muted = active.is_some_and(|active| active.muted);
+            ui.add_enabled_ui(
+                active.is_some_and(|active| active.has_audio && !failed),
+                |ui| {
+                    if theme::icon_button(
+                        ui,
+                        if muted { Icon::VolumeX } else { Icon::Volume2 },
+                        14.0,
+                        palette.secondary,
+                        palette.text,
+                        if muted { "Unmute video" } else { "Mute video" },
+                    )
+                    .clicked()
+                    {
+                        actions.push(Action::MuteVideo {
+                            chat: message.chat.clone(),
+                            message: message.id.clone(),
+                        });
+                    }
+                },
+            );
+        },
+    );
+    // Offline UI tests can target the actual poster without accessing message data.
+    #[cfg(any(test, feature = "demo"))]
+    ui.ctx().data_mut(|data| {
+        data.insert_temp(bubble_id(&message.chat, &message.id).with("video"), rect)
+    });
     size.x
 }
 

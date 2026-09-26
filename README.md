@@ -65,8 +65,12 @@ Build from source below; signed, notarized public downloads will appear under
 - H.264 animated MP4 previews with at least 230,400 source pixels
   (equivalent to 640×360) and eight frames use Apple's VideoToolbox decoder, with a software
   fallback. Smaller clips avoid hardware setup costs. Decoding requests preview-sized output, limits work in
-  flight, and preserves reordered frames at the end of a clip. Ordinary videos
-  still open in your external player.
+  flight, and preserves reordered frames at the end of a clip.
+- Ordinary videos use AVFoundation for decoding and synchronized sound. Only one
+  video plays at a time, with one current texture bounded to 640 pixels per side;
+  the app does not cache a movie's decoded frames. Native decoder buffers are
+  additional memory. Paused playback stops requesting frames, and leaving the
+  chat or hiding the window releases the player.
 - System font scanning and emoji indexing start in one background worker during
   native window setup and are reused when the window reopens. Font collections
   share their bytes across faces. Apple Color Emoji
@@ -145,8 +149,11 @@ See [PERFORMANCE.md](PERFORMANCE.md) for measurements, remaining costs and valid
   polls, and link previews appear in the chat. Click a downloaded photo to open
   an in-app preview with zoom, fit, original size, and an external-app button.
   Escape closes the preview; typing and paste cannot alter the draft behind it.
-  Videos and documents open in
-  their default desktop apps. If an attachment has expired, Whatsapp asks your
+  Videos play inside their message bubble with play/pause, seeking and mute.
+  Clicking Play downloads the video if needed and starts it when ready; automatic
+  downloads never start playback. Scrolling the video out of view pauses it.
+  The message menu still offers opening a video in another app; documents open
+  in their default desktop apps. If an attachment has expired, Whatsapp asks your
   phone to upload it again.
 - **Emoji, GIF, and sticker picker.** Search emoji and GIFs, use recent emoji
   and stickers, and save stickers with a right-click. Emoji autocomplete and
@@ -188,8 +195,7 @@ See [PERFORMANCE.md](PERFORMANCE.md) for measurements, remaining costs and valid
 
 ## What it does not do yet
 
-- Play ordinary videos in the app (they open in your player), or reply to
-  a message with an attachment.
+- Reply to a message with an attachment.
 - Calls, status posts, communities, newsletters, and group administration.
 
 The selected September 2026 upstream ports and deferred changes are recorded in
@@ -234,6 +240,16 @@ An optional message count lets it match smaller histories. It verifies scrolling
 an active text selection and complete copy registration at native 2× scale. Its
 CPU timings exclude native rendering, tessellation and GPU work; they are not
 frame-rate measurements.
+
+The offline inline-video probe checks decoded frames and the audio track,
+pause, forward/backward seeking, mute, replay, switching and failed media:
+
+```sh
+cargo run --locked --features demo --example inline_video_probe
+```
+
+Use `--demo-page inline-video` or `--demo-page portrait-video` with `--demo`
+to try the same synthetic clips in the chat.
 
 For a local test DMG:
 

@@ -1069,6 +1069,45 @@ pub fn apply_flags(app: &mut App, page: Option<&str>) {
                 app.open_chat = Some(chat.into());
                 app.scroll_to_bottom = true;
             }
+            "inline-video" | "portrait-video" => {
+                let portrait = part == "portrait-video";
+                let bytes: &[u8] = if portrait {
+                    include_bytes!("../tests/fixtures/inline-video-portrait.mp4")
+                } else {
+                    include_bytes!("../tests/fixtures/inline-video.mp4")
+                };
+                let id = if portrait {
+                    "demo-portrait-video"
+                } else {
+                    "demo-inline-video"
+                };
+                let path = app.dirs.media_cache_dir().join(format!("{id}.mp4"));
+                let _ = std::fs::create_dir_all(app.dirs.media_cache_dir());
+                let _ = std::fs::write(&path, bytes);
+                let (width, height) = if portrait { (360, 640) } else { (640, 360) };
+                let mut media = media("video/mp4", bytes.len() as u64, Some(width), Some(height));
+                media.path = Some(path);
+                let chat = SAMPLES[0].id;
+                let mut row = message(
+                    chat,
+                    id,
+                    false,
+                    jiff::Timestamp::now().as_second(),
+                    Content::Video {
+                        media,
+                        caption: Some("Video with sound · play, pause and seek here".into()),
+                        seconds: Some(6),
+                        gif: false,
+                    },
+                );
+                row.thumbnail = Some(sample_thumbnail(1));
+                if let Some(conversation) = app.conversations.get_mut(chat) {
+                    conversation.messages.retain(|row| row.id != id);
+                    conversation.messages.push(row);
+                }
+                app.open_chat = Some(chat.into());
+                app.scroll_to_bottom = true;
+            }
             "voice" => {
                 // Use a valid clip for playback tests.
                 let tone: Vec<f32> = (0..crate::voice::RATE * 6)
@@ -1373,6 +1412,8 @@ mod tests {
             "compose-emoji",
             "voice",
             "video",
+            "inline-video",
+            "portrait-video",
             "recording",
             "gifs",
             "gifs-badkey",
@@ -1455,6 +1496,64 @@ mod tests {
             pressed: true,
             repeat: false,
             modifiers,
+        }
+    }
+
+    #[test]
+    fn video_poster_click_plays_inside_the_chat_even_without_a_thumbnail() {
+        for (thumbnail, own) in [(true, false), (false, false), (true, true)] {
+            let mut app = app();
+            apply_flags(&mut app, Some("inline-video"));
+            let chat = SAMPLES[0].id;
+            let row = app
+                .conversations
+                .get_mut(chat)
+                .unwrap()
+                .message_mut("demo-inline-video")
+                .unwrap();
+            row.from_me = own;
+            if !thumbnail {
+                row.thumbnail = None;
+            }
+            let ctx = egui::Context::default();
+            app.attach(&ctx);
+            render(&mut app, &ctx);
+            let rect = ctx
+                .data(|data| {
+                    data.get_temp::<egui::Rect>(
+                        crate::ui::conversation::bubble_id(chat, "demo-inline-video").with("video"),
+                    )
+                })
+                .unwrap();
+            app.actions.clear();
+            for pressed in [true, false] {
+                let mut output = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(1180.0, 780.0),
+                        )),
+                        events: vec![
+                            egui::Event::PointerMoved(rect.center()),
+                            egui::Event::PointerButton {
+                                pos: rect.center(),
+                                button: egui::PointerButton::Primary,
+                                pressed,
+                                modifiers: egui::Modifiers::NONE,
+                            },
+                        ],
+                        ..Default::default()
+                    },
+                    |ui| crate::ui::show(&mut app, ui),
+                );
+                output.textures_delta.clear();
+            }
+            assert!(app.actions.iter().any(|action| matches!(action, crate::model::Action::PlayVideo { chat: id, message } if id == chat && message == "demo-inline-video")));
+            assert!(
+                !app.actions
+                    .iter()
+                    .any(|action| matches!(action, crate::model::Action::OpenFile(_)))
+            );
         }
     }
 
