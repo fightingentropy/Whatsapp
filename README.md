@@ -271,6 +271,31 @@ If no code is available, **Get a new QR code** retries without restarting the ap
 or deleting its data. An outstanding phone-number pairing code is preserved.
 The pairing card scrolls in short windows so every linking option stays reachable.
 
+## Agent access
+
+Agents can query chats directly through a **read-only local MCP server** or the
+JSON CLI, without screenshots or opening chat windows. The installed Mac app
+provides both:
+
+```sh
+~/Applications/Whatsapp.app/Contents/MacOS/whatsapp agent status
+~/Applications/Whatsapp.app/Contents/MacOS/whatsapp agent tools
+~/Applications/Whatsapp.app/Contents/MacOS/whatsapp agent call list_chats '{"query":"Family"}'
+```
+
+Tools find chats, page through messages, search text, resolve quoted replies and
+read downloaded attachments. Results preserve sender names, timestamps, text,
+captions, link previews, reactions and media metadata. PDF pages and UTF-8 files
+return text; supported images can be returned directly to an MCP client. Other
+documents, audio and video expose a validated local file for the agent's own tools.
+There is no automatic transcription, OCR or fetching of posted links.
+
+Agent reads do not send messages, mark chats read, download media, start a linked
+session or migrate the archive. They only see history already synced to this Mac;
+keep Whatsapp open for new messages to arrive. There is no listening network port.
+See [Agent access](docs/AGENT_ACCESS.md) for Codex/other MCP client setup, exact
+examples, pagination, attachment limits and privacy details.
+
 ## Files
 
 Settings, `session.db`, `archive.db`, saved stickers and logs are under

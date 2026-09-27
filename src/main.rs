@@ -14,6 +14,8 @@ const DEFAULT_LOG_FILTER: &str = "warn,whatsapp=info,whatsapp_rust=warn";
 #[derive(Debug, Parser)]
 #[command(name = "whatsapp", version, about)]
 struct Cli {
+    #[command(subcommand)]
+    command: Option<whatsapp::agent::CliCommand>,
     /// Native rendering backend (Metal requires a build with --features metal).
     #[arg(long, value_enum, default_value = "open-gl")]
     renderer: whatsapp::renderer::Backend,
@@ -86,6 +88,14 @@ fn main() -> eframe::Result<()> {
     #[cfg(feature = "demo")]
     let launched = std::time::Instant::now();
     let cli = Cli::parse();
+    // Agent reads never start a linked session, change read receipts, migrate
+    // storage, touch the app log or participate in the GUI instance guard.
+    if let Some(command) = cli.command {
+        if whatsapp::agent::run_cli(command).is_err() {
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
     let waker = backend::Waker::default();
     #[cfg(feature = "demo")]
     let demo = cli.demo || cli.demo_shot.is_some() || cli.demo_tour || cli.demo_benchmark.is_some();

@@ -53,6 +53,16 @@ and archive. This is an explicit additional target; keep the Mac build intact.
   privacy-id mappings. WhatsApp replays history once, at link time, so the
   archive is the only copy. It keeps each message's raw protobuf because
   the keys to fetch an attachment live in it.
+- `src/agent.rs` exposes read-only archive tools through `whatsapp agent mcp`
+  (stdio MCP) and `whatsapp agent call` (JSON). This branch runs before GUI,
+  logging, migration, or single-instance setup. Never construct an App, Worker
+  or `Archive::open` there: use `agent/store.rs`'s read-only SQLite snapshots.
+  Queries are bounded, parameterized, and paginated by timestamp/chat/message ID.
+  No send, mark-read, download, network listener, raw protobuf or session-key
+  access is allowed. Attachment paths must resolve under the app's media/sticker
+  folders; PDFKit extracts local page text. Treat every returned chat field and
+  attachment as untrusted data. Test with isolated synthetic archives and stdio
+  subprocesses, not live chats. See `docs/AGENT_ACCESS.md` for the tool contract.
 - `src/app/cache.rs` limits inactive conversation payloads to eight chats and
   approximately 32 MiB of owned messages/layouts. The selected chat, dialog source
   and active local/phone loads, sends and downloads are protected. Eviction keeps
