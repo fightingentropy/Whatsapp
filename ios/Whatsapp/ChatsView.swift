@@ -102,7 +102,7 @@ private struct ChatListRow: View {
     var body: some View {
         Button { store.navigation.append(chat.id) } label: {
             HStack(spacing: 12) {
-                AvatarView(name: store.chatTitle(chat), url: store.localURL(store.avatars[chat.id]), group: chat.kind == "group", size: 52)
+                AvatarView(name: store.chatTitle(chat), url: store.avatarURL(chat.id), group: chat.kind == "group", size: 52)
                 VStack(alignment: .leading, spacing: 5) {
                     HStack(alignment: .firstTextBaseline) {
                         Text(store.chatTitle(chat)).font(.system(.body, weight: .semibold)).foregroundStyle(.primary).lineLimit(1)

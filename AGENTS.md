@@ -41,6 +41,11 @@ and archive. This is an explicit additional target; keep the Mac build intact.
   unloaded gap. Attachment paths are repaired on access, not by a startup scan.
   Animated sticker reservations share a 32 MiB cap; pause/release them for
   backgrounding, Low Power Mode and Reduce Motion.
+  Cached portrait paths are restored before publishing chat/history batches;
+  the engine queue predecodes at most 16 portraits and four recent photos per
+  batch. LocalImage uses its 24 MiB thumbnail cache on the first render and
+  keys refreshes by file revision. Network refresh failures preserve portraits;
+  only a successful missing-picture result writes the empty cache marker.
 - `src/ui/` draws views and pushes `model::Action`s; `src/app.rs` applies
   them after the frame. Never mutate application state from inside a view
   beyond the view's own fields (composer text, search text, flags).

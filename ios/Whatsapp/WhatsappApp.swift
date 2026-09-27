@@ -24,6 +24,9 @@ struct WhatsappApp: App {
         if demo && ProcessInfo.processInfo.arguments.contains("--demo-pairing-interrupted") {
             store.loadInterruptedPairingDemo()
         }
+        if demo && ProcessInfo.processInfo.arguments.contains("--demo-cached-pictures") {
+            store.loadCachedPicturesDemo()
+        }
         #endif
         _store = State(initialValue: store)
     }

@@ -110,6 +110,22 @@ final class EfficiencyTests: XCTestCase {
         XCTAssertEqual(engine.commands.last?["type"] as? String, "avatar")
     }
 
+    func testRepeatedAvatarRestorationDoesNotRedrawButSamePathRefreshDoes() throws {
+        let (store, _) = fixture()
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("Portrait-\(UUID()).jpg")
+        defer { try? FileManager.default.removeItem(at: file) }
+        try Data([1]).write(to: file)
+        var event = CoreEvent(type: "avatar"); event.id = "a@lid"; event.path = file.path
+        store.apply([event])
+        let changed = ChangeFlag()
+        withObservationTracking {
+            _ = store.avatars; _ = store.avatarRevisions
+        } onChange: { changed.set() }
+        store.apply([event]); XCTAssertFalse(changed.value)
+        try Data([2, 3]).write(to: file)
+        store.apply([event]); XCTAssertTrue(changed.value)
+    }
+
     func testQuoteUsesBoundedWindowAndKeepsTargetWhenOlderHistoryIsLarge() {
         let (store, engine) = fixture()
         store.jump(to: "09000")

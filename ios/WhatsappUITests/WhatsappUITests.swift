@@ -17,6 +17,40 @@ final class WhatsappUITests: XCTestCase {
         attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
     }
 
+    func testSavedPicturesSurviveColdRelaunchWithoutNetwork() throws {
+        let app = XCUIApplication(); app.launchArguments = ["--demo", "--demo-cached-pictures"]
+        for launch in 1...2 {
+            app.launch()
+            let row = app.buttons["chat-weekend@g.us"]
+            XCTAssertTrue(row.waitForExistence(timeout: 10))
+            // The group placeholder is grey. A saved landscape must contain
+            // saturated colour before opening a chat or connecting a worker.
+            let screenshot = try XCTUnwrap(app.screenshot().image.cgImage)
+            let scale = CGFloat(screenshot.width) / app.frame.width
+            let rect = CGRect(x: row.frame.minX, y: row.frame.midY - 26, width: 52, height: 52)
+            let crop = try XCTUnwrap(screenshot.cropping(to: CGRect(x: rect.minX * scale, y: rect.minY * scale,
+                width: rect.width * scale, height: rect.height * scale)))
+            var pixels = [UInt8](repeating: 0, count: 32 * 32 * 4)
+            let context = try XCTUnwrap(CGContext(data: &pixels, width: 32, height: 32, bitsPerComponent: 8,
+                bytesPerRow: 32 * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+            context.draw(crop, in: CGRect(x: 0, y: 0, width: 32, height: 32))
+            let coloured = stride(from: 0, to: pixels.count, by: 4).filter { i in
+                let rgb = [pixels[i], pixels[i + 1], pixels[i + 2]]
+                return Int(rgb.max()!) - Int(rgb.min()!) > 60
+            }.count
+            XCTAssertGreaterThan(coloured, 400, "Saved portrait should be visible on launch \(launch)")
+            capture(app, "Saved pictures — offline cold launch \(launch)")
+            row.tap()
+            XCTAssertTrue(app.staticTexts["Saved photo — available offline"].waitForExistence(timeout: 5))
+            let photo = app.buttons["message-cached-photo"]
+            XCTAssertGreaterThan(photo.frame.height, 180)
+            XCTAssertLessThan(photo.frame.maxY, composer(app).frame.minY)
+            XCTAssertLessThan(app.staticTexts["Saved photo — available offline"].frame.maxY, composer(app).frame.minY)
+            capture(app, "Saved photo — offline cold launch \(launch)")
+            app.terminate()
+        }
+    }
+
     private func assertLatestMessageIsAboveComposer(_ app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
         let message = app.staticTexts["Sounds good"]
         XCTAssertTrue(message.waitForExistence(timeout: 3), file: file, line: line)

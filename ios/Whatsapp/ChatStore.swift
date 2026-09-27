@@ -20,6 +20,7 @@ final class ChatStore {
     var syncProgress: Int?
     var error: String?
     var avatars: [String: String] = [:]
+    var avatarRevisions: [String: String] = [:]
     var contactNames: [String: String] = [:]
     var aliases: [String: String] = [:]
     var drafts: [String: String] = [:]
@@ -380,8 +381,19 @@ final class ChatStore {
     }
 
     func avatar(_ id: String) {
-        guard !isDemo, requestedAvatars.insert(id).inserted else { return }
-        engine.send(["type": "avatar", "id": id])
+        let id = canonical(id)
+        guard !isDemo, engineStarted, requestedAvatars.insert(id).inserted else { return }
+        engine.send(["type": "avatar", "id": id]) { [weak self] accepted in
+            if !accepted { self?.requestedAvatars.remove(id) }
+        }
+    }
+
+    func avatarURL(_ id: String, full: Bool = false) -> URL? {
+        let id = canonical(id)
+        // A downloaded refresh can replace the same filename. Its revision
+        // invalidates the row even when the path string has not changed.
+        _ = avatarRevisions[id]
+        return localURL((full ? fullAvatars[id] : nil) ?? avatars[id])
     }
 
     func download(_ message: Message) {
@@ -440,7 +452,7 @@ final class ChatStore {
                     chats = []; messages = []; selectedChat = nil; drafts = [:]; reply = nil
                     if status == "logged_out" {
                         navigation = []; editing = nil; attachments = [:]; audio.discardRecording(); audio.stopPlayback()
-                        contacts = []; contactNames = [:]; avatars = [:]; fullAvatars = [:]; aliases = [:]
+                        contacts = []; contactNames = [:]; avatars = [:]; fullAvatars = [:]; avatarRevisions = [:]; aliases = [:]
                         searchHits = []; searchQuery = ""; searching = false
                         typing = [:]; typingExpiry?.cancel(); presence = [:]
                         pendingJump = nil; pendingJumpChat = nil; scrollTarget = nil; draftBeforeEditing = nil
@@ -527,8 +539,12 @@ final class ChatStore {
                 contacts = Array(byID.values)
                 for contact in event.contacts ?? [] { if let name = contact.name { contactNames[contact.id] = name } }
             case "avatar":
-                if let id = event.id {
-                    if event.full == true { fullAvatars[id] = event.path } else { avatars[id] = event.path }
+                if let id = event.id.map(canonical) {
+                    if event.full == true {
+                        if fullAvatars[id] != event.path { fullAvatars[id] = event.path }
+                    } else if avatars[id] != event.path { avatars[id] = event.path }
+                    let revision = event.path.map { Thumbnails.revision(URL(fileURLWithPath: $0)) }
+                    if avatarRevisions[id] != revision { avatarRevisions[id] = revision }
                 }
             case "search":
                 if event.query == searchQuery { searchHits = event.messages ?? []; searching = false }

@@ -33,7 +33,7 @@ struct MessageBubble: View {
             else if group || store.preferences.senderPictures {
                 Group {
                     if !joinsNext {
-                        AvatarView(name: senderName, url: store.localURL(store.avatars[message.sender]), size: 26)
+                        AvatarView(name: senderName, url: store.avatarURL(message.sender), size: 26)
                             .task { store.avatar(message.sender) }
                     } else { Color.clear.frame(width: 26, height: 26) }
                 }.padding(.bottom, message.reactions.isEmpty ? 2 : 25)

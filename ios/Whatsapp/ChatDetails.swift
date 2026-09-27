@@ -12,7 +12,7 @@ struct ChatDetails: View {
         List {
             Section {
                 VStack(spacing: 7) {
-                    AvatarView(name: chat.map(store.chatTitle) ?? store.displayName(id), url: store.localURL(store.fullAvatars[store.canonical(id)] ?? store.avatars[store.canonical(id)]), group: chat?.kind == "group", size: 88)
+                    AvatarView(name: chat.map(store.chatTitle) ?? store.displayName(id), url: store.avatarURL(id, full: true), group: chat?.kind == "group", size: 88)
                         .padding(.bottom, 8)
                     Text(chat.map(store.chatTitle) ?? store.displayName(id)).font(.title2.weight(.semibold)).textSelection(.enabled)
                     if id.hasSuffix("@s.whatsapp.net") { Text("+" + id.components(separatedBy: "@")[0]).foregroundStyle(.secondary).textSelection(.enabled) }
@@ -32,7 +32,7 @@ struct ChatDetails: View {
                         ForEach(chat.participants ?? [], id: \.self) { member in
                             NavigationLink { ChatDetails(id: member) } label: {
                                 HStack(spacing: 12) {
-                                    AvatarView(name: store.displayName(member), url: store.localURL(store.avatars[member]), size: 36)
+                                    AvatarView(name: store.displayName(member), url: store.avatarURL(member), size: 36)
                                     Text(store.displayName(member))
                                 }.padding(.vertical, 3)
                             }.task { store.avatar(member) }
