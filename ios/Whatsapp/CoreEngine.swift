@@ -51,6 +51,7 @@ extension MessagingEngine {
 final class CoreEngine: MessagingEngine, @unchecked Sendable {
     private let queue = DispatchQueue(label: "org.erlin.whatsapp.ios.engine", qos: .userInitiated)
     private var handle: UInt64 = 0
+    private var root: URL?
     var onEvents: (([CoreEvent]) -> Void)?
     var onError: ((String) -> Void)?
 
@@ -67,6 +68,7 @@ final class CoreEngine: MessagingEngine, @unchecked Sendable {
 
     func start(root: URL) {
         queue.async {
+            self.root = root
             if self.handle == 0 {
                 self.handle = root.path.withCString { wa_start($0, whatsappEventsReady) }
             }
@@ -88,7 +90,11 @@ final class CoreEngine: MessagingEngine, @unchecked Sendable {
             let batch = try JSONDecoder().decode(CoreBatch.self, from: data)
             guard batch.version == 1 else { throw CocoaError(.coderInvalidValue) }
             guard !batch.events.isEmpty else { return }
-            DispatchQueue.main.async { self.onEvents?(batch.events) }
+            // Decode cached portraits alongside local chat/history restoration,
+            // before rows appear. This never waits for the reconnecting worker
+            // to service an avatar command and never performs UI-thread decoding.
+            let events = root.map { CachedMedia.prepare(batch.events, root: $0) } ?? batch.events
+            DispatchQueue.main.async { self.onEvents?(events) }
         } catch {
             // Never print the event JSON: pairing codes and private messages live here.
             fail("This build could not read a messaging update. Reopen the app to reconnect.")

@@ -12,6 +12,39 @@ extension ChatStore {
         pairingInterrupted = true
     }
 
+    func loadCachedPicturesDemo() {
+        guard isDemo else { return }
+        status = "connecting"
+        let directory = Self.demoRoot.appendingPathComponent("cache/avatars")
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        for (index, chat) in chats.enumerated() {
+            let stem = chat.id.map { $0.isASCII && ($0.isLetter || $0.isNumber) ? $0 : "_" }
+            let file = directory.appendingPathComponent(String(stem) + ".jpg")
+            guard !FileManager.default.fileExists(atPath: file.path) else { continue }
+            // Fictional landscape portraits, retained on disk across launches.
+            let image = UIGraphicsImageRenderer(size: CGSize(width: 240, height: 240)).image { context in
+                UIColor(hue: CGFloat(index) / 8 + 0.45, saturation: 0.7, brightness: 0.85, alpha: 1).setFill()
+                context.fill(CGRect(x: 0, y: 0, width: 240, height: 240))
+                UIColor.systemYellow.setFill()
+                context.cgContext.fillEllipse(in: CGRect(x: 140, y: 35, width: 56, height: 56))
+                UIColor(red: 0.04, green: 0.35, blue: 0.3, alpha: 1).setFill()
+                let hill = UIBezierPath(); hill.move(to: CGPoint(x: 0, y: 190))
+                hill.addLine(to: CGPoint(x: 80, y: 90)); hill.addLine(to: CGPoint(x: 240, y: 210))
+                hill.addLine(to: CGPoint(x: 240, y: 240)); hill.addLine(to: CGPoint(x: 0, y: 240)); hill.close(); hill.fill()
+            }
+            try? image.jpegData(compressionQuality: 0.8)?.write(to: file, options: .atomic)
+        }
+        let photo = Message(id: "cached-photo", chat: "weekend@g.us", sender: "maya@lid", senderName: "Maya",
+            fromMe: false, timestamp: Date().timeIntervalSince1970, kind: "image", text: "Saved photo — available offline",
+            status: "read", edited: false, mediaPath: CachedMedia.avatarURL(root: Self.demoRoot, id: "weekend@g.us")?.path,
+            hasMedia: true, mediaState: "idle", mediaError: nil, quote: nil, reactions: [])
+        demoConversations["weekend@g.us"] = [photo]
+        Thumbnails.clear()
+        var chatEvent = CoreEvent(type: "chats"); chatEvent.chats = chats
+        var history = CoreEvent(type: "messages"); history.chat = photo.chat; history.messages = [photo]
+        apply(CachedMedia.prepare([chatEvent, history], root: Self.demoRoot))
+    }
+
     // Opt-in offline fixture data. No real contacts, session or network is used.
     func loadDemo() {
         status = "connected"

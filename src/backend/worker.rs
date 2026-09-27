@@ -2699,10 +2699,30 @@ impl Worker {
                 }
             }
             Command::AvatarFetched { id, full, path } => {
+                self.pending_avatars.remove(&(id.clone(), full));
+                if path.is_none() {
+                    // A successful lookup with no picture is different from a
+                    // failed refresh. Persist that removal so a cold launch
+                    // cannot restore an obsolete portrait from disk.
+                    let file = self.avatar_file(&id, full);
+                    if let Some(parent) = file.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    if std::fs::write(&file, []).is_err() {
+                        let _ = std::fs::remove_file(file);
+                    }
+                }
                 self.emit(Event::Avatar { id, full, path })
             }
-            Command::AvatarFailed { id, full } => {
-                *self.pending_avatars.entry((id, full)).or_insert(0) += 1;
+            Command::AvatarFailed { id, full, attempts } => {
+                // Keep the last local picture, even after giving up a refresh.
+                // Carry the count across in-flight requests rather than resetting
+                // it whenever retry_avatars removes a queued attempt.
+                if attempts < 3 {
+                    self.pending_avatars.insert((id, full), attempts);
+                } else {
+                    self.pending_avatars.remove(&(id, full));
+                }
             }
             Command::GroupRecipients {
                 chat,
@@ -3503,6 +3523,10 @@ impl Worker {
     }
 
     fn fetch_avatar(&mut self, id: String, full: bool) {
+        self.fetch_avatar_attempt(id, full, 0);
+    }
+
+    fn fetch_avatar_attempt(&mut self, id: String, full: bool, attempts: u32) {
         let path = self.avatar_file(&id, full);
         if let Ok(metadata) = std::fs::metadata(&path) {
             // Show the local picture even when offline or while refreshing it.
@@ -3544,7 +3568,7 @@ impl Worker {
             .is_some_and(|client| client.is_connected());
         let Some(client) = self.client.clone().filter(|_| connected) else {
             // Defer profile-picture lookup until connected.
-            self.pending_avatars.entry((id, full)).or_insert(0);
+            self.pending_avatars.entry((id, full)).or_insert(attempts);
             return;
         };
         let commands = self.commands.clone();
@@ -3600,7 +3624,11 @@ impl Worker {
                 }
                 Err(error) => {
                     log::debug!("no picture for {id} yet: {error}");
-                    let _ = commands.send(Command::AvatarFailed { id, full });
+                    let _ = commands.send(Command::AvatarFailed {
+                        id,
+                        full,
+                        attempts: attempts + 1,
+                    });
                 }
             }
         });
@@ -3621,15 +3649,7 @@ impl Worker {
                 .pending_avatars
                 .remove(&(id.clone(), full))
                 .unwrap_or(0);
-            if attempts >= 3 {
-                self.emit(Event::Avatar {
-                    id,
-                    full,
-                    path: None,
-                });
-                continue;
-            }
-            self.fetch_avatar(id, full);
+            self.fetch_avatar_attempt(id, full, attempts);
         }
     }
 
@@ -5584,6 +5604,64 @@ mod receipt_tests {
             |event| matches!(event, Event::Avatar { path: Some(found), .. } if found == path)
         ));
         let _ = std::fs::remove_dir_all(&worker.dirs.cache);
+    }
+
+    #[tokio::test]
+    async fn failed_avatar_refresh_keeps_the_cached_picture_and_stops_retrying() {
+        let (mut worker, events, _inbox, _wa) = worker();
+        let root = tempfile::tempdir().unwrap();
+        worker.dirs = AppDirs::under(root.path());
+        let path = worker.avatar_file(PEER, false);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"cached portrait").unwrap();
+        for attempts in 1..=3 {
+            worker
+                .handle_command(Command::AvatarFailed {
+                    id: PEER.into(),
+                    full: false,
+                    attempts,
+                })
+                .await;
+            assert_eq!(
+                worker.pending_avatars.get(&(PEER.into(), false)).copied(),
+                (attempts < 3).then_some(attempts)
+            );
+        }
+        assert!(events.try_iter().next().is_none());
+        assert_eq!(std::fs::read(&path).unwrap(), b"cached portrait");
+        worker.fetch_avatar(PEER.into(), false);
+        assert!(events.try_iter().any(
+            |event| matches!(event, Event::Avatar { path: Some(found), .. } if found == path)
+        ));
+    }
+
+    #[tokio::test]
+    async fn successful_avatar_removal_cannot_restore_an_old_picture_on_relaunch() {
+        let (mut worker, events, _inbox, _wa) = worker();
+        let root = tempfile::tempdir().unwrap();
+        worker.dirs = AppDirs::under(root.path());
+        let path = worker.avatar_file(PEER, false);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"old portrait").unwrap();
+        worker.pending_avatars.insert((PEER.into(), false), 2);
+        worker
+            .handle_command(Command::AvatarFetched {
+                id: PEER.into(),
+                full: false,
+                path: None,
+            })
+            .await;
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 0);
+        assert!(worker.pending_avatars.is_empty());
+        worker.fetch_avatar(PEER.into(), false);
+        let pictures: Vec<_> = events.try_iter().collect();
+        assert_eq!(pictures.len(), 2);
+        assert!(
+            pictures
+                .iter()
+                .all(|event| matches!(event, Event::Avatar { path: None, .. }))
+        );
+        assert!(worker.pending_avatars.is_empty());
     }
 
     #[test]

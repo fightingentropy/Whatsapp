@@ -323,6 +323,7 @@ pub enum Command {
     AvatarFailed {
         id: String,
         full: bool,
+        attempts: u32,
     },
     /// Internal account about-text result.
     MeInfo {

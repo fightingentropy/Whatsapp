@@ -4,6 +4,7 @@ import SwiftUI
 struct ConversationView: View {
     private struct Viewport: Equatable {
         let height: CGFloat
+        let contentHeight: CGFloat
         let nearBottom: Bool
         let rect: CGRect
     }
@@ -77,13 +78,18 @@ struct ConversationView: View {
                 .defaultScrollAnchor(.bottom, for: .alignment)
                 .defaultScrollAnchor(.bottom, for: .sizeChanges)
                 .onScrollGeometryChange(for: Viewport.self) { geometry in
-                    Viewport(height: geometry.containerSize.height, nearBottom: geometry.contentSize.height - geometry.visibleRect.maxY < 100, rect: geometry.visibleRect)
+                    Viewport(height: geometry.containerSize.height, contentHeight: geometry.contentSize.height,
+                             nearBottom: geometry.contentSize.height - geometry.visibleRect.maxY < 100, rect: geometry.visibleRect)
                 } action: { old, new in
+                    let wasFollowingBottom = nearBottom && old.nearBottom
                     if nearBottom != new.nearBottom { nearBottom = new.nearBottom }
                     store.trackViewport(new.rect, chat: chatID)
-                    // Anchor after the resized viewport has been laid out. A
-                    // composer panel can shrink it without changing any rows.
-                    if old.height > 0 && old.height != new.height && old.nearBottom {
+                    // Lazy rows can settle at their image height after the
+                    // initial scroll. Follow that measurement as well as a
+                    // resized composer, without moving readers of older history.
+                    let settledRows = didInitialScroll && old.contentHeight != new.contentHeight
+                        && historyAnchor == nil && store.restoredAnchor == nil && store.newerComplete
+                    if old.height > 0 && wasFollowingBottom && (old.height != new.height || settledRows) {
                         DispatchQueue.main.async { proxy.scrollTo("conversation-bottom", anchor: .bottom) }
                     }
                 }
@@ -106,6 +112,7 @@ struct ConversationView: View {
                         DispatchQueue.main.async { proxy.scrollTo(restored, anchor: .top) }
                         store.restoredAnchor = nil
                     } else if let historyAnchor {
+                        nearBottom = false
                         DispatchQueue.main.async { proxy.scrollTo(historyAnchor, anchor: .top) }
                         self.historyAnchor = nil
                     }
@@ -152,7 +159,7 @@ struct ConversationView: View {
                     } label: { Image(systemName: "checkmark.circle.fill") }
                 } else {
                     Button { infoPresented = true } label: {
-                        AvatarView(name: chat.map(store.chatTitle) ?? "Chat", url: store.localURL(store.avatars[store.canonical(chatID)]), group: chat?.kind == "group", size: 32)
+                        AvatarView(name: chat.map(store.chatTitle) ?? "Chat", url: store.avatarURL(chatID), group: chat?.kind == "group", size: 32)
                     }.accessibilityLabel("View profile")
                 }
             }

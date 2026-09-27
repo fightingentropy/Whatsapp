@@ -65,8 +65,16 @@ Silicon Mac to build. This is a personal-device build, not an App Store release.
   protected. Search and quote jumps load a bounded window around their target.
 - SwiftUI observes individual store properties and separate chat rows, keeping
   typing, connection and avatar changes out of unrelated screen updates.
-- Reconnection repairs attachment paths only when their messages are loaded;
-  cached profile pictures can appear before the network reconnects.
+- Saved chat pictures are restored with the local chat list on cold launch,
+  before reconnection. Up to 16 visible portraits and four recent downloaded
+  photos are downsampled off the main thread before their rows appear; other
+  images load from disk on demand. Decoded thumbnails share a 24 MiB memory
+  budget and show immediately when reused. Refresh failures retain saved
+  portraits; a confirmed removal clears the disk entry. Same-filename picture
+  updates invalidate their thumbnails. Attachment paths are repaired only when
+  their messages are loaded, including after an app update moves the container.
+  Opening a conversation keeps its latest photo and caption above the composer
+  as the image rows finish layout, preserving the position in older history.
 - Animated stickers share at most 32 MiB of decoded-frame reservations, reuse
   matching decodes and evict idle clips first. Decoding is serialized and video
   loops are limited to two at once. Low Power Mode and Reduce Motion use still
@@ -169,7 +177,10 @@ Also run all six root Mac checks in `AGENTS.md` after shared-source changes.
 Swift unit tests cover message actions, mention boundaries, archive search/jumps,
 formatting, emoji lookup, attachment limits, drafts, identity merges, receipt
 privacy, cancelled audio, logout, paging, sender/day grouping, relative dates and
-lifecycle/pairing recovery. Rust tests
+lifecycle/pairing recovery, cold image restoration, first-render pixels, refresh
+invalidation, container boundaries and preload limits. The `--demo-cached-pictures`
+fixture and its UI test relaunch using saved fictional portraits and a photo,
+without a network session. Rust tests
 check command validation, symlink/file boundaries, GIF hosts, sticker deletion
 scope, finite voice samples, bounded Opus decoding and native WAV conversion.
 UI tests launch a Debug `--demo` preview with fictional chats and rich-content

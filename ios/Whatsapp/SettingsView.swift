@@ -37,7 +37,7 @@ struct SettingsView: View {
 
     private var account: some View {
         HStack(spacing: 14) {
-            AvatarView(name: store.accountName, url: store.accountID.flatMap { store.localURL(store.avatars[$0]) }, size: 56)
+            AvatarView(name: store.accountName, url: store.accountID.flatMap { store.avatarURL($0) }, size: 56)
             VStack(alignment: .leading, spacing: 5) {
                 Text(store.accountName).font(.headline)
                 HStack(spacing: 5) {
