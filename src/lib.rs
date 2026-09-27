@@ -3,6 +3,7 @@
 #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
 compile_error!("Whatsapp supports Apple Silicon Macs (aarch64-apple-darwin) only.");
 
+pub mod agent;
 pub mod animation;
 pub mod app;
 pub mod archive;
