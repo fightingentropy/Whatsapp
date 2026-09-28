@@ -4,29 +4,34 @@ extension ChatStore {
     func displayName(_ id: String, fallback: String? = nil) -> String {
         let id = canonical(id)
         if id == accountID { return "You" }
-        if let contact = contacts.first(where: { canonical($0.id) == id }) {
+        let state = identity(id)
+        if let contact = state.contact {
             if preferences.contactNames, let name = contact.fullName, !name.isEmpty { return name }
             if let name = contact.pushName ?? fallback, !name.isEmpty { return preferences.contactNames ? "~" + name : name }
             if let name = contact.fullName, !name.isEmpty { return name }
             if let name = contact.name, !name.isEmpty { return name }
         }
         if let fallback, !fallback.isEmpty { return fallback }
-        if let name = contactNames[id] { return name }
-        if let chat = chats.first(where: { $0.id == id }) { return chat.name }
+        if let name = state.savedName { return name }
+        if let name = state.chatName { return name }
         return id.hasSuffix("@s.whatsapp.net") ? "+" + id.components(separatedBy: "@")[0] : "Participant"
     }
 
     func chatTitle(_ chat: Chat) -> String {
         if chat.kind == "group" || chat.id == accountID { return chat.name }
         if preferences.contactNames {
-            if let name = contacts.first(where: { canonical($0.id) == chat.id })?.fullName, !name.isEmpty { return name }
+            if let name = identity(canonical(chat.id)).contact?.fullName, !name.isEmpty { return name }
             if chat.id.hasSuffix("@s.whatsapp.net") { return "+" + chat.id.components(separatedBy: "@")[0] }
         }
         return displayName(chat.id, fallback: chat.name)
     }
 
     func mentionNames(_ message: Message) -> [String: String] {
-        Dictionary((message.mentions ?? []).map { ($0.user, $0.id == accountID ? accountName : displayName($0.id)) }, uniquingKeysWith: { _, last in last })
+        mentionNames(message.mentions)
+    }
+
+    func mentionNames(_ mentions: [Message.Mention]?) -> [String: String] {
+        Dictionary((mentions ?? []).map { ($0.user, canonical($0.id) == accountID ? accountName : displayName($0.id)) }, uniquingKeysWith: { _, last in last })
     }
 
     func rememberEmoji(_ emoji: String) {
@@ -183,12 +188,11 @@ extension ChatStore {
     }
 
     func presenceLabel(_ chat: Chat) -> String? {
-        let people = (typing[chat.id] ?? [:]).filter { $0.value > Date() }.keys
+        let people = identity(canonical(chat.id)).typing.filter { $0.value > Date() }.keys
         if !people.isEmpty { return chat.kind == "group" ? people.map { displayName($0) }.joined(separator: ", ") + " typing…" : "typing…" }
-        if let presence = presence[chat.id] {
-            if presence.online { return "online" }
-            if let seen = presence.lastSeen { return "last seen " + Date(timeIntervalSince1970: seen).formatted(date: .abbreviated, time: .shortened) }
-        }
+        let presence = identity(canonical(chat.id))
+        if presence.online { return "online" }
+        if let seen = presence.lastSeen { return "last seen " + Date(timeIntervalSince1970: seen).formatted(date: .abbreviated, time: .shortened) }
         return chat.kind == "group" ? "\(chat.participants?.count ?? 0) members" : nil
     }
 
@@ -245,7 +249,7 @@ extension ChatStore {
     func addAttachments(_ urls: [URL], to chat: String) {
         let chat = canonical(chat)
         guard hasSession else { urls.forEach(AttachmentImport.discard); return }
-        guard attachments[chat, default: []].count + urls.count <= 30 else {
+        guard attachments[chat, default: []].count + outgoingAttachments.filter({ $0.chat == chat }).count + urls.count <= 30 else {
             urls.forEach(AttachmentImport.discard)
             error = "Send up to 30 files at a time."
             return
@@ -263,15 +267,29 @@ extension ChatStore {
     func sendAttachments(caption: String, completion: @escaping (Bool) -> Void) {
         guard canPost, let chat = selectedChat, let files = attachments[chat], !files.isEmpty else { completion(false); return }
         guard caption.unicodeScalars.count <= 65_536 else { error = "This caption is too long."; completion(false); return }
-        perform(["type": "files", "chat": chat, "paths": files.map { $0.url.path }, "caption": caption.isEmpty ? NSNull() : caption as Any, "mentions": mentionedIDs(in: caption)]) { [weak self] accepted in
-            if accepted { self?.attachments[chat]?.removeAll { files.contains($0) }; self?.drafts[chat] = "" }
-            completion(accepted)
+        let jobs = files.enumerated().map { index, file in
+            OutgoingAttachment(id: UUID().uuidString, chat: chat, file: file,
+                caption: index == 0 ? caption : "", mentions: index == 0 ? mentionedIDs(in: caption) : [])
+        }
+        outgoingAttachments += jobs
+        attachments[chat]?.removeAll { files.contains($0) }
+        drafts[chat] = ""
+        flushDrafts { [weak self] saved in
+            guard let self else { completion(false); return }
+            if !saved {
+                self.outgoingAttachments.removeAll { jobs.map(\.id).contains($0.id) }
+                self.attachments[chat, default: []].append(contentsOf: files)
+                self.drafts[chat] = caption
+            }
+            completion(saved)
+            if saved { self.pumpAttachments() }
         }
     }
 
     func play(_ message: Message) {
         guard let url = localURL(message.mediaPath) else { download(message); return }
         guard foreground || isDemo, !audio.hasRecording else { return }
+        video.stop()
         let request = UUID()
         audioRequest = request
         let receipts = receiptsAllowed(in: message.chat)
@@ -301,6 +319,7 @@ extension ChatStore {
             if isDemo { error = "Voice recording is disabled in the offline preview." }
             return
         }
+        video.stop()
         await audio.startRecording(chat: chat, quote: reply?.id) { [weak self] in
             self?.selectedChat == chat && self?.foreground == true && self?.canPost == true
         }

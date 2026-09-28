@@ -119,7 +119,7 @@ final class EfficiencyTests: XCTestCase {
         store.apply([event])
         let changed = ChangeFlag()
         withObservationTracking {
-            _ = store.avatars; _ = store.avatarRevisions
+            _ = store.identity("a@lid").avatar; _ = store.identity("a@lid").revision
         } onChange: { changed.set() }
         store.apply([event]); XCTAssertFalse(changed.value)
         try Data([2, 3]).write(to: file)

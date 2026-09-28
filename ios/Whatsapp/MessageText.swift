@@ -9,20 +9,22 @@ enum MessageText {
         let size: Double
         let style: Int
         let contrast: Int
+        let category: String
         init(_ source: String, mentions: [String: String], size: Double) {
             self.source = source
             self.mentions = mentions.map { MentionKey(token: $0.key, name: $0.value) }.sorted { $0.token < $1.token }
             self.size = size
             self.style = UITraitCollection.current.userInterfaceStyle.rawValue
             self.contrast = UITraitCollection.current.accessibilityContrast.rawValue
+            self.category = UITraitCollection.current.preferredContentSizeCategory.rawValue
         }
         override var hash: Int {
             var hash = Hasher(); hash.combine(source); hash.combine(mentions)
-            hash.combine(size); hash.combine(style); hash.combine(contrast); return hash.finalize()
+            hash.combine(size); hash.combine(style); hash.combine(contrast); hash.combine(category); return hash.finalize()
         }
         override func isEqual(_ object: Any?) -> Bool {
             guard let other = object as? CacheKey else { return false }
-            return size == other.size && style == other.style && contrast == other.contrast
+            return size == other.size && style == other.style && contrast == other.contrast && category == other.category
                 && source == other.source && mentions == other.mentions
         }
     }

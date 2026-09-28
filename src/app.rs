@@ -1178,6 +1178,8 @@ impl App {
                         self.avatars.insert(id, path);
                     }
                 }
+                // Native iPhone upload tracking uses its own session/container.
+                Event::Attachment { .. } => {}
                 Event::Gifs { query, results } => {
                     if query == self.gif_query {
                         self.gif_pending = false;

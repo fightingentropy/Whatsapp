@@ -17,6 +17,7 @@ static NEXT_HANDLE: AtomicU64 = AtomicU64::new(1);
 struct Session {
     backend: Backend,
     dirs: AppDirs,
+    audio: crate::audio_preview::AudioJobs,
 }
 
 static SESSIONS: OnceLock<Mutex<HashMap<u64, Session>>> = OnceLock::new();
@@ -123,6 +124,18 @@ enum Input {
         caption: Option<String>,
         #[serde(default)]
         mentions: Vec<String>,
+    },
+    Attachment {
+        chat: String,
+        path: PathBuf,
+        caption: Option<String>,
+        #[serde(default)]
+        mentions: Vec<String>,
+        request: String,
+    },
+    Retry {
+        chat: String,
+        id: String,
     },
     Voice {
         chat: String,
@@ -363,6 +376,32 @@ fn parse_command(input: &str, dirs: Option<&AppDirs>) -> Option<Command> {
                 mentions,
             })
         }
+        Input::Attachment {
+            chat,
+            path,
+            caption,
+            mentions,
+            request,
+        } if valid_chat(&chat)
+            && valid_id(&request)
+            && caption.as_deref().is_none_or(valid_text)
+            && valid_mentions(&mentions) =>
+        {
+            let path = scoped_file(&path, &dirs?.cache.join("outgoing"))?;
+            if std::fs::metadata(&path).ok()?.len() > 100 * 1024 * 1024 {
+                return None;
+            }
+            Some(Command::SendAttachment {
+                chat,
+                path,
+                caption,
+                mentions,
+                request,
+            })
+        }
+        Input::Retry { chat, id } if valid_chat(&chat) && valid_id(&id) => {
+            Some(Command::RetrySend { chat, id })
+        }
         Input::Voice {
             chat,
             path,
@@ -534,13 +573,21 @@ fn message_json(message: &Message) -> Value {
             _ => "idle",
         },
         "mediaError": media.and_then(|m| if let MediaState::Failed(error) = &m.state { Some(error) } else { None }),
-        "quote": message.quoted.as_ref().map(|q| json!({"id":q.id,"sender":q.sender_name.as_deref().unwrap_or(&q.sender),"text":q.summary})),
+        "quote": message.quoted.as_ref().map(|q| json!({"id":q.id,"sender":q.sender,"senderName":q.sender_name,"text":q.summary,"mentions":q.mentions})),
         "reactions": message.reactions.iter().map(|r| &r.emoji).collect::<Vec<_>>(),
     })
 }
 
 fn event_json(event: Event) -> Option<Value> {
     Some(match event {
+        Event::Attachment {
+            chat,
+            request,
+            message,
+            error,
+        } => {
+            json!({"type":"attachment","chat":chat,"id":request,"messageID":message,"detail":error})
+        }
         Event::Link(status) => match status {
             LinkStatus::Starting => json!({"type":"link","status":"starting"}),
             LinkStatus::Unlinked { qr, pair_code, .. } => {
@@ -696,7 +743,14 @@ pub unsafe extern "C" fn wa_start(root: *const c_char, wake: Option<extern "C" f
     };
     let handle = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
     let backend = Backend::spawn(dirs.clone(), waker);
-    sessions.insert(handle, Session { backend, dirs });
+    sessions.insert(
+        handle,
+        Session {
+            backend,
+            dirs,
+            audio: crate::audio_preview::AudioJobs::new(wake),
+        },
+    );
     handle
 }
 
@@ -727,21 +781,22 @@ pub unsafe extern "C" fn wa_command(handle: u64, input: *const c_char) -> i32 {
 /// Returns null for a stale handle. Event JSON must never be logged.
 #[unsafe(no_mangle)]
 pub extern "C" fn wa_poll(handle: u64) -> *mut c_char {
-    let events = {
+    let (events, audio) = {
         let sessions = sessions().lock().unwrap_or_else(|p| p.into_inner());
         let Some(session) = sessions.get(&handle) else {
             return std::ptr::null_mut();
         };
-        session.backend.poll()
+        (session.backend.poll(), session.audio.poll())
     };
-    let values: Vec<_> = events.into_iter().filter_map(event_json).collect();
+    let mut values: Vec<_> = events.into_iter().filter_map(event_json).collect();
+    values.extend(audio);
     CString::new(json!({"version":1,"events":values}).to_string())
         .expect("JSON escapes NUL bytes")
         .into_raw()
 }
 
 /// # Safety
-/// `value` must be null or an unfreed pointer returned by `wa_poll` or `wa_prepare_audio`.
+/// `value` must be null or an unfreed pointer returned by `wa_poll`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn wa_free_string(value: *mut c_char) {
     if !value.is_null() {
@@ -762,67 +817,40 @@ pub extern "C" fn wa_stop(handle: u64) {
     }
 }
 
-/// Converts an archived OGG/Opus file to a cached WAV for native iOS playback.
-/// Returns a path owned by the caller, freed with `wa_free_string`, or null.
+/// Queues archived OGG/Opus conversion. Results arrive as `audio` events.
 /// # Safety
-/// `source` must be a valid NUL-terminated UTF-8 string. Serialize with other API calls.
+/// `source` and `request` must be valid NUL-terminated UTF-8 strings.
+/// Serialize this command with other handle calls; decoding runs independently.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn wa_prepare_audio(handle: u64, source: *const c_char) -> *mut c_char {
-    if source.is_null() {
-        return std::ptr::null_mut();
+pub unsafe extern "C" fn wa_prepare_audio(
+    handle: u64,
+    source: *const c_char,
+    request: *const c_char,
+) -> i32 {
+    if source.is_null() || request.is_null() {
+        return 0;
     }
-    let result = (|| -> Option<PathBuf> {
-        let source = unsafe { CStr::from_ptr(source) }.to_str().ok()?;
-        let dirs = sessions()
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .get(&handle)?
-            .dirs
-            .clone();
-        let path = scoped_file(Path::new(source), &dirs.media_cache_dir())?;
-        if std::fs::metadata(&path).ok()?.len() > 64 * 1024 * 1024 {
-            return None;
-        }
-        let bytes = std::fs::read(path).ok()?;
-        use sha2::{Digest, Sha256};
-        let output = dirs.cache.join("audio-preview").join(format!(
-            "{}.wav",
-            Sha256::digest(&bytes)
-                .iter()
-                .map(|b| format!("{b:02x}"))
-                .collect::<String>()
-        ));
-        if output.is_file() {
-            return Some(output);
-        }
-        // An Opus packet can pad a recording by one 20 ms frame.
-        let samples = crate::voice::decode_limited(&bytes, 48_000 * 600 + 960).ok()?;
-        let length = u32::try_from(samples.len() * 2).ok()?;
-        let mut wave = Vec::with_capacity(length as usize + 44);
-        wave.extend_from_slice(b"RIFF");
-        wave.extend_from_slice(&(length + 36).to_le_bytes());
-        wave.extend_from_slice(b"WAVEfmt ");
-        wave.extend_from_slice(&16_u32.to_le_bytes());
-        wave.extend_from_slice(&1_u16.to_le_bytes());
-        wave.extend_from_slice(&1_u16.to_le_bytes());
-        wave.extend_from_slice(&48_000_u32.to_le_bytes());
-        wave.extend_from_slice(&96_000_u32.to_le_bytes());
-        wave.extend_from_slice(&2_u16.to_le_bytes());
-        wave.extend_from_slice(&16_u16.to_le_bytes());
-        wave.extend_from_slice(b"data");
-        wave.extend_from_slice(&length.to_le_bytes());
-        for sample in samples {
-            wave.extend_from_slice(&((sample.clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes());
-        }
-        std::fs::create_dir_all(output.parent()?).ok()?;
-        let temporary = output.with_extension("wav.tmp");
-        std::fs::write(&temporary, wave).ok()?;
-        std::fs::rename(temporary, &output).ok()?;
-        Some(output)
-    })();
-    result
-        .and_then(|p| CString::new(p.to_string_lossy().as_bytes()).ok())
-        .map_or(std::ptr::null_mut(), CString::into_raw)
+    let (Ok(source), Ok(request)) = (
+        (unsafe { CStr::from_ptr(source) }).to_str(),
+        (unsafe { CStr::from_ptr(request) }).to_str(),
+    ) else {
+        return 0;
+    };
+    if !valid_id(request) {
+        return 0;
+    }
+    let sessions = sessions().lock().unwrap_or_else(|p| p.into_inner());
+    let Some(session) = sessions.get(&handle) else {
+        return -1;
+    };
+    let Some(path) = scoped_file(Path::new(source), &session.dirs.media_cache_dir()) else {
+        return 0;
+    };
+    i32::from(session.audio.submit(
+        request.to_owned(),
+        path,
+        session.dirs.cache.join("audio-preview"),
+    ))
 }
 
 #[cfg(test)]
@@ -877,6 +905,18 @@ mod tests {
         let escape = f.dirs.cache.join("outgoing/escape.jpg");
         std::os::unix::fs::symlink(&secret, &escape).unwrap();
         assert!(f.command(send(&escape)).is_none());
+        let tracked = |path: &Path| json!({"type":"attachment", "chat":"fixture@g.us", "path":path, "caption":"Keep caption", "request":"fixture-request"});
+        assert!(
+            matches!(f.command(tracked(&photo)), Some(Command::SendAttachment { request, caption: Some(caption), .. }) if request == "fixture-request" && caption == "Keep caption")
+        );
+        assert!(f.command(tracked(&secret)).is_none());
+        assert!(f.command(tracked(&escape)).is_none());
+        let oversized = f.dirs.cache.join("outgoing/large.pdf");
+        std::fs::File::create(&oversized)
+            .unwrap()
+            .set_len(100 * 1024 * 1024 + 1)
+            .unwrap();
+        assert!(f.command(tracked(&oversized)).is_none());
         assert!(
             f.command(json!({"type":"files","chat":"fixture@g.us","paths":vec![&photo;31]}))
                 .is_none()
@@ -950,13 +990,37 @@ mod tests {
             Session {
                 backend,
                 dirs: f.dirs.clone(),
+                audio: crate::audio_preview::AudioJobs::new(None),
             },
         );
         let input = CString::new(source.to_str().unwrap()).unwrap();
-        let pointer = unsafe { wa_prepare_audio(handle, input.as_ptr()) };
-        assert!(!pointer.is_null());
-        let output = PathBuf::from(unsafe { CStr::from_ptr(pointer) }.to_str().unwrap());
-        unsafe { wa_free_string(pointer) };
+        let request = CString::new("audio-fixture").unwrap();
+        let prepare = || {
+            assert_eq!(
+                unsafe { wa_prepare_audio(handle, input.as_ptr(), request.as_ptr()) },
+                1
+            );
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                let pointer = wa_poll(handle);
+                let event: Value =
+                    serde_json::from_str(unsafe { CStr::from_ptr(pointer) }.to_str().unwrap())
+                        .unwrap();
+                unsafe { wa_free_string(pointer) };
+                if let Some(event) = event["events"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|e| e["type"] == "audio")
+                {
+                    assert_eq!(event["id"], "audio-fixture");
+                    break PathBuf::from(event["path"].as_str().unwrap());
+                }
+                assert!(std::time::Instant::now() < deadline);
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        };
+        let output = prepare();
         assert!(output.starts_with(f.dirs.cache.join("audio-preview")));
         let wave = std::fs::read(&output).unwrap();
         assert_eq!(&wave[..4], b"RIFF");
@@ -966,17 +1030,21 @@ mod tests {
             u32::from_le_bytes(wave[40..44].try_into().unwrap()) as usize,
             wave.len() - 44
         );
-        let cached = unsafe { wa_prepare_audio(handle, input.as_ptr()) };
-        assert_eq!(
-            unsafe { CStr::from_ptr(cached) }.to_str().unwrap(),
-            output.to_str().unwrap()
-        );
-        unsafe { wa_free_string(cached) };
+        assert_eq!(prepare(), output);
         let private = CString::new(f.dirs.session_db().to_str().unwrap()).unwrap();
-        assert!(unsafe { wa_prepare_audio(handle, private.as_ptr()) }.is_null());
-        assert!(unsafe { wa_prepare_audio(handle, std::ptr::null()) }.is_null());
+        assert_eq!(
+            unsafe { wa_prepare_audio(handle, private.as_ptr(), request.as_ptr()) },
+            0
+        );
+        assert_eq!(
+            unsafe { wa_prepare_audio(handle, std::ptr::null(), request.as_ptr()) },
+            0
+        );
         wa_stop(handle);
-        assert!(unsafe { wa_prepare_audio(handle, input.as_ptr()) }.is_null());
+        assert_eq!(
+            unsafe { wa_prepare_audio(handle, input.as_ptr(), request.as_ptr()) },
+            -1
+        );
     }
 
     #[test]
@@ -1095,7 +1163,16 @@ mod tests {
             status: Delivery::None,
             delivered_at: None,
             read_at: None,
-            quoted: None,
+            quoted: Some(crate::model::Quoted {
+                id: "quoted".into(),
+                sender: "other@lid".into(),
+                sender_name: Some("Taylor".into()),
+                summary: "Ask @participant".into(),
+                mentions: vec![crate::model::MentionRef {
+                    user: "participant".into(),
+                    id: "person@lid".into(),
+                }],
+            }),
             reactions: vec![],
             edited: false,
             mentions: vec![],
@@ -1111,6 +1188,12 @@ mod tests {
         })
         .unwrap();
         assert_eq!(event["messages"][0]["text"], "First\nSecond 👋");
+        assert_eq!(event["messages"][0]["quote"]["sender"], "other@lid");
+        assert_eq!(event["messages"][0]["quote"]["senderName"], "Taylor");
+        assert_eq!(
+            event["messages"][0]["quote"]["mentions"][0]["id"],
+            "person@lid"
+        );
         assert_eq!(event["requested"], false);
         assert_eq!(event["complete"], false);
     }

@@ -40,7 +40,7 @@ struct ChatsView: View {
                         ForEach(store.searchHits, id: \.searchIdentity) { message in
                             Button { store.navigate(to: message.chat, message: message.id) } label: {
                                 VStack(alignment: .leading, spacing: 5) {
-                                    Text(store.chats.first { $0.id == message.chat }?.name ?? "Chat").font(.headline)
+                                    Text(store.chatByID(message.chat)?.name ?? "Chat").font(.headline)
                                     Text(message.text).font(.subheadline).lineLimit(3).foregroundStyle(.secondary)
                                 }
                             }
@@ -100,19 +100,21 @@ private struct ChatListRow: View {
     @Environment(ChatStore.self) private var store
     let chat: Chat
     var body: some View {
+        let title = store.chatTitle(chat)
+        let typing = store.isTyping(in: chat.id)
         Button { store.navigation.append(chat.id) } label: {
             HStack(spacing: 12) {
-                AvatarView(name: store.chatTitle(chat), url: store.avatarURL(chat.id), group: chat.kind == "group", size: 52)
+                AvatarView(name: title, url: store.avatarURL(chat.id), group: chat.kind == "group", size: 52)
                 VStack(alignment: .leading, spacing: 5) {
                     HStack(alignment: .firstTextBaseline) {
-                        Text(store.chatTitle(chat)).font(.system(.body, weight: .semibold)).foregroundStyle(.primary).lineLimit(1)
+                        Text(title).font(.system(.body, weight: .semibold)).foregroundStyle(.primary).lineLimit(1)
                         Spacer(minLength: 8)
                         Text(ChatDate.preview(chat.timestamp))
                             .font(.caption2).foregroundStyle(chat.unread > 0 ? Color.accentColor : .secondary).fixedSize()
                     }
                     HStack(alignment: .center, spacing: 5) {
-                        Text(store.typing[chat.id]?.isEmpty == false ? store.presenceLabel(chat) ?? chat.preview : chat.preview.isEmpty ? "No messages yet" : chat.preview)
-                            .font(.subheadline).foregroundStyle(store.typing[chat.id]?.isEmpty == false ? Color.accentColor : .secondary).lineLimit(2)
+                        Text(typing ? store.presenceLabel(chat) ?? chat.preview : chat.preview.isEmpty ? "No messages yet" : chat.preview)
+                            .font(.subheadline).foregroundStyle(typing ? Color.accentColor : .secondary).lineLimit(2)
                             .frame(maxWidth: .infinity, alignment: .leading)
                         if chat.pinned { Image(systemName: "pin.fill").font(.system(size: 10)).rotationEffect(.degrees(35)).foregroundStyle(.tertiary).accessibilityLabel("Pinned") }
                         if chat.muted { Image(systemName: "bell.slash.fill").font(.caption2).foregroundStyle(.tertiary) }

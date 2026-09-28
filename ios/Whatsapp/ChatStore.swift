@@ -4,7 +4,7 @@ import Observation
 @MainActor
 @Observable
 final class ChatStore {
-    var chats: [Chat] = []
+    var chats: [Chat] = [] { didSet { indexChats() } }
     var messages: [Message] = []
     var selectedChat: String?
     var status = "starting"
@@ -19,11 +19,16 @@ final class ChatStore {
     var phoneComplete = false
     var syncProgress: Int?
     var error: String?
-    var avatars: [String: String] = [:]
-    var avatarRevisions: [String: String] = [:]
-    var contactNames: [String: String] = [:]
-    var aliases: [String: String] = [:]
-    var drafts: [String: String] = [:]
+    @ObservationIgnored var avatars: [String: String] = [:] { didSet { syncIdentityValues(oldValue, avatars) { $0.avatar = $1 } } }
+    @ObservationIgnored var avatarRevisions: [String: String] = [:] { didSet { syncIdentityValues(oldValue, avatarRevisions) { $0.revision = $1 } } }
+    @ObservationIgnored var contactNames: [String: String] = [:] { didSet { syncIdentityValues(oldValue, contactNames) { $0.savedName = $1 } } }
+    var aliases: [String: String] = [:] { didSet { indexContacts() } }
+    var drafts: [String: String] = [:] { didSet { scheduleDraftSave() } }
+    var draftReplies: [String: Message] = [:] { didSet { scheduleDraftSave() } }
+    var outgoingAttachments: [OutgoingAttachment] = [] { didSet { scheduleDraftSave() } }
+    @ObservationIgnored var uploadingAttachment: String?
+    @ObservationIgnored var draftSaveWork: DispatchWorkItem?
+    @ObservationIgnored var draftStorage: DraftStorage?
     var reply: Message?
     var accountName = "Your account"
     var accountID: String?
@@ -37,11 +42,20 @@ final class ChatStore {
     var searchHits: [Message] = []
     var searching = false
     var editing: Message?
-    var attachments: [String: [PendingAttachment]] = [:]
-    var typing: [String: [String: Date]] = [:]
-    var presence: [String: (online: Bool, lastSeen: TimeInterval?)] = [:]
-    var fullAvatars: [String: String] = [:]
-    var contacts: [CoreEvent.Contact] = []
+    var attachments: [String: [PendingAttachment]] = [:] { didSet { scheduleDraftSave() } }
+    @ObservationIgnored var typing: [String: [String: Date]] = [:] { didSet { syncIdentityValues(oldValue, typing) { $0.typing = $1 ?? [:] } } }
+    @ObservationIgnored var presence: [String: (online: Bool, lastSeen: TimeInterval?)] = [:] { didSet {
+        for id in Set(oldValue.keys).union(presence.keys) {
+            let value = identity(canonical(id))
+            if value.online != (presence[id]?.online ?? false) { value.online = presence[id]?.online ?? false }
+            if value.lastSeen != presence[id]?.lastSeen { value.lastSeen = presence[id]?.lastSeen }
+        }
+    } }
+    @ObservationIgnored var fullAvatars: [String: String] = [:] { didSet { syncIdentityValues(oldValue, fullAvatars) { $0.fullAvatar = $1 } } }
+    var contacts: [CoreEvent.Contact] = [] { didSet { indexContacts() } }
+    @ObservationIgnored var identities: [String: IdentityPresentation] = [:]
+    @ObservationIgnored var contactIDs: Set<String> = []
+    @ObservationIgnored var chatsByID: [String: Chat] = [:]
     var scrollTarget: String?
     var newerComplete = true
     var loadingNewer = false
@@ -64,6 +78,7 @@ final class ChatStore {
     var newContactBusy = false
     var voiceSending = false
     let audio = NativeAudio()
+    let video = NativeVideo()
     let notifications = LocalNotifications()
     @ObservationIgnored var pendingJump: String?
     @ObservationIgnored var pendingJumpChat: String?
@@ -100,7 +115,7 @@ final class ChatStore {
     var canPost: Bool { (connected || isDemo) && selectedChat != nil && currentChat?.readOnly != true }
     var receiptsAllowed: Bool { receiptsAllowed(in: selectedChat ?? "") }
     func receiptsAllowed(in chat: String) -> Bool { sendReadReceipts && (chat.hasSuffix("@g.us") || !receiptsDisabled) }
-    var currentChat: Chat? { chats.first { $0.id == selectedChat } }
+    var currentChat: Chat? { selectedChat.flatMap(chatByID) }
     var connectionLabel: String {
         if isDemo { return "Offline preview" }
         if let syncProgress { return "Syncing history · \(syncProgress)%" }
@@ -114,7 +129,8 @@ final class ChatStore {
     }
 
     init(demo: Bool = false, defaults: UserDefaults = .standard,
-         engine: MessagingEngine = CoreEngine(), backgroundActivity: BackgroundActivityManaging? = nil) {
+         engine: MessagingEngine = CoreEngine(), backgroundActivity: BackgroundActivityManaging? = nil,
+         draftStorage: DraftStorage? = nil) {
         self.isDemo = demo
         self.defaults = defaults
         self.engine = engine
@@ -123,7 +139,13 @@ final class ChatStore {
         self.preferences = defaults.data(forKey: "preferences").flatMap { try? JSONDecoder().decode(Preferences.self, from: $0) } ?? Preferences()
         self.hasSession = demo || defaults.bool(forKey: "hasLinkedSession")
         self.sendReadReceipts = defaults.object(forKey: "readReceipts") as? Bool ?? true
-        if demo { root = Self.demoRoot; loadDemo(); return }
+        self.draftStorage = draftStorage
+        if demo { root = Self.demoRoot; loadDemo(); restoreDrafts(); return }
+        if engine is CoreEngine {
+            root = try? CoreEngine.storageDirectory()
+            self.draftStorage = draftStorage ?? root.map { DraftStorage(root: $0) }
+        }
+        restoreDrafts()
         notifications.onOpen = { [weak self] id in self?.navigate(to: id) }
         diagnostics.record(.appStarted)
         engine.onEvents = { [weak self] in self?.apply($0) }
@@ -132,6 +154,7 @@ final class ChatStore {
             self?.diagnostics.record(.engineError)
             self?.error = $0; self?.status = "failed"
             self?.loading = false; self?.fetchingPhone = false
+            if let self, let id = self.uploadingAttachment { self.failAttachment(id, error: "Connection interrupted. Check this chat before retrying.") }
         }
         observer = NotificationCenter.default.addObserver(forName: .coreEventsReady, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.engine.drain() }
@@ -169,6 +192,7 @@ final class ChatStore {
     }
 
     func prepareForBackground() {
+        flushDrafts()
         guard !isDemo, backgroundTask == .invalid else { return }
         backgroundGeneration += 1
         let generation = backgroundGeneration
@@ -185,6 +209,7 @@ final class ChatStore {
         foreground = false
         audioRequest = UUID()
         audio.pauseForBackground()
+        video.stop()
         stopComposing()
         guard !isDemo else { return }
         // Fallback for a scene without a preceding inactive notification.
@@ -230,7 +255,9 @@ final class ChatStore {
         stoppingBackgroundTasks[generation] = completion
         if expired { completion.end() }
         engine.stop { [weak self] in
-            completion.end()
+            self?.flushDrafts { _ in completion.end() }
+            if self == nil { completion.end() }
+            if let id = self?.uploadingAttachment { self?.failAttachment(id, error: "Interrupted. Check this chat before retrying.") }
             self?.stoppingBackgroundTasks.removeValue(forKey: generation)
             self?.diagnostics.record(.engineStopped)
             if let self, !self.foreground, generation == self.backgroundGeneration {
@@ -259,6 +286,7 @@ final class ChatStore {
     }
 
     func canonical(_ chat: String) -> String {
+        guard aliases[chat] != nil else { return chat }
         var result = chat
         var seen: Set<String> = []
         while let next = aliases[result], seen.insert(result).inserted { result = next }
@@ -269,6 +297,7 @@ final class ChatStore {
         let chat = canonical(chat)
         guard selectedChat != chat else { return }
         stopComposing()
+        video.stop()
         audioRequest = UUID()
         if let current = selectedChat { rememberConversation(current) }
         selectedChat = chat
@@ -306,6 +335,7 @@ final class ChatStore {
         stopComposing(chat: canonical(chat))
         audio.pauseForBackground()
         audio.stopPlayback()
+        video.stop()
         messages = []
         reply = nil
         editing = nil
@@ -363,6 +393,7 @@ final class ChatStore {
         if isDemo {
             messages.append(Self.sampleMessage(id: UUID().uuidString, chat: chat, text: text, fromMe: true, time: Date().timeIntervalSince1970, status: "pending"))
             drafts[chat] = ""
+            draftReplies[chat] = nil
             reply = nil
             completion(true)
             return
@@ -375,6 +406,7 @@ final class ChatStore {
             if accepted {
                 if self.drafts[chat] == text { self.drafts[chat] = "" }
                 if self.reply?.id == quotedID { self.reply = nil }
+                if self.draftReplies[chat]?.id == quotedID { self.draftReplies[chat] = nil }
             } else { self.error = "The message was not queued. Your draft is still here." }
             completion(accepted)
         }
@@ -392,8 +424,9 @@ final class ChatStore {
         let id = canonical(id)
         // A downloaded refresh can replace the same filename. Its revision
         // invalidates the row even when the path string has not changed.
-        _ = avatarRevisions[id]
-        return localURL((full ? fullAvatars[id] : nil) ?? avatars[id])
+        let state = identity(id)
+        _ = state.revision
+        return localURL((full ? state.fullAvatar : nil) ?? state.avatar)
     }
 
     func download(_ message: Message) {
@@ -404,9 +437,7 @@ final class ChatStore {
 
     func localURL(_ path: String?) -> URL? {
         guard let path, let root else { return nil }
-        let url = URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath()
-        let prefix = root.standardizedFileURL.resolvingSymlinksInPath().path + "/"
-        return url.path.hasPrefix(prefix) ? url : nil
+        return MediaFiles.scoped(path, root: root)
     }
 
     private func markRead() {
@@ -416,7 +447,23 @@ final class ChatStore {
     }
 
     func apply(_ events: [CoreEvent]) {
+        var chatUpdates: [String: Chat] = [:]
+        var portraitUpdates: [CoreEvent] = []
+        func flushChats() {
+            guard !chatUpdates.isEmpty else { return }
+            chats = OrderedUpdates.merge(chats, Array(chatUpdates.values)) { $0.pinned != $1.pinned ? $0.pinned : ($0.timestamp == $1.timestamp ? $0.id < $1.id : $0.timestamp > $1.timestamp) }
+            chatUpdates.removeAll(keepingCapacity: true)
+        }
+        func flushPortraits() {
+            guard !portraitUpdates.isEmpty else { return }
+            applyPortraits(portraitUpdates); portraitUpdates.removeAll(keepingCapacity: true)
+        }
         for event in CoreEvent.coalescing(events) {
+            if event.type == "avatar" { flushChats(); portraitUpdates.append(event); continue }
+            flushPortraits()
+            // Update lookup records immediately for notifications/read privacy, but
+            // merge the displayed collection once. All other events are barriers.
+            if !["chats", "incoming", "messages"].contains(event.type) || event.requested == true { flushChats() }
             // The worker archives all changes. Drop an inactive snapshot when its
             // contents change so a later open cannot revive deleted/edited data.
             if ["messages", "message", "deleted", "media", "older", "newer", "around"].contains(event.type),
@@ -444,14 +491,17 @@ final class ChatStore {
                     defaults.set(true, forKey: "hasLinkedSession")
                     requestedAvatars = []
                     markRead()
+                    pumpAttachments()
                 } else if status == "unlinked" || status == "logged_out" {
                     clearMemoryCaches()
                     phoneHistory.removeAll()
                     hasSession = false
                     defaults.set(false, forKey: "hasLinkedSession")
                     chats = []; messages = []; selectedChat = nil; drafts = [:]; reply = nil
+                    draftReplies = [:]; outgoingAttachments = []; uploadingAttachment = nil
                     if status == "logged_out" {
-                        navigation = []; editing = nil; attachments = [:]; audio.discardRecording(); audio.stopPlayback()
+                        navigation = []; editing = nil; attachments = [:]; audio.discardRecording(); audio.stopPlayback(); video.stop()
+                        MediaFiles.clear()
                         contacts = []; contactNames = [:]; avatars = [:]; fullAvatars = [:]; avatarRevisions = [:]; aliases = [:]
                         searchHits = []; searchQuery = ""; searching = false
                         typing = [:]; typingExpiry?.cancel(); presence = [:]
@@ -465,7 +515,12 @@ final class ChatStore {
                 if status == "failed" { error = event.detail ?? "Could not connect to WhatsApp." }
             case "me": accountName = event.name ?? "Your account"; accountID = event.id; accountAbout = event.about
             case "chats":
-                chats = OrderedUpdates.merge(chats, event.chats ?? []) { $0.pinned != $1.pinned ? $0.pinned : ($0.timestamp == $1.timestamp ? $0.id < $1.id : $0.timestamp > $1.timestamp) }
+                for chat in event.chats ?? [] {
+                    chatUpdates[chat.id] = chat
+                    chatsByID[chat.id] = chat
+                    let state = identity(chat.id)
+                    if state.chatName != chat.name { state.chatName = chat.name }
+                }
             case "messages":
                 guard event.chat.map(canonical) == selectedChat else { continue }
                 let incoming = event.messages ?? []
@@ -517,7 +572,10 @@ final class ChatStore {
                 guard let from = event.from, let into = event.into else { continue }
                 recentConversations.remove(from); recentConversations.remove(into)
                 phoneHistory.removeValue(forKey: from); phoneHistory.removeValue(forKey: into)
+                mergeIdentity(from: from, into: into)
                 aliases[from] = into
+                if let quote = draftReplies.removeValue(forKey: from), draftReplies[into] == nil { draftReplies[into] = quote }
+                for index in outgoingAttachments.indices where outgoingAttachments[index].chat == from { outgoingAttachments[index].chat = into }
                 chats.removeAll { $0.id == from }
                 if let draft = drafts.removeValue(forKey: from), drafts[into, default: ""].isEmpty { drafts[into] = draft }
                 if let pending = attachments.removeValue(forKey: from) { attachments[into, default: []].append(contentsOf: pending) }
@@ -537,15 +595,9 @@ final class ChatStore {
                 var byID = Dictionary(contacts.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
                 for contact in event.contacts ?? [] { byID[contact.id] = contact }
                 contacts = Array(byID.values)
-                for contact in event.contacts ?? [] { if let name = contact.name { contactNames[contact.id] = name } }
-            case "avatar":
-                if let id = event.id.map(canonical) {
-                    if event.full == true {
-                        if fullAvatars[id] != event.path { fullAvatars[id] = event.path }
-                    } else if avatars[id] != event.path { avatars[id] = event.path }
-                    let revision = event.path.map { Thumbnails.revision(URL(fileURLWithPath: $0)) }
-                    if avatarRevisions[id] != revision { avatarRevisions[id] = revision }
-                }
+                var names = contactNames
+                for contact in event.contacts ?? [] { if let name = contact.name { names[contact.id] = name } }
+                if contactNames != names { contactNames = names }
             case "search":
                 if event.query == searchQuery { searchHits = event.messages ?? []; searching = false }
             case "typing":
@@ -568,8 +620,8 @@ final class ChatStore {
             case "incoming":
                 if let message = event.message, preferences.notifications, !isDemo,
                    (!foreground || selectedChat != canonical(message.chat)),
-                   chats.first(where: { $0.id == canonical(message.chat) })?.muted != true {
-                    notifications.show(message, name: chats.first(where: { $0.id == canonical(message.chat) })?.name ?? displayName(message.sender))
+                   chatByID(message.chat)?.muted != true {
+                    notifications.show(message, name: chatByID(message.chat)?.name ?? displayName(message.sender))
                 }
             case "media":
                 if event.chat.map(canonical) == selectedChat, let index = messages.firstIndex(where: { $0.id == event.id }) {
@@ -577,6 +629,7 @@ final class ChatStore {
                     messages[index].mediaState = event.path == nil ? "failed" : "idle"
                     messages[index].mediaError = event.detail
                 }
+            case "attachment": finishAttachment(event)
             case "sync":
                 syncProgress = event.active == true ? 0 : nil
                 if !isDemo { diagnostics.record(event.active == true ? .syncStarted : .syncFinished) }
@@ -601,5 +654,6 @@ final class ChatStore {
             }
             if loadLatestAfterPage && !loading && !loadingNewer { loadLatest() }
         }
+        flushPortraits(); flushChats()
     }
 }

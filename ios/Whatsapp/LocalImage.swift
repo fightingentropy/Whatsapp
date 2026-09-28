@@ -7,10 +7,10 @@ enum Thumbnails {
         let url: URL
         let maximumSize: Int
         let revision: String
-        init(_ url: URL, maximumSize: Int) {
+        init(_ url: URL, maximumSize: Int, revision: String? = nil) {
             self.url = url
             self.maximumSize = maximumSize
-            revision = Thumbnails.revision(url)
+            self.revision = revision ?? Thumbnails.revision(url)
         }
         var key: NSString { "\(url.path)-\(maximumSize)-\(revision)" as NSString }
     }
@@ -35,7 +35,12 @@ enum Thumbnails {
     // Used on the engine queue before publishing locally restored rows. Only
     // small, downsampled stills are decoded; videos remain asynchronous/on demand.
     @discardableResult static func prepareStill(_ url: URL, maximumSize: Int) -> UIImage? {
-        let request = Request(url, maximumSize: maximumSize)
+        prepareStill(Request(url, maximumSize: maximumSize, revision: MediaFiles.inspect(url)))
+    }
+
+    private static func prepareStill(_ request: Request) -> UIImage? {
+        let url = request.url
+        let maximumSize = request.maximumSize
         if let image = cached(request) { return image }
         guard !["mp4", "mov", "m4v"].contains(url.pathExtension.lowercased()),
               let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
@@ -66,7 +71,7 @@ enum Thumbnails {
             guard let frame = try? await generator.image(at: .zero) else { return nil }
             cg = frame.image
         } else {
-            return prepareStill(url, maximumSize: maximumSize)
+            return prepareStill(request)
         }
         let image = UIImage(cgImage: cg)
         cache.setObject(image, forKey: request.key, cost: cg.bytesPerRow * cg.height)
@@ -83,7 +88,7 @@ struct LocalImage: View {
     }
 
     init(url: URL, maximumSize: Int) {
-        let request = Thumbnails.Request(url, maximumSize: maximumSize)
+        let request = Thumbnails.Request(url, maximumSize: maximumSize, revision: MediaFiles.revision(url) ?? "uninspected")
         self.request = request
         _loaded = State(initialValue: Thumbnails.cached(request).map { Loaded(request: request, image: $0) })
     }

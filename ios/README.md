@@ -27,13 +27,24 @@ Silicon Mac to build. This is a personal-device build, not an App Store release.
   Formatted text is reused in a memory-only cache with a 512-entry / approximately
   8 MiB cost budget; edits, resolved mention names, size and appearance form its
   key. Memory warnings and unlinking clear it. Incoming updates preserve the
-  existing order and combine adjacent collection events before updating views;
+  existing order and merge interleaved chat snapshots once per batch;
   requested history pages, deletions and identity changes retain their ordering.
   Long conversations keep one stable lazy row per message, including its day
   separator, so scrolling does not construct every off-screen bubble.
 - Photos, videos and files from the system pickers, plus explicit Paste photo,
   with captions. Up to 30 files per send, each up to 100 MB. Adding attachments
   clears a quoted reply: the shared file sender does not support quoted attachments.
+  Uploads are processed one at a time on iPhone and stay visible while queued or
+  uploading. Failed uploads keep their source and caption with Retry/Remove;
+  failures after archiving can be retried from the message menu with the same ID.
+  Photos and pasted/camera images are downsampled to a 4,096-pixel edge before
+  encoding. Images imported as documents have bounded decoder dimensions/memory.
+- Text drafts, reply targets and staged attachments survive relaunch in a private
+  atomic local snapshot. Interrupted uploads require an explicit retry after
+  checking the chat; they are never automatically resent after a process restart.
+  Archived attachment acknowledgements release temporary originals. Unreferenced
+  outgoing files older than seven days are pruned; draft/failed-upload files and
+  archived media are retained.
 - A compact composer with an inline sticker control, separate camera button and
   green microphone/send button. Plus opens a rounded attachment panel beneath
   the composer; its keyboard control returns to typing without losing the draft.
@@ -47,6 +58,9 @@ Silicon Mac to build. This is a personal-device build, not an App Store release.
   Leaving the app pauses playback and stops the microphone, retaining an unsent
   recording in its original chat until it is sent or discarded. Recording asks
   for microphone permission only when you tap the microphone.
+  Opus playback preparation streams PCM on a separate worker, leaving connection
+  commands responsive. WAV previews are keyed by file revision and capped at
+  16 files / approximately 192 MiB, preserving the two most recent player files.
 - The desktop's 1,914-entry emoji catalog, searchable names/shortcodes, recent
   emoji, `:shortcode:` expansion and `@` group-member suggestions. Command-Return
   sends from a hardware keyboard; the iPhone Return key inserts a new line.
@@ -63,16 +77,20 @@ Silicon Mac to build. This is a personal-device build, not an App Store release.
   primary phone. Active history targets 600 messages / approximately 8 MiB;
   visible messages, selections, quotes, edits and pending sends/downloads are
   protected. Search and quote jumps load a bounded window around their target.
-- SwiftUI observes individual store properties and separate chat rows, keeping
+- Contact names and chat lookup use indexes. SwiftUI observes individual identities,
+  so a portrait, name, typing or presence update only invalidates its subscribers.
+  It also observes separate store properties and chat rows, keeping
   typing, connection and avatar changes out of unrelated screen updates.
-- Saved chat pictures are restored with the local chat list on cold launch,
-  before reconnection. Up to 16 visible portraits and four recent downloaded
+- The first 64 saved chat pictures are restored with the local chat list on cold
+  launch, before reconnection; remaining paths are restored in small yielding
+  batches. Up to 16 visible portraits and four recent downloaded
   photos are downsampled off the main thread before their rows appear; other
   images load from disk on demand. Decoded thumbnails share a 24 MiB memory
   budget and show immediately when reused. Refresh failures retain saved
   portraits; a confirmed removal clears the disk entry. Same-filename picture
-  updates invalidate their thumbnails. Attachment paths are repaired only when
-  their messages are loaded, including after an app update moves the container.
+  updates invalidate their thumbnails. Attachment paths are repaired when their
+  messages are loaded, including after an app update moves the container. File
+  descriptors/revisions are reused while drawing rows.
   Opening a conversation keeps its latest photo and caption above the composer
   as the image rows finish layout, preserving the position in older history.
 - Animated stickers share at most 32 MiB of decoded-frame reservations, reuse
@@ -83,6 +101,12 @@ Silicon Mac to build. This is a personal-device build, not an App Store release.
 - Download and share attachments; preview images and files supported by iOS Quick
   Look. Visible attachments up to 64 MB can download automatically. Failed
   downloads remain in their message with a retry action.
+- Ordinary videos play inside their message with native playback and seeking
+  controls. Only an explicit Play starts playback; one player is active, scrolling
+  away pauses it, and leaving the chat/backgrounding releases it.
+- Quoted messages preserve mention identities and resolve names like message
+  bodies. Message/quote/composer fonts follow system Dynamic Type as well as the
+  app's size setting; accessibility sizes move camera and stickers into Plus.
 - Dark/light/system appearance, message text size, sender pictures, contact-name
   preference, read receipts, typing indicators, automatic downloads and optional
   local notifications. Read and played receipts respect the shared privacy rules.
@@ -118,8 +142,9 @@ from the official app's Linked Devices settings when finished using it.
 GIPHY searches and previews contact GIPHY only when that picker is used; importing
 a signal.art link contacts Signal's pack service. The API key and UI preferences
 remain in app preferences. Attachment copies, decoded audio previews and imported
-stickers stay in the private app container. Drafts and unsent recording controls
-are held for this app session; they are not a durable offline outbox. A queued
+stickers stay in the private app container. Text/reply drafts, staged files and
+attachment jobs persist locally; unsent voice-recording controls last only for
+the current session. This is not an always-running offline sender. A queued
 message is not proof of server delivery: check its delivery indicator.
 
 ## Build and install
@@ -183,6 +208,12 @@ fixture and its UI test relaunch using saved fictional portraits and a photo,
 without a network session. Rust tests
 check command validation, symlink/file boundaries, GIF hosts, sticker deletion
 scope, finite voice samples, bounded Opus decoding and native WAV conversion.
+Additional regressions cover durable drafts and interrupted uploads, same-ID
+retry, upload budgets, contact/identity observation, interleaved event ordering,
+and deferred portrait restoration. `--demo-inline-video` supplies an eight-second
+synthetic video with an audio track; tests require decoded video pixels, decoded
+audio samples, advancing playback and player release. UI checks cover inline
+playback, quoted names and the largest system accessibility text size.
 UI tests launch a Debug `--demo` preview with fictional chats and rich-content
 fixtures, exercise editing/forwarding, the composer, emoji search, group details
 and interrupted pairing, check the latest message remains visible on opening a

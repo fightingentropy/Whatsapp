@@ -38,6 +38,7 @@ extension ChatStore {
         recentConversations.removeAll()
         MessageText.clearCache()
         Thumbnails.clear()
+        MediaFiles.clear()
         AnimatedMediaPool.shared.clearIdle()
     }
 

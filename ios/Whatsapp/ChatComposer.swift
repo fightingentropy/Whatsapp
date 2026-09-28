@@ -7,6 +7,8 @@ struct ChatComposer: View {
     @ObservedObject var audio: NativeAudio
     @Environment(ChatStore.self) private var store
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @ScaledMetric(relativeTo: .body) private var textScale = 1.0
     @FocusState private var focused: Bool
     @State private var sending = false
     @State private var importing = false
@@ -24,7 +26,7 @@ struct ChatComposer: View {
     var body: some View {
         VStack(spacing: 0) {
             VStack(spacing: 8) {
-                if !store.connected && !store.isDemo { Text("Reconnecting… Your draft is saved.").font(.caption).foregroundStyle(.secondary) }
+                if !store.connected && !store.isDemo { Text("Reconnecting… You can keep writing.").font(.caption).foregroundStyle(.secondary) }
                 if let editing = store.editing {
                     composerContext(title: "Editing message", text: editing.text, icon: "pencil") {
                         store.editing = nil; draft = store.draftBeforeEditing ?? ""; store.draftBeforeEditing = nil
@@ -65,20 +67,25 @@ struct ChatComposer: View {
         .onChange(of: store.editing?.id) { old, _ in
             if let message = store.editing { if old == nil { store.draftBeforeEditing = draft }; draft = message.text; store.reply = nil; setAttachmentsExpanded(false); focused = true }
         }
-        .onChange(of: store.reply?.id) { _, id in if id != nil { focused = true } }
+        .onChange(of: store.reply?.id) { _, id in
+            if id != nil { focused = true }
+            store.saveDraft(draft, chat: chatID)
+        }
         .onChange(of: photos) { _, items in
             guard !items.isEmpty else { return }
             let chat = store.canonical(chatID)
+            let account = store.accountID
             importing = true
             Task {
+                var urls: [URL] = []
                 do {
-                    var urls: [URL] = []
                     for item in items {
                         guard let photo = try await item.loadTransferable(type: ImportedPhoto.self) else { throw CocoaError(.fileReadUnknown) }
                         urls.append(photo.url)
                     }
-                    store.addAttachments(urls, to: chat)
-                } catch { store.error = "Could not import these photos or videos. Files must be under 100 MB." }
+                    if store.accountID == account { store.addAttachments(urls, to: chat) }
+                    else { urls.forEach(AttachmentImport.discard) }
+                } catch { urls.forEach(AttachmentImport.discard); store.error = "Could not import these photos or videos. Files must be under 100 MB." }
                 photos = []; importing = false
             }
         }
@@ -110,26 +117,29 @@ struct ChatComposer: View {
                 .accessibilityLabel(attachmentsExpanded ? "Show keyboard" : "Add attachment")
                 .accessibilityIdentifier("composer-attachments")
             TextField(pending.isEmpty ? "" : "Add a caption", text: $draft, axis: .vertical)
-                .font(.system(size: store.preferences.textSize)).lineLimit(1...5)
+                .font(.system(size: store.preferences.textSize * textScale)).lineLimit(1...(dynamicTypeSize.isAccessibilitySize ? 3 : 5))
                 .focused($focused).accessibilityLabel(pending.isEmpty ? "Message" : "Add a caption")
                 .accessibilityIdentifier("message-composer")
-                .padding(.leading, 11).padding(.trailing, 40).padding(.vertical, 5).frame(minHeight: 32)
+                .padding(.leading, 11).padding(.trailing, dynamicTypeSize.isAccessibilitySize ? 11 : 40).padding(.vertical, 5).frame(minHeight: 32)
                 .background(ChatAppearance.composerField, in: RoundedRectangle(cornerRadius: 19))
                 .overlay(RoundedRectangle(cornerRadius: 19).stroke(.primary.opacity(0.08), lineWidth: 0.5))
                 .overlay(alignment: .bottomTrailing) {
+                    if !dynamicTypeSize.isAccessibilitySize {
                     Button { openPicker(.stickers) } label: {
                         ComposerStickerIcon().stroke(.primary, style: StrokeStyle(lineWidth: 1.4, lineCap: .round, lineJoin: .round))
                             .frame(width: 21, height: 21).frame(width: 44, height: 44).contentShape(Rectangle())
                     }.buttonStyle(.plain).offset(y: 6).disabled(importing || sending || store.editing != nil)
                         .accessibilityLabel("Stickers").accessibilityIdentifier("composer-stickers")
+                    }
                 }
                 .padding(.vertical, 6).tint(ChatAppearance.composerAction)
                 .onChange(of: draft) { _, value in
                     let expanded = EmojiCatalog.expandCompletedShortcode(value)
                     if expanded != value { draft = expanded }
+                    store.saveDraft(store.draftBeforeEditing ?? expanded, chat: chatID)
                     store.composing(expanded)
                 }
-            if store.editing == nil {
+            if store.editing == nil && !dynamicTypeSize.isAccessibilitySize {
                 Button(action: openCamera) {
                     Image(systemName: "camera").font(.system(size: 23, weight: .regular)).foregroundStyle(.primary)
                         .frame(width: 44, height: 44).contentShape(Rectangle())
@@ -205,9 +215,8 @@ struct ChatComposer: View {
         case .camera: openCamera()
         case .document: filesPresented = true
         case .paste:
-            guard let data = UIPasteboard.general.image?.jpegData(compressionQuality: 0.9) else { store.error = "Copy an image first, then choose Paste photo."; return }
-            do { store.addAttachments([try AttachmentImport.pasteImage(data)], to: chatID) }
-            catch { store.error = "Could not paste this photo." }
+            guard let image = UIPasteboard.general.image else { store.error = "Copy an image first, then choose Paste photo."; return }
+            capturePhoto(image)
         case .emoji: openPicker(.emoji)
         case .gifs: openPicker(.gifs)
         case .stickers: openPicker(.stickers)
@@ -234,7 +243,7 @@ struct ChatComposer: View {
 
     private func capturePhoto(_ image: UIImage?) {
         let chat = cameraChat ?? store.canonical(chatID)
-        let account = cameraAccount
+        let account = cameraAccount ?? store.accountID
         cameraPresented = false; cameraChat = nil; cameraAccount = nil
         guard let image else { return }
         importing = true
@@ -282,11 +291,13 @@ struct ChatComposer: View {
     private func importFiles(_ urls: [URL]) {
         guard urls.count + pending.count <= 30 else { store.error = "Send up to 30 files at a time."; return }
         let chat = store.canonical(chatID)
+        let account = store.accountID
         importing = true
         Task {
             do {
-                let copies = try await Task.detached(priority: .userInitiated) { try urls.map(AttachmentImport.copy) }.value
-                store.addAttachments(copies, to: chat)
+                let copies = try await Task.detached(priority: .userInitiated) { try AttachmentImport.copyAll(urls) }.value
+                if store.accountID == account { store.addAttachments(copies, to: chat) }
+                else { copies.forEach(AttachmentImport.discard) }
             } catch { store.error = "Could not import these files. Files must be under 100 MB." }
             importing = false
         }
