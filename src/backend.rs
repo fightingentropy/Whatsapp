@@ -184,6 +184,25 @@ pub enum Command {
         caption: Option<String>,
         mentions: Vec<String>,
     },
+    /// One native attachment retained by the caller until it reaches the archive.
+    SendAttachment {
+        chat: ChatId,
+        path: PathBuf,
+        caption: Option<String>,
+        mentions: Vec<String>,
+        request: String,
+    },
+    /// Retry an archived, failed outgoing message using its original message ID.
+    RetrySend {
+        chat: ChatId,
+        id: String,
+    },
+    /// Internal native upload result; the UI owns the source until acknowledged.
+    AttachmentPrepared {
+        chat: ChatId,
+        request: String,
+        result: Result<(Box<Message>, Vec<u8>), String>,
+    },
     /// Sends a clipboard image as straight-alpha RGBA.
     SendImage {
         chat: ChatId,
@@ -375,6 +394,13 @@ pub enum Command {
 
 #[derive(Debug)]
 pub enum Event {
+    /// Native upload is archived, or failed before creating a message.
+    Attachment {
+        chat: ChatId,
+        request: String,
+        message: Option<String>,
+        error: Option<String>,
+    },
     Link(LinkStatus),
     /// Linked account identity.
     Me {

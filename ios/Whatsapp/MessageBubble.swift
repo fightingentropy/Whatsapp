@@ -11,6 +11,10 @@ struct MessageBubble: View {
     let openMedia: (Message) -> Void
     @Environment(ChatStore.self) private var store
     @Environment(\.colorScheme) private var scheme
+    @ScaledMetric(relativeTo: .body) private var textScale = 1.0
+    @ScaledMetric(relativeTo: .caption) private var quoteTextSize = 13.0
+    @ScaledMetric(relativeTo: .caption) private var senderTextSize = 12.0
+    @ScaledMetric(relativeTo: .caption2) private var metadataTextSize = 10.5
     @State private var forwardPresented = false
     @State private var infoPresented = false
     @State private var contactPresented = false
@@ -20,7 +24,8 @@ struct MessageBubble: View {
     private var mentions: [String: String] { store.mentionNames(message) }
     private var textSize: Double {
         let compact = message.text.filter { !$0.isWhitespace }
-        return (1...3).contains(compact.count) && compact.allSatisfy { EmojiCatalog.isEmoji(String($0)) } ? store.preferences.textSize * 2 : store.preferences.textSize
+        let size = store.preferences.textSize * textScale
+        return (1...3).contains(compact.count) && compact.allSatisfy { EmojiCatalog.isEmoji(String($0)) } ? size * 2 : size
     }
 
     var body: some View {
@@ -41,7 +46,7 @@ struct MessageBubble: View {
             VStack(alignment: message.fromMe ? .trailing : .leading, spacing: 0) {
                 VStack(alignment: .leading, spacing: 5) {
                     if group && !message.fromMe && !joinsPrevious {
-                        Text(senderName).font(.system(size: 12, weight: .semibold))
+                        Text(senderName).font(.system(size: senderTextSize, weight: .semibold))
                             .foregroundStyle(ChatAppearance.senderColor(senderName)).lineLimit(1)
                     }
                     if message.forwarded == true {
@@ -53,9 +58,9 @@ struct MessageBubble: View {
                             HStack(spacing: 8) {
                                 RoundedRectangle(cornerRadius: 2).fill(Color.accentColor).frame(width: 3)
                                 VStack(alignment: .leading, spacing: 3) {
-                                    Text(quote.sender.contains("@") ? store.displayName(quote.sender) : quote.sender)
+                                    Text(quote.sender.contains("@") ? store.displayName(quote.sender, fallback: quote.senderName) : quote.sender)
                                         .font(.caption.weight(.semibold)).foregroundStyle(Color.accentColor)
-                                    Text(quote.text).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                                    Text(MessageText.render(quote.text, mentions: store.mentionNames(quote.mentions), size: quoteTextSize)).foregroundStyle(.secondary).lineLimit(2)
                                 }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 7)
                             }.fixedSize(horizontal: false, vertical: true).padding(.trailing, 9)
                                 .background(.black.opacity(scheme == .dark ? 0.14 : 0.04), in: RoundedRectangle(cornerRadius: 7))
@@ -137,7 +142,7 @@ struct MessageBubble: View {
             if message.edited { Text("edited") }
             Text(Date(timeIntervalSince1970: message.timestamp), format: .dateTime.hour().minute()).monospacedDigit()
             if message.fromMe { DeliveryMark(status: message.status) }
-        }.font(.system(size: 10.5)).foregroundStyle(.secondary).fixedSize()
+        }.font(.system(size: metadataTextSize)).foregroundStyle(.secondary).fixedSize()
     }
 
     @ViewBuilder private var richContent: some View {
@@ -171,6 +176,7 @@ struct MessageBubble: View {
 
     @ViewBuilder private var media: some View {
         if message.kind == "audio", message.mediaPath != nil { VoicePlaybackView(message: message, audio: store.audio) }
+        else if message.kind == "video", message.content?.gif != true { InlineVideo(message: message) }
         else {
             Button { openMedia(message) } label: {
                 if let url = store.localURL(message.mediaPath), message.kind == "sticker" || message.content?.gif == true {
@@ -192,6 +198,9 @@ struct MessageBubble: View {
     }
 
     @ViewBuilder private var messageMenu: some View {
+        if message.fromMe && message.status == "failed" {
+            Button("Retry send") { store.perform(["type": "retry", "chat": message.chat, "id": message.id]) }.disabled(!store.connected)
+        }
         if message.kind != "revoked" && store.canPost {
             Menu("React") {
                 ForEach(["👍", "❤️", "😂", "😮", "😢", "🙏"], id: \.self) { emoji in Button(emoji) { store.react(message, emoji: emoji) } }

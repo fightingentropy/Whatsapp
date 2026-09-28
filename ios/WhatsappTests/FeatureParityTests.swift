@@ -155,12 +155,21 @@ final class FeatureParityTests: XCTestCase {
         store.addAttachments([URL(fileURLWithPath: "/fictional/extra.jpg")], to: "fixture@g.us")
         XCTAssertEqual(store.attachments["fixture@g.us"]?.count, 30)
         engine.accept = false
-        store.sendAttachments(caption: "My caption") { XCTAssertFalse($0) }
-        XCTAssertEqual(store.attachments["fixture@g.us"]?.count, 30)
-        engine.accept = true
         store.sendAttachments(caption: "My caption") { XCTAssertTrue($0) }
-        XCTAssertEqual(engine.commands.last?["caption"] as? String, "My caption")
         XCTAssertTrue(store.attachments["fixture@g.us"]?.isEmpty == true)
+        XCTAssertEqual(store.outgoingAttachments.count, 30)
+        XCTAssertTrue(store.outgoingAttachments.allSatisfy { $0.state == .failed })
+        XCTAssertEqual(store.outgoingAttachments.first?.caption, "My caption")
+        engine.accept = true
+        let first = store.outgoingAttachments[0]
+        store.retryAttachment(first)
+        XCTAssertEqual(engine.commands.last?["caption"] as? String, "My caption")
+        XCTAssertEqual(store.outgoingAttachments.first?.state, .uploading)
+        // Accepting a command keeps the file; only archival acknowledgement releases it.
+        var ready = CoreEvent(type: "attachment"); ready.id = first.id; ready.chat = "fixture@g.us"; ready.messageID = "archived-message"
+        store.apply([ready])
+        XCTAssertEqual(store.outgoingAttachments.count, 29)
+        XCTAssertFalse(store.outgoingAttachments.contains { $0.id == first.id })
     }
 
     func testUnlinkCleanupRemovesOnlyNativeTemporaryMedia() throws {

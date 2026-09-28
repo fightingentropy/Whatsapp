@@ -5,6 +5,9 @@ import Foundation
 enum CachedMedia {
     static let avatarWarmLimit = 16
     static let attachmentWarmLimit = 4
+    static let restoreLimit = 64
+
+    struct Prepared { var events: [CoreEvent]; var deferred: [String] }
 
     static func avatarURL(root: URL, id: String, full: Bool = false) -> URL? {
         // Keep this filename mapping identical to AppDirs::avatar_file in Rust.
@@ -27,7 +30,33 @@ enum CachedMedia {
     }
 
     static func prepare(_ events: [CoreEvent], root: URL) -> [CoreEvent] {
+        plan(events, root: root).events
+    }
+
+    static func restore(_ ids: [String], root: URL) -> [CoreEvent] {
+        ids.compactMap { id in
+            guard let url = avatarURL(root: root, id: id) else { return nil }
+            var event = CoreEvent(type: "avatar")
+            event.id = id; event.path = url.path; event.full = false
+            event.revision = MediaFiles.inspect(url)
+            return event
+        }
+    }
+
+    static func plan(_ input: [CoreEvent], root: URL) -> Prepared {
+        var events = input
+        // Refresh descriptors on the engine queue, including same-path downloads.
+        for index in events.indices {
+            if let path = events[index].path, let url = MediaFiles.scoped(path, root: root) {
+                events[index].revision = MediaFiles.inspect(url)
+            }
+            for message in events[index].messages ?? [] {
+                if let path = message.mediaPath, let url = MediaFiles.scoped(path, root: root) { MediaFiles.inspect(url) }
+            }
+        }
         var restored: [CoreEvent] = []
+        var deferred: [String] = []
+        var inspected = 0
         // An explicit server result, including removal, takes precedence over
         // inferred disk entries in the same batch.
         var known = Set(events.filter { $0.type == "avatar" && $0.full != true }.compactMap(\.id))
@@ -36,9 +65,13 @@ enum CachedMedia {
         var attachmentCount = 0
 
         func restore(_ id: String, maximumSize: Int, preload: Bool) {
-            guard known.insert(id).inserted, let url = avatarURL(root: root, id: id) else { return }
+            guard known.insert(id).inserted else { return }
+            guard inspected < restoreLimit else { deferred.append(id); return }
+            inspected += 1
+            guard let url = avatarURL(root: root, id: id) else { return }
             var avatar = CoreEvent(type: "avatar")
             avatar.id = id; avatar.path = url.path; avatar.full = false
+            avatar.revision = MediaFiles.inspect(url)
             restored.append(avatar)
             if preload, portraitCount < avatarWarmLimit {
                 portraitCount += 1
@@ -49,7 +82,8 @@ enum CachedMedia {
         for event in events {
             if event.type == "chats" {
                 let chats = (event.chats ?? []).sorted {
-                    $0.pinned != $1.pinned ? $0.pinned : ($0.timestamp == $1.timestamp ? $0.id < $1.id : $0.timestamp > $1.timestamp)
+                    if $0.archived != $1.archived { return !$0.archived }
+                    return $0.pinned != $1.pinned ? $0.pinned : ($0.timestamp == $1.timestamp ? $0.id < $1.id : $0.timestamp > $1.timestamp)
                 }
                 for chat in chats { restore(chat.id, maximumSize: 156, preload: !chat.archived) }
             } else if event.type == "me", let id = event.id {
@@ -72,6 +106,6 @@ enum CachedMedia {
             }
         }
         for (url, size) in warm { Thumbnails.prepareStill(url, maximumSize: size) }
-        return restored + events
+        return Prepared(events: restored + events, deferred: deferred)
     }
 }

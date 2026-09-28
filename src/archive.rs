@@ -1088,6 +1088,14 @@ impl Archive {
         Ok(changed > 0)
     }
 
+    /// Only an explicit retry can move an outgoing failure back to pending.
+    pub fn retry_failed(&self, chat: &str, id: &str) -> Result<bool> {
+        Ok(self.connection.execute(
+            "UPDATE messages SET status = ?3 WHERE chat = ?1 AND id = ?2 AND from_me = 1 AND status = ?4 AND raw IS NOT NULL",
+            params![chat, id, status_rank(Delivery::Pending), status_rank(Delivery::Failed)],
+        )? > 0)
+    }
+
     /// Advances outgoing messages through `timestamp` to `status` and returns changed ids.
     pub fn advance_statuses(
         &self,
@@ -1726,6 +1734,31 @@ mod tests {
                 .set_status(chat, "m1", Delivery::Failed, 700)
                 .expect("status")
         );
+    }
+
+    #[test]
+    fn only_own_failed_messages_with_payload_can_be_retried_once() {
+        let archive = Archive::in_memory().unwrap();
+        let chat = "fixture@g.us";
+        archive.ensure_chat(chat, "Fixture").unwrap();
+        for (id, own, raw) in [
+            ("own", true, Some(&[1_u8][..])),
+            ("incoming", false, Some(&[1_u8][..])),
+            ("missing", true, None),
+        ] {
+            let mut row = message(chat, id, 1, own);
+            row.status = Delivery::Failed;
+            archive.insert_message(&row, raw).unwrap();
+        }
+        assert!(!archive.retry_failed(chat, "incoming").unwrap());
+        assert!(!archive.retry_failed(chat, "missing").unwrap());
+        assert!(archive.retry_failed(chat, "own").unwrap());
+        assert_eq!(
+            archive.message(chat, "own").unwrap().unwrap().status,
+            Delivery::Pending
+        );
+        assert!(!archive.retry_failed(chat, "own").unwrap());
+        assert_eq!(archive.raw(chat, "own").unwrap().unwrap(), [1]);
     }
 
     #[test]

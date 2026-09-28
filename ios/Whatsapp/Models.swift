@@ -76,6 +76,8 @@ struct Message: Codable, Identifiable, Equatable {
         let id: String
         let sender: String
         let text: String
+        var senderName: String? = nil
+        var mentions: [Mention]? = nil
     }
 }
 
@@ -102,6 +104,7 @@ struct CoreEvent: Decodable {
     var from: String? = nil
     var into: String? = nil
     var path: String? = nil
+    var revision: String? = nil
     var active: Bool? = nil
     var progress: Int? = nil
     var more: Bool? = nil
@@ -117,8 +120,9 @@ struct CoreEvent: Decodable {
     var saved: [String]? = nil
     var recent: [String]? = nil
     var packs: [StickerPack]? = nil
+    var messageID: String? = nil
 
-    struct Contact: Decodable {
+    struct Contact: Decodable, Equatable {
         let id: String
         let name: String?
         var fullName: String? = nil
@@ -141,10 +145,22 @@ struct StickerPack: Codable, Identifiable, Equatable {
     let stickers: [String]
 }
 
-struct PendingAttachment: Identifiable, Equatable {
-    let id = UUID()
+struct PendingAttachment: Identifiable, Codable, Equatable {
+    let id: UUID
     let url: URL
     var name: String { url.lastPathComponent }
+    init(url: URL, id: UUID = UUID()) { self.url = url; self.id = id }
+}
+
+struct OutgoingAttachment: Identifiable, Codable, Equatable {
+    enum State: String, Codable { case queued, uploading, failed }
+    let id: String
+    var chat: String
+    let file: PendingAttachment
+    let caption: String
+    let mentions: [String]
+    var state: State = .queued
+    var error: String?
 }
 
 struct Preferences: Codable, Equatable {

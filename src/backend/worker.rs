@@ -34,6 +34,8 @@ use whatsapp_rust::{MediaRetryResult, MediaReuploadRequest};
 mod device_store;
 #[path = "worker/link_watch.rs"]
 mod link_watch;
+#[path = "worker/upload_budget.rs"]
+mod upload_budget;
 
 use super::PAGE;
 use super::{Command, Event, LinkStatus, Waker};
@@ -211,6 +213,7 @@ pub async fn run(
         sticker_downloads: HashSet::new(),
         read_syncs: HashMap::new(),
         link_watch: Default::default(),
+        upload_budget: Default::default(),
     };
     worker.load_state();
     worker.backfill();
@@ -250,6 +253,7 @@ pub async fn run(
 }
 
 struct Worker {
+    upload_budget: upload_budget::UploadBudget,
     /// None while in flight, otherwise the next retry time.
     read_syncs: HashMap<ChatId, Option<Instant>>,
     link_watch: link_watch::LinkWatch,
@@ -2130,6 +2134,9 @@ impl Worker {
             | Command::PickFiles(chat)
             | Command::Picked { chat, .. }
             | Command::SendFiles { chat, .. }
+            | Command::SendAttachment { chat, .. }
+            | Command::AttachmentPrepared { chat, .. }
+            | Command::RetrySend { chat, .. }
             | Command::SendImage { chat, .. }
             | Command::SetMuted(chat, _)
             | Command::SendVoice { chat, .. }
@@ -2286,8 +2293,39 @@ impl Worker {
                 caption,
                 mentions,
             } => {
-                self.send_files(chat, paths, caption, mentions);
+                self.send_files(chat, paths, caption, mentions, None);
             }
+            Command::SendAttachment {
+                chat,
+                path,
+                caption,
+                mentions,
+                request,
+            } => {
+                self.send_files(chat, vec![path], caption, mentions, Some(request));
+            }
+            Command::AttachmentPrepared {
+                chat,
+                request,
+                result,
+            } => {
+                let result = result.and_then(|(mut row, raw)| {
+                    self.polish(&mut row);
+                    let id = row.id.clone();
+                    self.outbound(chat.clone(), *row, raw).map(|()| id)
+                });
+                let (message, error) = match result {
+                    Ok(id) => (Some(id), None),
+                    Err(error) => (None, Some(error)),
+                };
+                self.emit(Event::Attachment {
+                    chat,
+                    request,
+                    message,
+                    error,
+                });
+            }
+            Command::RetrySend { chat, id } => self.retry_send(chat, id),
             Command::SendImage {
                 chat,
                 width,
@@ -2296,7 +2334,11 @@ impl Worker {
                 caption,
                 mentions,
             } => self.send_pasted_image(chat, width, height, rgba, caption, mentions),
-            Command::Outbound { chat, row, raw } => self.outbound(chat, *row, raw),
+            Command::Outbound { chat, row, raw } => {
+                if let Err(error) = self.outbound(chat, *row, raw) {
+                    self.emit(Event::Error(error));
+                }
+            }
             Command::SendSticker { chat, path } => self.send_sticker(chat, path),
             Command::SaveSticker { path } => match self.save_sticker(&path) {
                 Ok(()) => self.emit_stickers(),
@@ -3828,16 +3870,28 @@ impl Worker {
         paths: Vec<PathBuf>,
         caption: Option<String>,
         mentions: Vec<String>,
+        request: Option<String>,
     ) {
         for (index, path) in paths.into_iter().enumerate() {
             let Some(client) = self.client.clone() else {
-                self.emit(Event::Error("Not connected to WhatsApp".to_owned()));
+                if let Some(request) = request {
+                    self.emit(Event::Attachment {
+                        chat,
+                        request,
+                        message: None,
+                        error: Some("Not connected to WhatsApp".into()),
+                    });
+                } else {
+                    self.emit(Event::Error("Not connected to WhatsApp".to_owned()));
+                }
                 return;
             };
             let commands = self.commands.clone();
             let chat = chat.clone();
             let dir = self.dirs.media_cache_dir();
             let me = self.me();
+            let budget = self.upload_budget.clone();
+            let request = request.clone();
             // Attach the caption to the first file.
             let caption = if index == 0 { caption.clone() } else { None };
             let mentions = if index == 0 {
@@ -3847,6 +3901,11 @@ impl Worker {
             };
             tokio::spawn(async move {
                 let outcome = async {
+                    let size = tokio::fs::metadata(&path)
+                        .await
+                        .map_err(|_| "Could not read the attachment".to_owned())?
+                        .len();
+                    let _reservation = budget.reserve(size).await;
                     let bytes = tokio::fs::read(&path)
                         .await
                         .map_err(|error| format!("{}: {error}", path.display()))?;
@@ -3861,6 +3920,15 @@ impl Worker {
                     file_outbound(&client, &chat, &me, &dir, prepared, caption, mentions).await
                 }
                 .await;
+                if let Some(request) = request {
+                    let result = outcome.map(|(row, raw)| (Box::new(row), raw));
+                    let _ = commands.send(Command::AttachmentPrepared {
+                        chat,
+                        request,
+                        result,
+                    });
+                    return;
+                }
                 match outcome {
                     Ok((row, raw)) => {
                         let _ = commands.send(Command::Outbound {
@@ -4118,17 +4186,50 @@ impl Worker {
     }
 
     /// Archives and sends an uploaded attachment message.
-    fn outbound(&mut self, chat: ChatId, row: Message, raw: Vec<u8>) {
+    fn outbound(&mut self, chat: ChatId, row: Message, raw: Vec<u8>) -> Result<(), String> {
         let (Some(client), Some(jid)) = (self.client.clone(), Self::jid_of(&chat)) else {
-            self.emit(Event::Error("Not connected to WhatsApp".to_owned()));
-            return;
+            return Err("Not connected to WhatsApp".to_owned());
         };
         let Ok(message) = wa::Message::decode_from_slice(&raw) else {
-            self.emit(Event::Error("Could not encode the attachment".to_owned()));
-            return;
+            return Err("Could not encode the attachment".to_owned());
         };
         let id = row.id.clone();
         self.store_message(row, Some(raw), None);
+        if self.archive.raw(&chat, &id).ok().flatten().is_none() {
+            return Err("Could not save the attachment. Keep it and retry.".to_owned());
+        }
+        tokio::spawn(send_outgoing(
+            client,
+            self.commands.clone(),
+            chat,
+            jid,
+            id,
+            message,
+        ));
+        Ok(())
+    }
+
+    fn retry_send(&mut self, chat: ChatId, id: String) {
+        let Some(row) = self.archive.message(&chat, &id).ok().flatten() else {
+            return;
+        };
+        if !row.from_me || row.status != Delivery::Failed {
+            return;
+        }
+        let (Some(client), Some(jid), Some(raw)) = (
+            self.client.clone(),
+            Self::jid_of(&chat),
+            self.archive.raw(&chat, &id).ok().flatten(),
+        ) else {
+            return;
+        };
+        let Ok(message) = wa::Message::decode_from_slice(&raw) else {
+            return;
+        };
+        if self.archive.retry_failed(&chat, &id).ok() != Some(true) {
+            return;
+        }
+        self.emit_message(&chat, &id);
         tokio::spawn(send_outgoing(
             client,
             self.commands.clone(),
@@ -4712,6 +4813,20 @@ fn whatsapp_audio_mime(mime: &str) -> Option<&'static str> {
     }
 }
 
+fn decode_upload_picture(bytes: &[u8], mobile: bool) -> Result<image::DynamicImage, String> {
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|error| error.to_string())?;
+    if mobile {
+        let mut limits = image::Limits::default();
+        limits.max_image_width = Some(8192);
+        limits.max_image_height = Some(8192);
+        limits.max_alloc = Some(96 * 1024 * 1024);
+        reader.limits(limits);
+    }
+    reader.decode().map_err(|error| error.to_string())
+}
+
 /// Uploads a file and builds its message. Images are encoded as JPEG.
 async fn prepare_media(
     client: &Client,
@@ -4726,19 +4841,19 @@ async fn prepare_media(
         "image/jpeg" | "image/png" | "image/webp" | "image/bmp" | "image/tiff"
     );
     if is_picture {
-        let decoded = tokio::task::spawn_blocking({
-            let bytes = bytes.clone();
-            move || image::load_from_memory(&bytes).map_err(|error| error.to_string())
+        let is_jpeg = mime == "image/jpeg";
+        let (jpeg, thumbnail, width, height) = tokio::task::spawn_blocking(move || {
+            let decoded = decode_upload_picture(&bytes, cfg!(target_os = "ios"))?;
+            let dimensions = (decoded.width(), decoded.height());
+            let jpeg = if is_jpeg {
+                bytes
+            } else {
+                encode_jpeg(&decoded, 88)?
+            };
+            Ok::<_, String>((jpeg, thumbnail_jpeg(&decoded), dimensions.0, dimensions.1))
         })
         .await
         .map_err(|error| error.to_string())??;
-        let (width, height) = (decoded.width(), decoded.height());
-        let jpeg = if mime == "image/jpeg" {
-            bytes
-        } else {
-            encode_jpeg(&decoded, 88)?
-        };
-        let thumbnail = thumbnail_jpeg(&decoded);
         let upload = client
             .upload(jpeg.clone(), MediaType::Image, UploadOptions::default())
             .await
@@ -5302,6 +5417,15 @@ fn parse_conversation(conversation: wa::Conversation) -> ParsedChat {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn phone_picture_limits_reject_extreme_dimensions_before_decoding_pixels() {
+        let image = image::DynamicImage::new_rgb8(8193, 1);
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+        assert!(decode_upload_picture(bytes.get_ref(), true).is_err());
+        assert!(decode_upload_picture(bytes.get_ref(), false).is_ok());
+    }
+
+    #[test]
     fn only_phone_playable_audio_is_sent_as_an_audio_message() {
         let sent_as = |name: &str| {
             let mime = mime_guess2::from_path(name)
@@ -5566,6 +5690,7 @@ mod receipt_tests {
         let root =
             std::env::temp_dir().join(format!("whatsapp-worker-test-{}", std::process::id()));
         let worker = Worker {
+            upload_budget: Default::default(),
             dirs: AppDirs::under(&root),
             events,
             commands,

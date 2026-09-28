@@ -3,15 +3,15 @@ import SwiftUI
 
 // Audio route negotiation can block. Keep it off SwiftUI's main actor and
 // scope releases so a late cancellation cannot silence a newer recording.
-private enum AudioSessionControl {
+enum AudioSessionControl {
     static let queue = DispatchQueue(label: "org.erlin.whatsapp.ios.audio-session", qos: .userInitiated)
     private static var owner: UUID?
-    static func acquire(_ token: UUID, recording: Bool) async throws {
+    static func acquire(_ token: UUID, recording: Bool, video: Bool = false) async throws {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             queue.async {
                 do {
                     let session = AVAudioSession.sharedInstance()
-                    try session.setCategory(recording ? .playAndRecord : .playback, mode: recording ? .voiceChat : .spokenAudio, options: recording ? [.defaultToSpeaker] : [])
+                    try session.setCategory(recording ? .playAndRecord : .playback, mode: recording ? .voiceChat : (video ? .moviePlayback : .spokenAudio), options: recording ? [.defaultToSpeaker] : [])
                     try session.setActive(true)
                     owner = token
                     continuation.resume()

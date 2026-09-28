@@ -52,6 +52,10 @@ final class CoreEngine: MessagingEngine, @unchecked Sendable {
     private let queue = DispatchQueue(label: "org.erlin.whatsapp.ios.engine", qos: .userInitiated)
     private var handle: UInt64 = 0
     private var root: URL?
+    private var audioRequests: [String: (URL?) -> Void] = [:]
+    private var deferredPortraits: [String] = []
+    private var portraitRestoreScheduled = false
+    private var generation = 0
     var onEvents: (([CoreEvent]) -> Void)?
     var onError: ((String) -> Void)?
 
@@ -93,11 +97,43 @@ final class CoreEngine: MessagingEngine, @unchecked Sendable {
             // Decode cached portraits alongside local chat/history restoration,
             // before rows appear. This never waits for the reconnecting worker
             // to service an avatar command and never performs UI-thread decoding.
-            let events = root.map { CachedMedia.prepare(batch.events, root: $0) } ?? batch.events
+            var normal: [CoreEvent] = []
+            for event in batch.events {
+                if event.type == "audio", let id = event.id {
+                    if let callback = audioRequests.removeValue(forKey: id) {
+                        let url = event.path.map { URL(fileURLWithPath: $0) }
+                        DispatchQueue.main.async { callback(url) }
+                    }
+                } else { normal.append(event) }
+            }
+            let prepared = root.map { CachedMedia.plan(normal, root: $0) }
+            let events = prepared?.events ?? normal
             DispatchQueue.main.async { self.onEvents?(events) }
+            let explicit = Set(normal.filter { $0.type == "avatar" || $0.type == "merged" }.compactMap { $0.id ?? $0.from })
+            deferredPortraits.removeAll { explicit.contains($0) }
+            var known = Set(deferredPortraits)
+            for id in prepared?.deferred ?? [] where known.insert(id).inserted { deferredPortraits.append(id) }
+            schedulePortraitRestoration()
         } catch {
             // Never print the event JSON: pairing codes and private messages live here.
             fail("This build could not read a messaging update. Reopen the app to reconnect.")
+        }
+    }
+
+    private func schedulePortraitRestoration() {
+        guard !portraitRestoreScheduled, !deferredPortraits.isEmpty else { return }
+        portraitRestoreScheduled = true
+        let generation = generation
+        queue.async {
+            guard generation == self.generation else { return }
+            self.portraitRestoreScheduled = false
+            guard self.handle != 0, let root = self.root else { return }
+            let ids = Array(self.deferredPortraits.prefix(CachedMedia.restoreLimit))
+            self.deferredPortraits.removeFirst(ids.count)
+            let events = CachedMedia.restore(ids, root: root)
+            if !events.isEmpty { DispatchQueue.main.async { self.onEvents?(events) } }
+            // Yield between slices so commands and connection events can run.
+            self.schedulePortraitRestoration()
         }
     }
 
@@ -116,6 +152,11 @@ final class CoreEngine: MessagingEngine, @unchecked Sendable {
         queue.async {
             let handle = self.handle
             self.handle = 0
+            self.generation += 1
+            self.deferredPortraits.removeAll(); self.portraitRestoreScheduled = false
+            let callbacks = Array(self.audioRequests.values)
+            self.audioRequests.removeAll()
+            DispatchQueue.main.async { callbacks.forEach { $0(nil) } }
             if handle != 0 { wa_stop(handle) }
             DispatchQueue.main.async(execute: completion)
         }
@@ -123,10 +164,10 @@ final class CoreEngine: MessagingEngine, @unchecked Sendable {
 
     func prepareAudio(_ url: URL, completion: @escaping (URL?) -> Void) {
         queue.async {
-            let pointer = url.path.withCString { wa_prepare_audio(self.handle, $0) }
-            let output = pointer.map { URL(fileURLWithPath: String(cString: $0)) }
-            if let pointer { wa_free_string(pointer) }
-            DispatchQueue.main.async { completion(output) }
+            let request = UUID().uuidString
+            let accepted = url.path.withCString { source in request.withCString { wa_prepare_audio(self.handle, source, $0) == 1 } }
+            if accepted { self.audioRequests[request] = completion }
+            else { DispatchQueue.main.async { completion(nil) } }
         }
     }
 

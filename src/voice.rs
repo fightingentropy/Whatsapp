@@ -2,7 +2,7 @@
 //!
 //! libopus is built into the app.
 
-use std::io::Cursor;
+use std::io::{Cursor, Read, Seek};
 
 /// Opus sample rate used for every mono clip.
 pub const RATE: u32 = 48_000;
@@ -22,9 +22,23 @@ pub fn decode(bytes: &[u8]) -> Result<Vec<f32>, String> {
 
 /// Decode with an explicit memory budget for native mobile playback.
 pub fn decode_limited(bytes: &[u8], maximum_samples: usize) -> Result<Vec<f32>, String> {
-    let mut reader = ogg::PacketReader::new(Cursor::new(bytes));
-    let mut stream: Option<Stream> = None;
     let mut out = Vec::new();
+    decode_chunks(Cursor::new(bytes), maximum_samples, |samples| {
+        out.extend_from_slice(samples);
+        Ok(())
+    })?;
+    Ok(out)
+}
+
+/// Decode bounded PCM packets into a sink without retaining a whole recording.
+pub fn decode_chunks<R: Read + Seek>(
+    source: R,
+    maximum_samples: usize,
+    mut write: impl FnMut(&[f32]) -> Result<(), String>,
+) -> Result<usize, String> {
+    let mut reader = ogg::PacketReader::new(source);
+    let mut stream: Option<Stream> = None;
+    let mut count = 0;
     let mut scratch = vec![0f32; LONGEST_PACKET];
     loop {
         let packet = match reader.read_packet() {
@@ -59,15 +73,16 @@ pub fn decode_limited(bytes: &[u8], maximum_samples: usize) -> Result<Vec<f32>, 
         // Remove the encoder lookahead from the decoded output.
         let skip = current.skip.min(mono.len());
         current.skip -= skip;
-        if mono.len() - skip > maximum_samples.saturating_sub(out.len()) {
+        if mono.len() - skip > maximum_samples.saturating_sub(count) {
             return Err("voice message exceeds the playback limit".to_owned());
         }
-        out.extend_from_slice(&mono[skip..]);
+        write(&mono[skip..])?;
+        count += mono.len() - skip;
     }
     if stream.is_none() {
         return Err("not an OGG stream".to_owned());
     }
-    Ok(out)
+    Ok(count)
 }
 
 struct Stream {

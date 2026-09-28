@@ -21,7 +21,7 @@ struct ConversationView: View {
     @State private var selecting = false
 
     private var pageBounds: String { (store.messages.first?.id ?? "") + ":" + (store.messages.last?.id ?? "") }
-    private var chat: Chat? { store.chats.first { $0.id == store.canonical(chatID) } }
+    private var chat: Chat? { store.chatByID(chatID) }
     var body: some View {
         ScrollViewReader { proxy in
             VStack(spacing: 0) {
@@ -67,6 +67,9 @@ struct ConversationView: View {
                             Button(store.loadingNewer ? "Loading…" : "Load newer messages") {
                                 historyAnchor = store.visibleMessageIDs.first; store.loadNewer()
                             }.disabled(store.loadingNewer || store.loading).font(.caption).padding(12)
+                        }
+                        ForEach(store.outgoingAttachments.filter { store.canonical($0.chat) == store.canonical(chatID) }) { item in
+                            OutgoingAttachmentRow(item: item)
                         }
                         Color.clear.frame(height: 1).id("conversation-bottom")
                     }.coordinateSpace(name: "conversation-content").padding(.horizontal, 12).padding(.bottom, 8)
@@ -171,17 +174,19 @@ struct ConversationView: View {
         .onAppear {
             draftText = store.drafts[store.canonical(chatID), default: ""]
             store.open(chatID)
+            store.reply = store.draftReplies[store.canonical(chatID)]
         }
         .onChange(of: selecting) { _, value in
             store.selectionActive = value
             if !value { store.trimConversation(towardOlder: false) }
         }
         .onDisappear {
-            store.drafts[store.canonical(chatID)] = store.draftBeforeEditing ?? draftText
+            store.saveDraft(store.draftBeforeEditing ?? draftText, chat: chatID)
+            store.flushDrafts()
             store.close(chatID)
         }
         .onChange(of: phase) { _, phase in
-            if phase != .active { store.drafts[store.canonical(chatID)] = store.draftBeforeEditing ?? draftText }
+            if phase != .active { store.saveDraft(store.draftBeforeEditing ?? draftText, chat: chatID); store.flushDrafts() }
         }
     }
 

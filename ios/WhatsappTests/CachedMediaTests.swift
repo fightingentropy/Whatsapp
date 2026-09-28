@@ -48,6 +48,24 @@ final class CachedMediaTests: XCTestCase {
         }
     }
 
+    func testLargeChatListRestoresFirstScreenThenDeferredPortraits() throws {
+        var batch = CoreEvent(type: "chats")
+        batch.chats = try (0..<100).map { index in
+            try picture("cache/avatars/person\(index)_lid.jpg")
+            return chat("person\(index)@lid", time: Double(100 - index), archived: index < 20)
+        }
+        let prepared = CachedMedia.plan([batch], root: root)
+        XCTAssertEqual(prepared.events.filter { $0.type == "avatar" }.count, CachedMedia.restoreLimit)
+        XCTAssertEqual(prepared.events.first?.id, "person20@lid", "Visible chats take precedence over archived portraits")
+        XCTAssertEqual(prepared.events.last?.chats, batch.chats)
+        XCTAssertEqual(prepared.deferred.count, 100 - CachedMedia.restoreLimit)
+        let deferred = CachedMedia.restore(prepared.deferred, root: root)
+        XCTAssertEqual(deferred.count, prepared.deferred.count)
+        XCTAssertTrue(deferred.allSatisfy { $0.revision != nil })
+        let last = root.appendingPathComponent("cache/avatars/person99_lid.jpg")
+        XCTAssertNil(Thumbnails.cached(.init(last, maximumSize: 156)), "Offscreen portraits are not eagerly decoded")
+    }
+
     func testWarmImageIsPresentInFirstRenderAndSurvivesMemoryCacheEviction() throws {
         let url = try picture("cache/avatars/alex_lid.jpg")
         Thumbnails.prepareStill(url, maximumSize: 156)

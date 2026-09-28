@@ -1,6 +1,36 @@
 import XCTest
 
 final class WhatsappUITests: XCTestCase {
+    func testInlineVideoAndQuotedMentionStayInsideConversation() {
+        let app = XCUIApplication(); app.launchArguments = ["--demo", "--demo-inline-video"]; app.launch()
+        let chat = app.buttons["chat-weekend@g.us"]
+        XCTAssertTrue(chat.waitForExistence(timeout: 10)); chat.tap()
+        XCTAssertTrue(app.staticTexts["Ask @Maya about the video"].waitForExistence(timeout: 5))
+        let play = app.buttons["Play video"]
+        XCTAssertTrue(play.waitForExistence(timeout: 5)); play.tap()
+        XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Video player")).firstMatch.waitForExistence(timeout: 5))
+        XCTAssertTrue(composer(app).exists)
+        XCTAssertTrue(app.staticTexts["Video plays here in the chat"].exists)
+        capture(app, "Inline native video with quoted mention")
+    }
+
+    func testSystemAccessibilityTextKeepsComposerAndMessagesUsable() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--demo", "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"]
+        app.launch()
+        let chat = app.buttons["chat-weekend@g.us"]
+        XCTAssertTrue(chat.waitForExistence(timeout: 10)); chat.tap()
+        let input = composer(app)
+        XCTAssertTrue(input.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["composer-camera"].exists)
+        XCTAssertFalse(app.buttons["composer-stickers"].exists)
+        input.tap(); input.typeText("Large accessible draft")
+        XCTAssertTrue(app.buttons["send-message"].isHittable)
+        XCTAssertTrue(app.buttons["composer-attachments"].isHittable)
+        XCTAssertGreaterThan(input.frame.width, 120)
+        capture(app, "System accessibility XXXL composer")
+    }
+
     private func demo() -> XCUIApplication {
         let app = XCUIApplication(); app.launchArguments = ["--demo"]; app.launch()
         XCTAssertTrue(app.navigationBars["Chats"].waitForExistence(timeout: 10))

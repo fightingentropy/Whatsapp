@@ -4,6 +4,18 @@ import UniformTypeIdentifiers
 
 extension ChatStore {
     static let demoRoot = FileManager.default.temporaryDirectory.appendingPathComponent("WhatsappOfflinePreview", isDirectory: true)
+    func loadInlineVideoDemo() {
+        guard isDemo, let source = Bundle.main.url(forResource: "inline-video", withExtension: "mp4") else { return }
+        let file = Self.demoRoot.appendingPathComponent("inline-video.mp4")
+        if !FileManager.default.fileExists(atPath: file.path) { try? FileManager.default.copyItem(at: source, to: file) }
+        let video = Message(id: "inline-fixture", chat: "weekend@g.us", sender: "maya@lid", senderName: "Maya",
+            fromMe: false, timestamp: Date().timeIntervalSince1970, kind: "video", text: "Video plays here in the chat",
+            status: "read", edited: false, mediaPath: file.path, hasMedia: true, mediaState: "idle", mediaError: nil,
+            quote: .init(id: "fixture-0", sender: "alex@lid", text: "Ask @maya about the video", senderName: "Alex", mentions: [.init(user: "maya", id: "maya@lid")]),
+            reactions: [], content: .init(kind: "video", seconds: 8, media: .init(mime: "video/mp4", size: 0, width: 320, height: 180)))
+        demoConversations["weekend@g.us"] = [video]
+    }
+
     func loadInterruptedPairingDemo() {
         guard isDemo else { return }
         status = "unlinked"

@@ -12,7 +12,8 @@ A personal **native iPhone companion** is also available in [`ios/`](ios/README.
 It uses SwiftUI and the same Rust messaging worker and SQLite archive. It links
 as a separate device, with message actions, voice and attachment sending,
 archive search, contact/chat controls, rich messages, emoji/GIF/sticker pickers
-and native media playback. It receives messages while connected and offers
+and inline native video playback. Drafts and attachment queues persist locally;
+failed uploads remain available to retry. It receives messages while connected and offers
 optional local alerts, but has no always-on background push delivery. See the
 iOS README for the supported features, mobile limits and build steps.
 

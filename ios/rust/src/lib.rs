@@ -18,4 +18,5 @@ pub mod util;
 #[path = "../../../src/voice.rs"]
 pub mod voice;
 
+mod audio_preview;
 mod bridge;
