@@ -1139,7 +1139,7 @@ impl Archive {
         Ok(changed > 0)
     }
 
-    /// Replaces an edited text body and its mention metadata.
+    /// Replaces an edited text body or media caption and its mention metadata.
     pub fn set_edited_text(
         &self,
         chat: &str,
