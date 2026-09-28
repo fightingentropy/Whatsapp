@@ -124,7 +124,9 @@ See [PERFORMANCE.md](PERFORMANCE.md) for measurements, remaining costs and valid
 - **WhatsApp formatting.** Bold, italic, strikethrough, code, lists, quotes,
   mentions, and link previews are supported. Links are clickable. Emoji use
   Apple Color Emoji (an optional bundled fallback is available), and emoji-only
-  messages are larger.
+  messages are larger. Edited messages and captions keep their updated tags;
+  older edits with missing tag metadata recover names from known contacts and
+  identity mappings when opened, on both Mac and iPhone.
 - **Send attachments with captions.** Paste copied files (including PDFs) or a
   picture, drop files, or use the file picker. Copied files attach the original
   document, not Finder's icon preview; filenames do not become captions.

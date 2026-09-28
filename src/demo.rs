@@ -679,7 +679,7 @@ pub fn populate(app: &mut App) {
     conversation.messages.splice(0..0, extra);
     conversation.messages.extend(latest);
 
-    // Cover a group image, mentioned reply, and poll.
+    // Cover a group image, edited privacy-id mention, and poll.
     let group = SAMPLES[1].id;
     let group_base = app.chats[1].last_activity;
     let (jonas, mira, tom) = (group_members[0], group_members[1], group_members[2]);
@@ -716,13 +716,11 @@ pub fn populate(app: &mut App) {
                 "group-reply",
                 false,
                 group_base + 120,
-                Content::text(format!(
-                    "@{} will do, front row",
-                    jonas.0.split('@').next().unwrap_or_default()
-                )),
+                Content::text("@987654321012345 will do, front row 🙌"),
             );
             row.sender = mira.0.to_owned();
             row.sender_name = Some(mira.1.to_owned());
+            row.edited = true;
             row.quoted = Some(Quoted {
                 id: format!("{group}-3"),
                 sender: jonas.0.into(),
@@ -731,7 +729,7 @@ pub fn populate(app: &mut App) {
                 mentions: Vec::new(),
             });
             row.mentions = vec![MentionRef {
-                user: jonas.0.split('@').next().unwrap_or_default().to_owned(),
+                user: "987654321012345".to_owned(),
                 id: jonas.0.to_owned(),
             }];
             row

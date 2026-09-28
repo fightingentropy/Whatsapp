@@ -392,7 +392,8 @@ impl Worker {
     }
 
     fn emit_message(&self, chat: &str, id: &str) {
-        if let Ok(Some(message)) = self.archive.message(chat, id) {
+        if let Ok(Some(mut message)) = self.archive.message(chat, id) {
+            self.polish_mentions(&mut message);
             self.emit(Event::MessageUpdated(Box::new(message)));
         }
     }
@@ -1509,7 +1510,11 @@ impl Worker {
                         {
                             new.path = old.path.clone();
                         }
-                        if let Ok(true) = self.archive.set_content(&chat, &target, &content, true) {
+                        let mentions = self.mentions_of(&mentioned_of(edited.get_base_message()));
+                        if let Ok(true) = self
+                            .archive
+                            .set_edited_text(&chat, &target, &content, &mentions)
+                        {
                             self.emit_message(&chat, &target);
                             self.emit_chat(&chat);
                         }
@@ -1524,10 +1529,11 @@ impl Worker {
                 return;
             };
             let emoji = reaction.text.clone().unwrap_or_default();
-            if let Ok(Some(updated)) = self
+            if let Ok(Some(mut updated)) = self
                 .archive
                 .set_reaction(&chat, &target, &sender, from_me, &emoji)
             {
+                self.polish_mentions(&mut updated);
                 self.emit(Event::MessageUpdated(Box::new(updated)));
             }
             return;
@@ -1647,12 +1653,13 @@ impl Worker {
             // conversation there. Replayed replies cannot clear newer arrivals.
             let _ = self.archive.mark_read_to(&chat, &message.id);
         }
-        let stored = self
+        let mut stored = self
             .archive
             .message(&chat, &message.id)
             .ok()
             .flatten()
             .unwrap_or(message);
+        self.polish_mentions(&mut stored);
         // Notify only for live incoming messages, not history replay.
         let incoming = (unread && !self.syncing).then(|| stored.clone());
         self.emit(Event::Messages {
@@ -2992,7 +2999,67 @@ impl Worker {
         });
     }
 
-    /// Refreshes stored quote ids and names with current mappings.
+    /// Older builds saved incoming edits without their updated mention metadata.
+    /// Recover missing text/caption tokens only when we already know the person,
+    /// leaving the original token and archive untouched for later identity updates.
+    fn polish_mentions(&self, message: &mut Message) {
+        for mention in &mut message.mentions {
+            mention.id = self.canonical_str(&mention.id);
+        }
+        if !message.edited {
+            return;
+        }
+        let text = match &message.content {
+            Content::Text { text, .. } => text.as_str(),
+            Content::Image { caption, .. }
+            | Content::Video { caption, .. }
+            | Content::Document { caption, .. } => caption.as_deref().unwrap_or_default(),
+            _ => return,
+        };
+        for (at, _) in text.match_indices('@') {
+            // Do not infer tags inside email addresses, URLs or longer words.
+            if text[..at]
+                .chars()
+                .next_back()
+                .is_some_and(|c| !c.is_whitespace() && !"([{>\"'*_~".contains(c))
+            {
+                continue;
+            }
+            let after = &text[at + 1..];
+            let digits = after.bytes().take_while(u8::is_ascii_digit).count();
+            let user = &after[..digits];
+            let suffix = &after[digits..];
+            let boundary = suffix.chars().next().is_none_or(|c| {
+                c.is_whitespace()
+                    || ")]},;:!?\"'*_~".contains(c)
+                    || (c == '.' && suffix[1..].chars().next().is_none_or(char::is_whitespace))
+            });
+            if digits < 5
+                || !boundary
+                || message.mentions.iter().any(|mention| mention.user == user)
+            {
+                continue;
+            }
+            let lid = format!("{user}@lid");
+            let pn = format!("{user}@s.whatsapp.net");
+            let id = if self.lid_to_pn.contains_key(user)
+                || self.is_me(&lid)
+                || self.contacts.contains_key(&lid)
+            {
+                self.canonical_str(&lid)
+            } else if self.is_me(&pn) || self.contacts.contains_key(&pn) {
+                self.canonical_str(&pn)
+            } else {
+                continue;
+            };
+            message.mentions.push(MentionRef {
+                user: user.to_owned(),
+                id,
+            });
+        }
+    }
+
+    /// Refreshes stored identities, mentions and local media before UI delivery.
     fn polish(&self, message: &mut Message) {
         self.repair_media_path(message);
         message.chat = self.canonical_str(&message.chat);
@@ -3014,9 +3081,7 @@ impl Worker {
                 quoted.mentions = self.mention_tokens(&quoted.summary);
             }
         }
-        for mention in &mut message.mentions {
-            mention.id = self.canonical_str(&mention.id);
-        }
+        self.polish_mentions(message);
     }
 
     fn load_chat(&mut self, chat: ChatId, before: Option<super::PageKey>) {
@@ -4083,7 +4148,8 @@ impl Worker {
             return;
         };
         let me = self.me();
-        if let Ok(Some(updated)) = self.archive.set_reaction(&chat, &id, &me, true, &emoji) {
+        if let Ok(Some(mut updated)) = self.archive.set_reaction(&chat, &id, &me, true, &emoji) {
+            self.polish_mentions(&mut updated);
             self.emit(Event::MessageUpdated(Box::new(updated)));
         }
         let key = wa::MessageKey {
@@ -5894,6 +5960,334 @@ mod receipt_tests {
             forwarded: false,
             thumbnail: None,
         }
+    }
+
+    fn receive_edit(worker: &mut Worker, chat: &str, id: &str, edited: wa::Message) {
+        worker.ingest(
+            &Arc::new(wa::Message {
+                protocol_message: MessageField::some(wa::message::ProtocolMessage {
+                    r#type: Some(wa::message::protocol_message::Type::MESSAGE_EDIT),
+                    key: MessageField::some(wa::MessageKey {
+                        id: Some(id.into()),
+                        ..Default::default()
+                    }),
+                    edited_message: MessageField::some(edited),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            &MessageInfo {
+                source: MessageSource {
+                    chat: chat.parse().unwrap(),
+                    sender: PEER.parse().unwrap(),
+                    is_group: chat.ends_with("@g.us"),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+    }
+
+    #[test]
+    fn incoming_edits_add_replace_and_remove_mentions_in_archive_and_events() {
+        let (mut worker, events, _inbox, _wa) = worker();
+        let group = "123-456@g.us";
+        worker.archive.ensure_chat(group, "Fixture").unwrap();
+        worker
+            .lid_to_pn
+            .insert("167650256810092".into(), "4917663430455".into());
+        let original = Message {
+            chat: group.into(),
+            ..incoming("edited", 100)
+        };
+        worker
+            .archive
+            .insert_message(&original, Some(b"original keys"))
+            .unwrap();
+        for (text, jid, expected) in [
+            (
+                "Hello @167650256810092",
+                Some(PEER_LID),
+                vec![MentionRef {
+                    user: "167650256810092".into(),
+                    id: PEER.into(),
+                }],
+            ),
+            (
+                "Hello @15550001111",
+                Some(ME),
+                vec![MentionRef {
+                    user: "15550001111".into(),
+                    id: ME.into(),
+                }],
+            ),
+            ("Hello everyone", None, vec![]),
+        ] {
+            let mentions = jid.map(str::to_owned).into_iter().collect::<Vec<_>>();
+            receive_edit(
+                &mut worker,
+                group,
+                "edited",
+                outgoing_text(text.into(), None, &mentions),
+            );
+            let stored = worker.archive.message(group, "edited").unwrap().unwrap();
+            assert!(stored.edited);
+            assert_eq!(stored.content, Content::text(text));
+            assert_eq!(stored.mentions, expected);
+            assert_eq!(
+                worker.archive.raw(group, "edited").unwrap().unwrap(),
+                b"original keys"
+            );
+            let updated = events
+                .try_iter()
+                .find_map(|event| match event {
+                    Event::MessageUpdated(message) => Some(message),
+                    _ => None,
+                })
+                .expect("edited message event");
+            assert_eq!(updated.mentions, expected);
+            assert_eq!(updated.content, stored.content);
+        }
+    }
+
+    #[test]
+    fn incoming_caption_edits_keep_downloads_and_attachment_keys_with_new_mentions() {
+        let (mut worker, events, _inbox, _wa) = worker();
+        worker.dirs = AppDirs::under(&std::env::temp_dir().join(format!(
+            "whatsapp-edited-caption-test-{}",
+            std::process::id()
+        )));
+        worker.archive.ensure_chat(PEER, "Fixture").unwrap();
+        let dir = worker.dirs.media_cache_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("fixture.bin");
+        std::fs::write(&path, b"fixture").unwrap();
+        let caption = Some("Hello @15550001111".to_owned());
+        let context_info = MessageField::some(wa::ContextInfo {
+            mentioned_jid: vec![ME.into()],
+            ..Default::default()
+        });
+        for edited in [
+            wa::Message {
+                image_message: MessageField::some(wa::message::ImageMessage {
+                    caption: caption.clone(),
+                    context_info: context_info.clone(),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            wa::Message {
+                video_message: MessageField::some(wa::message::VideoMessage {
+                    caption: caption.clone(),
+                    context_info: context_info.clone(),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            wa::Message {
+                document_message: MessageField::some(wa::message::DocumentMessage {
+                    caption,
+                    context_info,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        ] {
+            let mut original = incoming("caption", 100);
+            original.content = classify(&edited).unwrap();
+            original.content.media_mut().unwrap().path = Some(path.clone());
+            worker
+                .archive
+                .insert_message(&original, Some(b"attachment keys"))
+                .unwrap();
+            receive_edit(&mut worker, PEER, "caption", edited);
+            let stored = worker.archive.message(PEER, "caption").unwrap().unwrap();
+            assert!(stored.edited);
+            assert_eq!(stored.content.media().unwrap().path.as_ref(), Some(&path));
+            assert_eq!(
+                stored.mentions,
+                vec![MentionRef {
+                    user: "15550001111".into(),
+                    id: ME.into()
+                }]
+            );
+            assert_eq!(
+                worker.archive.raw(PEER, "caption").unwrap().unwrap(),
+                b"attachment keys"
+            );
+            assert!(events.try_iter().any(|event| matches!(event, Event::MessageUpdated(message) if message.mentions == stored.mentions && message.content == stored.content)));
+        }
+        let _ = std::fs::remove_dir_all(&worker.dirs.cache);
+    }
+
+    #[test]
+    fn old_edited_mentions_recover_on_read_and_stay_resolved_after_updates() {
+        let (mut worker, events, _inbox, _wa) = worker();
+        worker.archive.ensure_chat(PEER, "Fixture").unwrap();
+        worker
+            .lid_to_pn
+            .insert("167650256810092".into(), "4917663430455".into());
+        let text = "@167650256810092 thanks!\n(@15550001111), @167650256810092.";
+        let old = Message {
+            content: Content::text(text),
+            edited: true,
+            // Older edits could also leave a partial, stale mention list.
+            mentions: vec![MentionRef {
+                user: "15550001111".into(),
+                id: ME.into(),
+            }],
+            ..incoming("old-edit", 100)
+        };
+        worker.archive.insert_message(&old, None).unwrap();
+        let expected = vec![
+            old.mentions[0].clone(),
+            MentionRef {
+                user: "167650256810092".into(),
+                id: PEER.into(),
+            },
+        ];
+        worker.load_chat(PEER.into(), None);
+        let loaded = events
+            .try_iter()
+            .find_map(|event| match event {
+                Event::Messages { messages, .. } => Some(messages),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(loaded[0].mentions, expected);
+        assert_eq!(
+            loaded[0].content, old.content,
+            "raw body tokens must not change"
+        );
+        let mut twice = loaded[0].clone();
+        worker.polish(&mut twice);
+        assert_eq!(twice, loaded[0], "repair is idempotent");
+        worker.emit_message(PEER, "old-edit");
+        assert!(events.try_iter().any(
+            |event| matches!(event, Event::MessageUpdated(message) if message.mentions == expected)
+        ));
+        worker.ingest(
+            &Arc::new(wa::Message {
+                reaction_message: MessageField::some(wa::message::ReactionMessage {
+                    key: MessageField::some(wa::MessageKey {
+                        id: Some("old-edit".into()),
+                        ..Default::default()
+                    }),
+                    text: Some("👍".into()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            &MessageInfo {
+                source: MessageSource {
+                    chat: PEER.parse().unwrap(),
+                    sender: PEER.parse().unwrap(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        assert!(events.try_iter().any(
+            |event| matches!(event, Event::MessageUpdated(message) if message.mentions == expected)
+        ));
+        worker.store_message(old.clone(), None, None);
+        assert!(events.try_iter().any(|event| matches!(event, Event::Messages { messages, .. } if messages[0].mentions == expected)));
+        assert_eq!(
+            worker
+                .archive
+                .message(PEER, "old-edit")
+                .unwrap()
+                .unwrap()
+                .mentions,
+            old.mentions,
+            "recovery does not rewrite historical metadata"
+        );
+    }
+
+    #[test]
+    fn mention_recovery_uses_known_identities_and_respects_token_boundaries() {
+        let (mut worker, _events, _inbox, _wa) = worker();
+        let mut old = Message {
+            content: Content::text("Thanks @167650256810092"),
+            edited: true,
+            ..incoming("old-edit", 100)
+        };
+        worker.polish(&mut old);
+        assert!(
+            old.mentions.is_empty(),
+            "do not guess an unknown id is a phone number"
+        );
+        worker
+            .lid_to_pn
+            .insert("167650256810092".into(), "4917663430455".into());
+        worker.polish(&mut old);
+        assert_eq!(
+            old.mentions,
+            vec![MentionRef {
+                user: "167650256810092".into(),
+                id: PEER.into()
+            }]
+        );
+        for text in [
+            "email@167650256810092.example",
+            "https://example.test/@167650256810092",
+            "@167650256810092.example",
+            "@167650256810092/path",
+            "@167650256810092abc",
+            "@1234",
+            "@999999999999999",
+            "ordinary text",
+            "café@167650256810092",
+        ] {
+            let mut message = Message {
+                content: Content::text(text),
+                mentions: vec![],
+                ..old.clone()
+            };
+            worker.polish(&mut message);
+            assert!(message.mentions.is_empty(), "{text}");
+            assert_eq!(message.content, Content::text(text));
+        }
+        let mut unedited = Message {
+            edited: false,
+            mentions: vec![],
+            ..old.clone()
+        };
+        worker.polish(&mut unedited);
+        assert!(
+            unedited.mentions.is_empty(),
+            "only repair the affected edited rows"
+        );
+        worker.contacts.insert(
+            PEER.into(),
+            Contact {
+                id: PEER.into(),
+                full_name: Some("Fixture Person".into()),
+                push_name: None,
+            },
+        );
+        let mut caption = Message {
+            content: Content::Image {
+                caption: Some("*@4917663430455* and @15550001111".into()),
+                media: media(None, None, None, None),
+            },
+            mentions: vec![],
+            ..old
+        };
+        worker.polish(&mut caption);
+        assert_eq!(
+            caption.mentions,
+            vec![
+                MentionRef {
+                    user: "4917663430455".into(),
+                    id: PEER.into()
+                },
+                MentionRef {
+                    user: "15550001111".into(),
+                    id: ME.into()
+                },
+            ]
+        );
     }
 
     fn receipt(chat: &str, ids: &[&str], kind: ReceiptType) -> wa_events::Receipt {

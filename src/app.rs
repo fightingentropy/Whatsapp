@@ -3897,7 +3897,7 @@ mod name_tests {
             "palestra oggi? @Carmine e @1 ?",
             "a short number is not a mention"
         );
-        let message = Message {
+        let mut message = Message {
             id: "m".into(),
             chat: "1@s.whatsapp.net".into(),
             sender: "1@s.whatsapp.net".into(),
@@ -3919,5 +3919,15 @@ mod name_tests {
             thumbnail: None,
         };
         assert_eq!(app.message_text(&message), "ciao @Carmine");
+        message.content = Content::text("Edited: @987654321012345 thanks 🙌");
+        message.edited = true;
+        message.mentions = vec![MentionRef {
+            user: "987654321012345".into(),
+            id: "1@s.whatsapp.net".into(),
+        }];
+        assert_eq!(
+            app.message_text(&message),
+            "Edited: @Ada Lovelace thanks 🙌"
+        );
     }
 }
