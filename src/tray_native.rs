@@ -178,8 +178,7 @@ mod host {
 
     use objc2::runtime::{AnyClass, AnyObject, Bool, MethodImplementation, Sel};
     use objc2::{Encode, MainThreadMarker, sel};
-    use objc2_app_kit::{NSApplication, NSEventMask};
-    use objc2_foundation::{NSDate, NSDefaultRunLoopMode};
+    use objc2_app_kit::NSApplication;
 
     use super::*;
 
@@ -282,24 +281,17 @@ mod host {
         drain(&app);
     }
 
-    fn drain(app: &NSApplication) -> bool {
-        let deadline = NSDate::distantPast();
-        let mode = unsafe { NSDefaultRunLoopMode };
-        let mut handled = false;
-        // Bound a burst so queued backend work also gets a turn.
-        for _ in 0..64 {
-            let Some(event) = app.nextEventMatchingMask_untilDate_inMode_dequeue(
-                NSEventMask::Any,
-                Some(&deadline),
-                mode,
-                true,
-            ) else {
-                break;
-            };
-            app.sendEvent(&event);
-            handled = true;
+    fn drain(_app: &NSApplication) -> bool {
+        unsafe extern "C" {
+            fn whatsapp_appkit_drain() -> i32;
         }
-        handled
+        // SAFETY: called only from pump on the main thread. The Objective-C
+        // boundary contains exceptions; none can unwind through Rust.
+        let handled = unsafe { whatsapp_appkit_drain() };
+        if handled < 0 {
+            log::warn!("a native event failed while the window was closed");
+        }
+        handled != 0
     }
 }
 
@@ -361,4 +353,14 @@ mod tests {
         assert_eq!(commands.try_recv(), Ok(TrayCommand::Show));
         host::REOPEN.with(|slot| *slot.borrow_mut() = None);
     }
+}
+
+#[cfg(all(test, target_os = "macos", feature = "demo"))]
+#[test]
+fn native_exception_stays_inside_appkit_and_next_drain_can_run() {
+    unsafe extern "C" {
+        fn whatsapp_appkit_exception_probe() -> bool;
+    }
+    // SAFETY: the synthetic probe owns all objects and catches within Objective-C.
+    assert!(unsafe { whatsapp_appkit_exception_probe() });
 }

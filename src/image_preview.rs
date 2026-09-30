@@ -105,7 +105,7 @@ pub struct PreviewState {
 impl PreviewState {
     const MIN_ZOOM: f32 = 0.25;
     const MAX_ZOOM: f32 = 4.0;
-    const ZOOM_STEP: f32 = 1.25;
+    pub const ZOOM_STEP: f32 = 1.25;
 
     pub fn new(path: PathBuf) -> Self {
         Self {
@@ -141,12 +141,19 @@ impl PreviewState {
     }
 
     pub fn zoom_in(&mut self) {
-        self.zoom = (self.scale() * Self::ZOOM_STEP).min(Self::MAX_ZOOM);
-        self.fit = false;
+        self.zoom_by(Self::ZOOM_STEP);
     }
 
     pub fn zoom_out(&mut self) {
-        self.zoom = (self.scale() / Self::ZOOM_STEP).max(Self::MIN_ZOOM.min(self.fit_scale * 0.25));
+        self.zoom_by(1.0 / Self::ZOOM_STEP);
+    }
+
+    pub fn zoom_by(&mut self, factor: f32) {
+        if !factor.is_finite() || factor <= 0.0 {
+            return;
+        }
+        self.zoom = (self.scale() * factor)
+            .clamp(Self::MIN_ZOOM.min(self.fit_scale * 0.25), Self::MAX_ZOOM);
         self.fit = false;
     }
 
@@ -162,10 +169,116 @@ impl PreviewState {
     }
 }
 
+/// Keeps an image point anchored as its size changes inside a centered canvas.
+pub fn anchored_offset(
+    viewport: egui::Vec2,
+    old: egui::Vec2,
+    new: egui::Vec2,
+    offset: egui::Vec2,
+    from: egui::Vec2,
+    to: egui::Vec2,
+) -> egui::Vec2 {
+    let axis = |d: usize| {
+        let origin = |size: f32| (viewport[d].max(size) - size) / 2.0;
+        let fraction = if old[d] > 0.0 {
+            (offset[d] + from[d] - origin(old[d])) / old[d]
+        } else {
+            0.5
+        };
+        let limit = viewport[d].max(new[d]) - viewport[d];
+        (origin(new[d]) + fraction * new[d] - to[d]).clamp(0.0, limit)
+    };
+    egui::vec2(axis(0), axis(1))
+}
+
+/// Decodes one clipboard image on a worker with a bounded pixel allocation.
+pub fn clipboard_image(path: &Path) -> Result<egui::ColorImage, String> {
+    let decode = || -> Result<egui::ColorImage, image::ImageError> {
+        let mut reader = image::ImageReader::open(path)?.with_guessed_format()?;
+        let mut limits = image::Limits::default();
+        limits.max_image_width = Some(8192);
+        limits.max_image_height = Some(8192);
+        limits.max_alloc = Some(128 * 1024 * 1024);
+        reader.limits(limits);
+        use image::ImageDecoder;
+        let decoder = reader.into_decoder()?;
+        let (width, height) = decoder.dimensions();
+        // Bound conversion and the clipboard's second RGBA buffer too.
+        if u64::from(width) * u64::from(height) > 16 * 1024 * 1024 {
+            return Err(image::ImageError::Limits(
+                image::error::LimitError::from_kind(
+                    image::error::LimitErrorKind::InsufficientMemory,
+                ),
+            ));
+        }
+        let image = image::DynamicImage::from_decoder(decoder)?.to_rgba8();
+        Ok(egui::ColorImage::from_rgba_unmultiplied(
+            [image.width() as usize, image.height() as usize],
+            &image,
+        ))
+    };
+    decode().map_err(|_| "Could not copy this image".to_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn clipboard_copy_decodes_pixels_and_rejects_invalid_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("copy.png");
+        image::RgbaImage::from_pixel(3, 2, image::Rgba([30, 80, 120, 255]))
+            .save(&path)
+            .unwrap();
+        let copied = clipboard_image(&path).unwrap();
+        assert_eq!(copied.size, [3, 2]);
+        assert!(
+            copied
+                .pixels
+                .iter()
+                .all(|p| p.to_array() == [30, 80, 120, 255])
+        );
+        image::RgbaImage::new(8193, 1).save(&path).unwrap();
+        assert!(
+            clipboard_image(&path).is_err(),
+            "reject oversized dimensions before decoding"
+        );
+        std::fs::write(&path, b"invalid image").unwrap();
+        assert!(clipboard_image(&path).is_err());
+    }
+
+    #[test]
+    fn zoom_anchor_preserves_the_point_and_clamps_to_the_canvas() {
+        use egui::vec2;
+        assert_eq!(
+            anchored_offset(
+                vec2(400., 400.),
+                vec2(400., 400.),
+                vec2(800., 800.),
+                vec2(0., 0.),
+                vec2(100., 200.),
+                vec2(100., 200.)
+            ),
+            vec2(100., 200.)
+        );
+        assert_eq!(
+            anchored_offset(
+                vec2(400., 400.),
+                vec2(800., 800.),
+                vec2(200., 200.),
+                vec2(400., 400.),
+                vec2(100., 200.),
+                vec2(100., 200.)
+            ),
+            vec2(0., 0.)
+        );
+        let mut preview = PreviewState::new("fixture.png".into());
+        preview.zoom_by(f32::NAN);
+        preview.zoom_by(-1.);
+        assert!(preview.is_fit());
+    }
 
     #[test]
     fn zooming_out_of_a_large_fitted_photo_never_enlarges_it() {

@@ -174,6 +174,14 @@ and archive. This is an explicit additional target; keep the Mac build intact.
   server's rate limit, which once left groups called "Group" forever.
   Failures back off (30 s doubling, seven tries); item-not-found,
   forbidden and not-authorized are final and stop the asking.
+- Replayed messages retain same-kind local media paths in SQLite. Phone reads and
+  reactions that precede their message wait in bounded worker memory (512 of each,
+  one hour), rekey with identity merges and settle only after archive commits.
+  Recent/received sticker downloads share two slots and exponential rate-limit
+  backoff; synchronous failures release their slot. Local video posters use
+  AVFoundation on the bounded upload worker, never the UI/FFI control queue.
+  `src/native/apple.m` contains Objective-C exceptions before returning to Rust;
+  the Mac event pump retains its existing event-driven wake source.
 - A download that answers 403/404/410 goes through
   `client.media_reupload().request(..)` (a server-error receipt; WhatsApp
   has the phone re-upload and answers with a fresh `direct_path`) and is

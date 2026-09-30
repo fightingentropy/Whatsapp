@@ -141,6 +141,14 @@ fn preview_keys(app: &mut App, ctx: &egui::Context) {
         if input.consume_key(Modifiers::NONE, Key::Escape) {
             actions.push(Action::CloseImagePreview);
         }
+        if input
+            .events
+            .iter()
+            .any(|event| matches!(event, egui::Event::Copy))
+            && let Some(preview) = &app.image_preview
+        {
+            actions.push(Action::CopyImage(preview.path().to_owned()));
+        }
         let mut event_actions = Vec::new();
         for event in &input.events {
             if let egui::Event::Key {

@@ -30,7 +30,8 @@ Build from source below; signed, notarized public downloads will appear under
 - A main-run-loop wake source replaces the closed-window 150 ms polling loop.
   Backend messages and native events wake it; pending settings, audio and other
   real deadlines still run. The protocol worker retains its 5-second maintenance
-  tick and the protocol library's own network timers.
+  tick and the protocol library's own network timers. Native AppKit exceptions
+  are contained inside the event pump while the window is closed.
 - Message search waits 180 ms after typing and uses an FTS5 trigram index for
   literal substrings of three or more characters. A bounded recent-message check
   handles common terms without sorting a large match set. Short searches retain the
@@ -38,7 +39,8 @@ Build from source below; signed, notarized public downloads will appear under
   follows edits, replays, deletions and chat merges. Its initial build and disk
   space are additional costs.
 - History is saved in transactions of up to 256 messages with cached SQL
-  statements, preserving raw attachment keys and delivery state.
+  statements, preserving raw attachment keys and delivery state. Replayed history
+  retains downloaded files instead of replacing their local paths.
 - Long conversations reuse measured row heights and skip offscreen bubble layout.
   Search jumps, history insertion, edits and resizing preserve the reading position.
   Rows are remeasured when their content or layout changes. During text selection,
@@ -99,7 +101,8 @@ See [PERFORMANCE.md](PERFORMANCE.md) for measurements, remaining costs and valid
   pull. Scrolling away hides it again; returning to the top keeps it hidden until
   another pull. Search chats, saved messages, and contacts. Hover a cut-short or
   multiline last-message preview to see more of it, including the sender in groups
-  (up to twelve lines).
+  (up to twelve lines). Unsent text drafts appear in the chat list; desktop drafts
+  last for the current app session.
   Phone-number and privacy IDs for the same person combine into one chat as
   WhatsApp supplies their mapping. Existing duplicates are repaired on startup,
   preserving saved messages, attachment keys and downloads.
@@ -111,6 +114,8 @@ See [PERFORMANCE.md](PERFORMANCE.md) for measurements, remaining costs and valid
   more than 200 matches explain the limit. `⌘K` and `⌘Shift+F` search all chats.
 - **Read state across devices.** Reading a chat syncs its unread badge with
   your phone and other linked devices, including when read receipts are off.
+  Reads and reactions arriving before their message wait in bounded memory
+  (up to 512 each, for one hour) and settle when that message is archived.
   Replies from another device clear preceding unread messages. The read-receipt
   toggle also controls voice-message played receipts; account privacy is checked
   before sending receipts in direct chats. A hidden window does not read messages.
@@ -123,7 +128,8 @@ See [PERFORMANCE.md](PERFORMANCE.md) for measurements, remaining costs and valid
   do not change that list. If the original recipients are unknown, Whatsapp
   waits for the phone's aggregate status instead of guessing from one reader.
 - **WhatsApp formatting.** Bold, italic, strikethrough, code, lists, quotes,
-  mentions, and link previews are supported. Links are clickable. Emoji use
+  mentions, and link previews are supported. Clickable links preserve balanced
+  parentheses and brackets in their URLs. Emoji use
   Apple Color Emoji (an optional bundled fallback is available), and emoji-only
   messages are larger. Edited messages and captions keep their updated tags;
   older edits with missing tag metadata recover names from known contacts and
@@ -132,7 +138,9 @@ See [PERFORMANCE.md](PERFORMANCE.md) for measurements, remaining costs and valid
   picture, drop files, or use the file picker. Copied files attach the original
   document, not Finder's icon preview; filenames do not become captions.
   Each ⌘V or Edit > Paste adds the copied attachment once.
-  They stay in the composer until you send them or press Escape.
+  They stay in the composer until you send them or press Escape. Local videos
+  include a small JPEG preview, dimensions and duration when Apple can decode them;
+  metadata preparation runs on the bounded upload worker.
   WAV, FLAC and other audio formats phones cannot play inline are sent as
   documents, preserving the original file; compatible audio keeps its player.
 - **Mute chats** for eight hours, one week, or indefinitely. The setting also
@@ -146,11 +154,15 @@ See [PERFORMANCE.md](PERFORMANCE.md) for measurements, remaining costs and valid
   Escape clears search and returns to the composer. Type `:name` to autocomplete
   an emoji without leaving the composer, or `@` in a group to mention a member.
   Reply, react, edit, forward, delete, and check when a message was sent,
-  delivered, or read.
+  delivered, or read. Sending while reading older messages keeps your place.
 - **View attachments.** Whatsapp downloads files up to 64 MB automatically or
   on click. Photos, stickers, GIFs, voice messages, audio, locations, contacts,
   polls, and link previews appear in the chat. Click a downloaded photo to open
   an in-app preview with zoom, fit, original size, and an external-app button.
+  Pinch or use the mouse wheel to zoom around the pointer; drag or scroll with
+  two fingers to pan. Double-click toggles fit and original size. Copy an image
+  from the preview toolbar, with ⌘C, or from its message menu. Clipboard decoding
+  runs off the UI thread and rejects images above 16 megapixels or an 8,192-pixel edge.
   Escape closes the preview; typing and paste cannot alter the draft behind it.
   Videos play inside their message bubble with play/pause, seeking and mute.
   Clicking Play downloads the video if needed and starts it when ready; automatic
@@ -162,7 +174,8 @@ See [PERFORMANCE.md](PERFORMANCE.md) for measurements, remaining costs and valid
   and stickers, and save stickers with a right-click. Emoji autocomplete and
   picker search select their first match; use the arrow keys and Enter to
   choose it. GIF search needs a free GIPHY API key unless the build includes
-  one.
+  one. Recent/received sticker downloads share two slots and pause with increasing
+  backoff when the server limits requests. Other failures retry when the picker reopens.
 - **Sticker packs.** Import a pack from a `signal.art` link or `.wastickers`
   file. Animated packs remain animated. Packs are stored as WebP files on your
   computer.

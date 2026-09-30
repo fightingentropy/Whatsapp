@@ -2424,6 +2424,11 @@ fn context_menu(ui: &mut egui::Ui, view: &View<'_>, message: &Message, actions: 
     if let Some(media) = message.content.media() {
         match &media.path {
             Some(path) => {
+                if matches!(message.content, Content::Image { .. })
+                    && widgets::menu_item(ui, &palette, Some(Icon::Copy), "Copy image")
+                {
+                    actions.push(Action::CopyImage(path.clone()));
+                }
                 if widgets::menu_item(ui, &palette, Some(Icon::ExternalLink), "Open file") {
                     actions.push(Action::OpenFile(path.clone()));
                 }
