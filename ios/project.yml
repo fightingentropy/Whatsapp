@@ -14,7 +14,7 @@ settings:
     DEVELOPMENT_TEAM: T29NU9NCA2
     CODE_SIGN_STYLE: Automatic
     MARKETING_VERSION: "0.13.1"
-    CURRENT_PROJECT_VERSION: "12"
+    CURRENT_PROJECT_VERSION: "13"
     ENABLE_USER_SCRIPT_SANDBOXING: false
   configs:
     Benchmark:
@@ -39,7 +39,7 @@ targets:
         SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD: false
         SWIFT_OBJC_BRIDGING_HEADER: Whatsapp/CoreBridge.h
         LIBRARY_SEARCH_PATHS: ["$(inherited)", "$(SRCROOT)/build/$(PLATFORM_NAME)"]
-        OTHER_LDFLAGS: ["$(inherited)", "-lwhatsapp_ios_core", "-lc++", "-framework", "Security", "-framework", "SystemConfiguration"]
+        OTHER_LDFLAGS: ["$(inherited)", "-lwhatsapp_ios_core", "-lc++", "-framework", "Security", "-framework", "SystemConfiguration", "-framework", "AVFoundation", "-framework", "CoreMedia", "-framework", "CoreGraphics", "-framework", "ImageIO"]
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         APP_DISPLAY_NAME: Whatsapp

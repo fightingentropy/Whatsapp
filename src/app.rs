@@ -222,6 +222,8 @@ pub struct App {
     pub recording: Option<Recorder>,
     /// Downloaded image in the native preview.
     pub image_preview: Option<crate::image_preview::PreviewState>,
+    /// One bounded background clipboard decode at a time.
+    image_copy: Option<std::sync::mpsc::Receiver<Result<egui::ColorImage, String>>>,
     /// Voice messages with a sent played receipt.
     played_told: HashSet<String>,
     /// Message bodies registered for transcript copy formatting.
@@ -426,6 +428,7 @@ impl App {
             video_to_play: None,
             recording: None,
             image_preview: None,
+            image_copy: None,
             played_told: HashSet::new(),
             copy_rows: Default::default(),
             selection_view: Default::default(),
@@ -1549,6 +1552,27 @@ impl App {
         self.last_keystroke = None;
     }
 
+    /// Sending while reading history keeps the reader's position.
+    fn follow_outgoing(&mut self) {
+        if self.at_bottom {
+            self.scroll_to_bottom = true;
+        }
+    }
+
+    /// Active composer text and saved drafts share the sidebar preview.
+    pub fn draft_for(&self, chat: &str) -> Option<&str> {
+        let draft = if self.open_chat.as_deref() == Some(chat) && self.editing.is_none() {
+            Some(self.composer.as_str())
+        } else {
+            self.drafts.get(chat).map(String::as_str)
+        };
+        draft.map(str::trim).filter(|text| !text.is_empty())
+    }
+
+    pub fn scroll_from_trackpad(&self) -> bool {
+        self.scroll_from_trackpad
+    }
+
     fn send_text(&mut self, chat: ChatId, text: String, quoting: Option<String>) {
         let text = text.trim().to_owned();
         if text.is_empty() {
@@ -1582,8 +1606,7 @@ impl App {
             quoting,
             mentions,
         });
-        self.scroll_to_bottom = true;
-        self.at_bottom = true;
+        self.follow_outgoing();
     }
 
     /// Replaces selected display-name mentions with WhatsApp's `@user`
@@ -1674,8 +1697,7 @@ impl App {
             });
         }
         self.reply_to = None;
-        self.scroll_to_bottom = true;
-        self.at_bottom = true;
+        self.follow_outgoing();
     }
 
     #[allow(dead_code)]
@@ -1698,8 +1720,7 @@ impl App {
             caption: None,
             mentions: Vec::new(),
         });
-        self.scroll_to_bottom = true;
-        self.at_bottom = true;
+        self.follow_outgoing();
     }
 
     fn pump_search(&mut self, now: Instant, ctx: &egui::Context) {
@@ -1718,6 +1739,16 @@ impl App {
     }
 
     fn tick(&mut self, ctx: &egui::Context) {
+        if let Some(result) = self.image_copy.as_ref().and_then(|job| job.try_recv().ok()) {
+            self.image_copy = None;
+            match result {
+                Ok(image) => {
+                    ctx.copy_image(image);
+                    self.toast("Image copied");
+                }
+                Err(error) => self.toast_error(error),
+            }
+        }
         let now = Instant::now();
         self.pump_search(now, ctx);
         if self.composing
@@ -1919,6 +1950,11 @@ impl App {
                     preview.zoom_out();
                 }
             }
+            Action::ZoomImageBy(factor) => {
+                if let Some(preview) = &mut self.image_preview {
+                    preview.zoom_by(factor);
+                }
+            }
             Action::FitImage => {
                 if let Some(preview) = &mut self.image_preview {
                     preview.fit();
@@ -1949,6 +1985,17 @@ impl App {
                 }
             }
             Action::OpenUrl(url) => ctx.open_url(egui::OpenUrl::new_tab(url)),
+            Action::CopyImage(path) => {
+                if self.image_copy.is_none() {
+                    let (send, receive) = std::sync::mpsc::channel();
+                    self.image_copy = Some(receive);
+                    let ctx = ctx.clone();
+                    std::thread::spawn(move || {
+                        let _ = send.send(crate::image_preview::clipboard_image(&path));
+                        ctx.request_repaint();
+                    });
+                }
+            }
             Action::CopyText(text) => {
                 ctx.copy_text(text);
                 self.toast("Copied");
@@ -2183,8 +2230,7 @@ impl App {
                 if let Some(chat) = self.open_chat.clone() {
                     self.backend.send(Command::SendSticker { chat, path });
                     self.picker = None;
-                    self.scroll_to_bottom = true;
-                    self.at_bottom = true;
+                    self.follow_outgoing();
                     self.refocus_composer(ctx);
                 }
             }
@@ -2202,8 +2248,7 @@ impl App {
                     self.toast("Sending GIF…");
                     self.backend.send(Command::SendGif { chat, gif });
                     self.picker = None;
-                    self.scroll_to_bottom = true;
-                    self.at_bottom = true;
+                    self.follow_outgoing();
                     self.refocus_composer(ctx);
                 }
             }
@@ -3240,6 +3285,66 @@ mod tests {
                 .any(|event| matches!(event, egui::Event::Paste(text) if text == "Trip.pdf"))
         );
         assert!(app.pending.is_empty());
+    }
+
+    #[test]
+    fn sending_a_reply_keeps_older_messages_in_view() {
+        let mut app = app();
+        let (backend, mut commands) = Backend::recording();
+        app.backend = backend;
+        let chat = "fixture@s.whatsapp.net";
+        app.open_chat = Some(chat.into());
+        app.at_bottom = false;
+        app.scroll_to_bottom = false;
+
+        app.apply(
+            Action::SendText {
+                chat: chat.into(),
+                text: "Reply fixture".into(),
+                quoting: Some("older-message".into()),
+            },
+            &egui::Context::default(),
+        );
+
+        assert!(!app.scroll_to_bottom, "the older position stays selected");
+        assert!(!app.at_bottom, "sending does not pretend the view moved");
+        assert!(
+            std::iter::from_fn(|| commands.try_recv().ok()).any(|command| matches!(
+                command,
+                Command::SendText { quoting: Some(id), .. } if id == "older-message"
+            ))
+        );
+
+        app.at_bottom = true;
+        app.scroll_to_bottom = false;
+        app.apply(
+            Action::SendText {
+                chat: chat.into(),
+                text: "Latest fixture".into(),
+                quoting: None,
+            },
+            &egui::Context::default(),
+        );
+
+        assert!(
+            app.scroll_to_bottom,
+            "a reader at the newest edge keeps following outgoing messages"
+        );
+        assert!(app.at_bottom);
+    }
+
+    #[test]
+    fn draft_previews_follow_the_composer_and_do_not_show_edits() {
+        let mut app = app();
+        app.drafts.insert("saved".into(), "  Later 🌍  ".into());
+        app.open_chat = Some("active".into());
+        app.composer = "Current draft".into();
+        assert_eq!(app.draft_for("saved"), Some("Later 🌍"));
+        assert_eq!(app.draft_for("active"), Some("Current draft"));
+        app.editing = Some("old-message".into());
+        assert_eq!(app.draft_for("active"), None);
+        app.drafts.insert("empty".into(), "\n  ".into());
+        assert_eq!(app.draft_for("empty"), None);
     }
 
     #[test]

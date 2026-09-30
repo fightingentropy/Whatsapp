@@ -34,6 +34,8 @@ Silicon Mac to build. This is a personal-device build, not an App Store release.
 - Photos, videos and files from the system pickers, plus explicit Paste photo,
   with captions. Up to 30 files per send, each up to 100 MB. Adding attachments
   clears a quoted reply: the shared file sender does not support quoted attachments.
+  Local videos include a small JPEG preview, dimensions and duration when Apple
+  can decode them, prepared off the UI and engine-control queues.
   Uploads are processed one at a time on iPhone and stay visible while queued or
   uploading. Failed uploads keep their source and caption with Retry/Remove;
   failures after archiving can be retried from the message menu with the same ID.
@@ -66,7 +68,8 @@ Silicon Mac to build. This is a personal-device build, not an App Store release.
   sends from a hardware keyboard; the iPhone Return key inserts a new line.
 - GIF search and sending through GIPHY with your API key in Settings. Saved and
   recent stickers, animated stickers/GIFs, and pack imports from signal.art links
-  or .wastickers/ZIP files. Imported pack deletion asks for confirmation.
+  or .wastickers/ZIP files. Recent/received sticker downloads share two slots and
+  back off together on server rate limits. Imported pack deletion asks for confirmation.
 - New conversations by phone number, synced contact names, optional saving to the
   primary phone's address book, full profile pictures and group member details.
 - Recent conversations reopen from a memory cache of at most four chats and
@@ -89,7 +92,9 @@ Silicon Mac to build. This is a personal-device build, not an App Store release.
   budget and show immediately when reused. Refresh failures retain saved
   portraits; a confirmed removal clears the disk entry. Same-filename picture
   updates invalidate their thumbnails. Attachment paths are repaired when their
-  messages are loaded, including after an app update moves the container. File
+  messages are loaded, including after an app update moves the container. History
+  replays preserve downloaded paths. Early phone reads and reactions wait in bounded
+  memory (512 each, up to one hour) until their target is archived. File
   descriptors/revisions are reused while drawing rows.
   Opening a conversation keeps its latest photo and caption above the composer
   as the image rows finish layout, preserving the position in older history.

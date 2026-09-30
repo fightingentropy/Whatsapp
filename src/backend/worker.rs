@@ -32,8 +32,13 @@ use whatsapp_rust::{MediaRetryResult, MediaReuploadRequest};
 
 #[path = "worker/device_store.rs"]
 mod device_store;
+#[path = "worker/early_events.rs"]
+mod early_events;
+use early_events::WaitingReaction;
 #[path = "worker/link_watch.rs"]
 mod link_watch;
+#[path = "worker/sticker_pace.rs"]
+mod sticker_pace;
 #[path = "worker/upload_budget.rs"]
 mod upload_budget;
 
@@ -209,9 +214,14 @@ pub async fn run(
         pending_older: HashMap::new(),
         older_warned: HashSet::new(),
         pending_avatars: HashMap::new(),
+        sticker_pace: Default::default(),
+        stickers_requested: false,
+        sticker_failed: HashSet::new(),
+        sticker_download_failed: HashSet::new(),
         sticker_fetches: HashSet::new(),
         sticker_downloads: HashSet::new(),
         read_syncs: HashMap::new(),
+        early: Default::default(),
         link_watch: Default::default(),
         upload_budget: Default::default(),
     };
@@ -241,11 +251,13 @@ pub async fn run(
                 worker.emit_chats();
             }
             _ = tick.tick() => {
+                worker.early.prune(Instant::now());
                 worker.watch_link();
                 worker.expire_older_requests();
                 worker.retry_avatars();
                 worker.pump_group_info();
                 worker.pump_read_sync();
+                worker.fetch_missing_stickers();
             }
         }
     }
@@ -256,6 +268,7 @@ struct Worker {
     upload_budget: upload_budget::UploadBudget,
     /// None while in flight, otherwise the next retry time.
     read_syncs: HashMap<ChatId, Option<Instant>>,
+    early: early_events::EarlyEvents,
     link_watch: link_watch::LinkWatch,
     dirs: AppDirs,
     events: std::sync::mpsc::Sender<Event>,
@@ -294,6 +307,10 @@ struct Worker {
     older_warned: HashSet<ChatId>,
     /// Deferred profile-picture requests and retry counts.
     pending_avatars: HashMap<(String, bool), u32>,
+    sticker_pace: sticker_pace::Pace,
+    stickers_requested: bool,
+    sticker_failed: HashSet<String>,
+    sticker_download_failed: HashSet<(ChatId, String)>,
     /// Active recent-sticker downloads by hash.
     sticker_fetches: HashSet<String>,
     /// Active chat-sticker downloads by chat and message id.
@@ -717,6 +734,17 @@ impl Worker {
             .drain()
             .map(|(chat, id)| (if chat == from { into.clone() } else { chat }, id))
             .collect();
+        self.sticker_download_failed = self
+            .sticker_download_failed
+            .drain()
+            .map(|(chat, id)| (if chat == from { into.clone() } else { chat }, id))
+            .collect();
+        for id in self.early.rekey(&from, &into) {
+            if let Ok(Some(message)) = self.archive.message(&into, &id) {
+                self.settle_early_events(&into, &id, message.from_me);
+                self.emit_message(&into, &id);
+            }
+        }
         self.emit(Event::ChatMerged {
             from,
             into: into.clone(),
@@ -1298,6 +1326,13 @@ impl Worker {
         if let Err(error) = self.archive.clear() {
             log::warn!("could not clear the archive: {error}");
         }
+        self.early.clear();
+        self.stickers_requested = false;
+        self.sticker_failed.clear();
+        self.sticker_download_failed.clear();
+        self.sticker_fetches.clear();
+        self.sticker_downloads.clear();
+        self.sticker_pace = Default::default();
         self.lid_to_pn.clear();
         self.contacts.clear();
         self.group_info_requested.clear();
@@ -1381,14 +1416,14 @@ impl Worker {
                 // The receipt time is when the phone read, not the position
                 // it read through. A delayed receipt must leave newer messages.
                 for id in &receipt.message_ids {
-                    if self
-                        .archive
-                        .message(&chat, id)
-                        .ok()
-                        .flatten()
-                        .is_some_and(|message| !message.from_me)
-                    {
-                        let _ = self.archive.mark_read_to(&chat, id);
+                    match self.archive.message(&chat, id) {
+                        Ok(Some(message)) if !message.from_me => {
+                            let _ = self.archive.mark_read_to(&chat, id);
+                        }
+                        Ok(None) if !receipt.source.chat.is_status_broadcast() => {
+                            self.early.wait_read(&chat, id);
+                        }
+                        _ => {}
                     }
                 }
                 self.emit_chat(&chat);
@@ -1533,13 +1568,17 @@ impl Worker {
                 return;
             };
             let emoji = reaction.text.clone().unwrap_or_default();
-            if let Ok(Some(mut updated)) = self
-                .archive
-                .set_reaction(&chat, &target, &sender, from_me, &emoji)
-            {
-                self.polish_mentions(&mut updated);
-                self.emit(Event::MessageUpdated(Box::new(updated)));
-            }
+            let reaction = WaitingReaction::new(
+                &chat,
+                &target,
+                &sender,
+                from_me,
+                emoji,
+                reaction
+                    .sender_timestamp_ms
+                    .unwrap_or_else(|| info.timestamp.timestamp_millis()),
+            );
+            self.file_reaction(reaction);
             return;
         }
         let Some(content) = classify(base) else {
@@ -1635,7 +1674,9 @@ impl Worker {
             log::warn!("could not store a message: {error}");
             return;
         }
+        let already_read = self.settle_early_events(&chat, &message.id, message.from_me);
         let unread = is_new
+            && !already_read
             && !message.from_me
             && self
                 .archive
@@ -1680,6 +1721,37 @@ impl Worker {
                 message: Box::new(message),
             });
         }
+    }
+
+    fn file_reaction(&mut self, reaction: WaitingReaction) {
+        match self.archive.set_reaction(
+            &reaction.chat,
+            &reaction.target,
+            &reaction.sender,
+            reaction.from_me,
+            &reaction.body,
+        ) {
+            Ok(Some(mut updated)) => {
+                self.polish_mentions(&mut updated);
+                self.emit(Event::MessageUpdated(Box::new(updated)));
+            }
+            Ok(None) => self.early.wait_reaction(reaction),
+            Err(error) => log::warn!("could not store a reaction: {error}"),
+        }
+    }
+
+    /// Settle only after the row has committed. A failed write leaves its
+    /// events waiting; an early phone read must not create a new unread badge.
+    fn settle_early_events(&mut self, chat: &str, id: &str, from_me: bool) -> bool {
+        let read = self.early.take_read(chat, id) && !from_me;
+        if read && let Err(error) = self.archive.mark_read_to(chat, id) {
+            self.early.wait_read(chat, id);
+            log::warn!("could not apply a phone read: {error}");
+        }
+        for reaction in self.early.take_reactions(chat, id) {
+            self.file_reaction(reaction);
+        }
+        read
     }
 
     fn quoted_of(&self, base: &wa::Message) -> Option<Quoted> {
@@ -1807,10 +1879,11 @@ impl Worker {
         self.emit_chats();
     }
 
-    fn store_history_batch(&self, batch: &mut Vec<(Message, Vec<u8>)>) {
+    fn store_history_batch(&mut self, batch: &mut Vec<(Message, Vec<u8>)>) {
         if batch.is_empty() {
             return;
         }
+        let mut failed_rows = HashSet::new();
         if let Err(error) = self.archive.insert_messages(
             batch
                 .iter()
@@ -1824,12 +1897,18 @@ impl Worker {
                 if let Err(error) = self.archive.insert_message(message, Some(raw)) {
                     log::warn!("could not store a history message: {error}");
                     failed = true;
+                    failed_rows.insert((&message.chat, &message.id));
                 }
             }
             if failed {
                 self.emit(Event::Error(
                     "Some history could not be saved. Check available disk space.".into(),
                 ));
+            }
+        }
+        for (message, _) in batch.iter() {
+            if !failed_rows.contains(&(&message.chat, &message.id)) {
+                self.settle_early_events(&message.chat, &message.id, message.from_me);
             }
         }
         batch.clear();
@@ -2251,7 +2330,9 @@ impl Worker {
                     log::warn!("could not create the chat: {error}");
                 }
             }
-            Command::Download { chat, message } => self.download(chat, message),
+            Command::Download { chat, message } => {
+                self.download(chat, message);
+            }
             Command::FetchAvatar { id, full } => self.fetch_avatar(id, full),
             Command::EditText {
                 chat,
@@ -2551,6 +2632,9 @@ impl Worker {
                 self.emit(Event::Gifs { query, results });
             }
             Command::RecentStickers => {
+                self.stickers_requested = true;
+                self.sticker_failed.clear();
+                self.sticker_download_failed.clear();
                 self.fetch_missing_stickers();
                 self.emit_stickers();
             }
@@ -2559,11 +2643,18 @@ impl Worker {
                 match result {
                     Ok(path) => {
                         if let Err(error) = self.archive.set_sticker_path(&hash, &path) {
-                            log::warn!("could not file sticker {hash}: {error}");
+                            log::warn!("could not file a sticker: {error}");
+                            self.sticker_failed.insert(hash);
                         }
                     }
-                    Err(error) => log::warn!("sticker {hash} could not be fetched: {error}"),
+                    Err(error) if sticker_pace::rate_limited(&error) => {
+                        self.sticker_pace.limited(Instant::now());
+                    }
+                    Err(_) => {
+                        self.sticker_failed.insert(hash);
+                    }
                 }
+                self.fetch_missing_stickers();
                 self.emit_stickers();
             }
             Command::MeInfo { about } => {
@@ -2738,12 +2829,21 @@ impl Worker {
                     let _ = self.archive.set_media_path(&chat, &id, path);
                 }
                 let for_picker = self.sticker_downloads.remove(&(chat.clone(), id.clone()));
+                if for_picker && let Err(error) = &result {
+                    if sticker_pace::rate_limited(error) {
+                        self.sticker_pace.limited(Instant::now());
+                    } else {
+                        self.sticker_download_failed
+                            .insert((chat.clone(), id.clone()));
+                    }
+                }
                 self.emit(Event::Media {
                     chat,
                     message: id,
                     result,
                 });
                 if for_picker {
+                    self.fetch_missing_stickers();
                     self.emit_stickers();
                 }
             }
@@ -3248,14 +3348,14 @@ impl Worker {
         }
     }
 
-    fn download(&mut self, chat: ChatId, id: String) {
+    fn download(&mut self, chat: ChatId, id: String) -> bool {
         let Some(client) = self.client.clone() else {
             self.emit(Event::Media {
                 chat,
                 message: id,
                 result: Err("Not connected to WhatsApp".to_owned()),
             });
-            return;
+            return false;
         };
         let raw = self.archive.raw(&chat, &id).ok().flatten();
         let Some(message) = raw.and_then(|raw| wa::Message::decode_from_slice(&raw).ok()) else {
@@ -3264,7 +3364,7 @@ impl Worker {
                 message: id,
                 result: Err("Attachment download keys are missing".to_owned()),
             });
-            return;
+            return false;
         };
         let base = message.get_base_message().clone();
         let (downloadable, mime, file_name): (Box<dyn Downloadable>, String, Option<String>) =
@@ -3308,7 +3408,7 @@ impl Worker {
                     message: id,
                     result: Err("This message has no downloadable file".to_owned()),
                 });
-                return;
+                return false;
             };
         // Keep metadata needed for one media re-upload request and retry.
         let media_key = base
@@ -3433,10 +3533,21 @@ impl Worker {
             };
             let _ = commands.send(Command::Downloaded { chat, id, result });
         });
+        true
     }
 
     /// Downloads missing recent and archived stickers for the picker.
     fn fetch_missing_stickers(&mut self) {
+        if !self.stickers_requested || !matches!(self.status, LinkStatus::Connected) {
+            return;
+        }
+        let mut slots = self.sticker_pace.slots(
+            Instant::now(),
+            self.sticker_fetches.len() + self.sticker_downloads.len(),
+        );
+        if slots == 0 {
+            return;
+        }
         let Some(client) = self.client.clone() else {
             return;
         };
@@ -3449,17 +3560,24 @@ impl Worker {
         };
         let dir = self.dirs.sticker_cache_dir();
         for sticker in phone.into_iter().filter(|sticker| sticker.path.is_none()) {
-            if !self.sticker_fetches.insert(sticker.hash.clone()) {
+            if slots == 0 {
+                return;
+            }
+            if self.sticker_failed.contains(&sticker.hash)
+                || !self.sticker_fetches.insert(sticker.hash.clone())
+            {
                 continue;
             }
             let Ok(meta) = wa::StickerMetadata::decode_from_slice(&sticker.raw) else {
                 self.sticker_fetches.remove(&sticker.hash);
+                self.sticker_failed.insert(sticker.hash);
                 continue;
             };
             let client = client.clone();
             let commands = self.commands.clone();
             let dir = dir.clone();
             let hash = sticker.hash;
+            slots -= 1;
             tokio::spawn(async move {
                 let result = async {
                     let bytes = client
@@ -3482,12 +3600,27 @@ impl Worker {
         match self.archive.stickers_without_file(STICKER_FETCH_LIMIT) {
             Ok(list) => {
                 for (chat, id) in list {
-                    if self.sticker_downloads.insert((chat.clone(), id.clone())) {
-                        self.download(chat, id);
+                    if slots == 0 {
+                        return;
+                    }
+                    if !self
+                        .sticker_download_failed
+                        .contains(&(chat.clone(), id.clone()))
+                        && self.sticker_downloads.insert((chat.clone(), id.clone()))
+                    {
+                        if self.download(chat.clone(), id.clone()) {
+                            slots -= 1;
+                        } else {
+                            self.sticker_downloads.remove(&(chat.clone(), id.clone()));
+                            self.sticker_download_failed.insert((chat, id));
+                        }
                     }
                 }
             }
             Err(error) => log::warn!("could not list unfetched stickers: {error}"),
+        }
+        if self.sticker_fetches.is_empty() && self.sticker_downloads.is_empty() {
+            self.stickers_requested = false;
         }
     }
 
@@ -3915,8 +4048,15 @@ impl Worker {
                     let file_name = path
                         .file_name()
                         .map(|name| name.to_string_lossy().into_owned());
-                    let prepared =
-                        prepare_media(&client, bytes, &mime, file_name.as_deref(), false).await?;
+                    let prepared = prepare_media(
+                        &client,
+                        bytes,
+                        &mime,
+                        file_name.as_deref(),
+                        false,
+                        Some(path),
+                    )
+                    .await?;
                     file_outbound(&client, &chat, &me, &dir, prepared, caption, mentions).await
                 }
                 .await;
@@ -3974,7 +4114,8 @@ impl Worker {
                 })
                 .await
                 .map_err(|error| error.to_string())??;
-                let prepared = prepare_media(&client, encoded, "image/jpeg", None, false).await?;
+                let prepared =
+                    prepare_media(&client, encoded, "image/jpeg", None, false, None).await?;
                 file_outbound(&client, &chat, &me, &dir, prepared, caption, mentions).await
             }
             .await;
@@ -4154,7 +4295,8 @@ impl Worker {
                 })
                 .await
                 .map_err(|error| error.to_string())??;
-                let mut prepared = prepare_media(&client, bytes, "video/mp4", None, true).await?;
+                let mut prepared =
+                    prepare_media(&client, bytes, "video/mp4", None, true, None).await?;
                 if let Content::Video { media, .. } = &mut prepared.content {
                     media.width = Some(gif.width);
                     media.height = Some(gif.height);
@@ -4834,6 +4976,7 @@ async fn prepare_media(
     mime: &str,
     file_name: Option<&str>,
     gif: bool,
+    source: Option<PathBuf>,
 ) -> Result<Prepared, String> {
     let kind = mime.split('/').next().unwrap_or_default();
     let is_picture = matches!(
@@ -4891,27 +5034,45 @@ async fn prepare_media(
     let size = bytes.len() as u64;
     let mime_owned = mime.to_owned();
     if kind == "video" {
+        let poster = if let Some(path) = source {
+            tokio::task::spawn_blocking(move || crate::video_metadata::read(&path))
+                .await
+                .ok()
+                .flatten()
+        } else {
+            None
+        };
+        let thumbnail = poster.as_ref().and_then(|p| p.thumbnail.clone());
+        let seconds = poster.as_ref().map(|p| p.seconds);
+        let width = poster.as_ref().map(|p| p.width);
+        let height = poster.as_ref().map(|p| p.height);
         let upload = client
             .upload(bytes.clone(), MediaType::Video, UploadOptions::default())
             .await
             .map_err(|error| error.to_string())?;
-        let message = video_message(
+        let mut message = video_message(
             upload,
             VideoOptions {
                 mimetype: Some(mime_owned.clone()),
                 gif_playback: Some(gif),
+                jpeg_thumbnail: thumbnail.clone(),
+                duration_seconds: seconds,
                 ..Default::default()
             },
         );
+        if let Some(video) = message.video_message.as_option_mut() {
+            video.width = width;
+            video.height = height;
+        }
         return Ok(Prepared {
             message,
             content: Content::Video {
                 caption: None,
-                media: media(Some(&mime_owned), Some(size), None, None),
-                seconds: None,
+                media: media(Some(&mime_owned), Some(size), width, height),
+                seconds,
                 gif,
             },
-            thumbnail: None,
+            thumbnail,
             bytes,
             mime: mime_owned,
             file_name: file_name.map(str::to_owned),
@@ -5720,9 +5881,14 @@ mod receipt_tests {
             pending_older: HashMap::new(),
             older_warned: HashSet::new(),
             pending_avatars: HashMap::new(),
+            sticker_pace: Default::default(),
+            stickers_requested: false,
+            sticker_failed: HashSet::new(),
+            sticker_download_failed: HashSet::new(),
             sticker_fetches: HashSet::new(),
             sticker_downloads: HashSet::new(),
             read_syncs: HashMap::new(),
+            early: Default::default(),
             link_watch: Default::default(),
         };
         (worker, events_rx, inbox, wa_events)
@@ -6724,6 +6890,123 @@ mod receipt_tests {
                 .try_iter()
                 .any(|event| matches!(event, Event::Incoming { .. }))
         );
+    }
+
+    #[test]
+    fn an_immediate_download_failure_does_not_reserve_a_sticker_slot() {
+        let (mut worker, events, _inbox, _wa) = worker();
+        assert!(!worker.download(PEER.into(), "missing".into()));
+        assert!(
+            events
+                .try_iter()
+                .any(|event| matches!(event, Event::Media { result: Err(_), .. }))
+        );
+        assert_eq!(
+            worker.sticker_pace.slots(
+                Instant::now(),
+                worker.sticker_fetches.len() + worker.sticker_downloads.len()
+            ),
+            2
+        );
+    }
+
+    #[test]
+    fn early_phone_reads_and_reactions_settle_for_live_and_batched_history() {
+        let (mut worker, events, _inbox, _wa) = worker();
+        worker.on_receipt(&receipt(PEER, &["early"], ReceiptType::ReadSelf));
+        worker.file_reaction(WaitingReaction::new(
+            PEER,
+            "early",
+            PEER,
+            false,
+            "👍".into(),
+            2,
+        ));
+        worker.file_reaction(WaitingReaction::new(
+            PEER,
+            "early",
+            PEER,
+            false,
+            "❤️".into(),
+            1,
+        ));
+        worker.store_message(incoming("early", 100), None, None);
+        assert_eq!(unread(&worker), 0);
+        assert!(
+            !events
+                .try_iter()
+                .any(|e| matches!(e, Event::Incoming { .. }))
+        );
+        assert_eq!(
+            worker
+                .archive
+                .message(PEER, "early")
+                .unwrap()
+                .unwrap()
+                .reactions[0]
+                .emoji,
+            "👍"
+        );
+        worker.store_message(incoming("new", 300), None, None);
+        worker.on_receipt(&receipt(PEER, &["history"], ReceiptType::ReadSelf));
+        worker.file_reaction(WaitingReaction::new(
+            PEER,
+            "history",
+            PEER,
+            false,
+            "👍".into(),
+            3,
+        ));
+        worker.file_reaction(WaitingReaction::new(
+            PEER,
+            "history",
+            PEER,
+            false,
+            "".into(),
+            4,
+        ));
+        let mut row = incoming("history", 200);
+        row.reactions.push(Reaction {
+            sender: PEER.into(),
+            from_me: false,
+            emoji: "👍".into(),
+        });
+        worker.store_history_batch(&mut vec![(row, vec![])]);
+        assert_eq!(unread(&worker), 1, "newer arrivals remain unread");
+        assert!(
+            worker
+                .archive
+                .message(PEER, "history")
+                .unwrap()
+                .unwrap()
+                .reactions
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn early_events_follow_late_identity_mapping_without_reading_outgoing_messages() {
+        let (mut worker, _events, _inbox, _wa) = worker();
+        worker.early.wait_read(PEER_LID, "old");
+        worker.file_reaction(WaitingReaction::new(
+            PEER_LID,
+            "old",
+            PEER_LID,
+            false,
+            "👍".into(),
+            1,
+        ));
+        worker.store_message(incoming("old", 100), None, None);
+        worker.learn_lid("167650256810092", "4917663430455");
+        assert_eq!(unread(&worker), 0);
+        let row = worker.archive.message(PEER, "old").unwrap().unwrap();
+        assert_eq!(row.reactions[0].sender, PEER);
+        worker.store_message(incoming("unread", 200), None, None);
+        worker.early.wait_read(PEER, "failed-send");
+        let mut failed = own_message("failed-send", 300);
+        failed.status = Delivery::Failed;
+        worker.store_message(failed, None, None);
+        assert_eq!(unread(&worker), 1);
     }
 
     #[test]

@@ -562,7 +562,12 @@ impl Archive {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
              ON CONFLICT(chat, id) DO UPDATE SET
                 sender_name = COALESCE(excluded.sender_name, sender_name),
-                content = excluded.content,
+                content = CASE
+                    WHEN json_extract(excluded.content, '$.kind') = json_extract(messages.content, '$.kind')
+                     AND json_extract(excluded.content, '$.media.path') IS NULL
+                     AND json_extract(messages.content, '$.media.path') IS NOT NULL
+                    THEN json_set(excluded.content, '$.media.path', json_extract(messages.content, '$.media.path'))
+                    ELSE excluded.content END,
                 status = CASE WHEN excluded.status != 6 AND messages.status > excluded.status
                     THEN messages.status ELSE excluded.status END,
                 quoted = COALESCE(excluded.quoted, quoted),
@@ -1692,6 +1697,70 @@ mod tests {
                 .contact("nobody@s.whatsapp.net")
                 .expect("reads")
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn replay_and_batched_history_keep_local_files_without_reviving_deleted_media() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("archive.db");
+        let chat = "fixture@g.us";
+        {
+            let archive = Archive::open(&file).unwrap();
+            archive.ensure_chat(chat, "Fixture").unwrap();
+            for kind in ["image", "video", "audio", "document", "sticker"] {
+                let mut row = message(chat, kind, 100, false);
+                row.content = serde_json::from_value(serde_json::json!({
+                    "kind":kind, "media":{"mime":"application/octet-stream","size":123,"path":null},
+                    "caption":"Fixture", "seconds":1, "gif":false, "voice_note":false,
+                    "animated":false, "file_name":"fixture.bin", "pages":null
+                }))
+                .unwrap();
+                archive.insert_message(&row, Some(b"original")).unwrap();
+                archive
+                    .set_media_path(chat, kind, Path::new("/fixture/cached file.bin"))
+                    .unwrap();
+                archive.insert_message(&row, None).unwrap();
+                archive.insert_messages([(&row, None)]).unwrap();
+                assert_eq!(
+                    archive
+                        .message(chat, kind)
+                        .unwrap()
+                        .unwrap()
+                        .content
+                        .media()
+                        .unwrap()
+                        .path
+                        .as_deref(),
+                    Some(Path::new("/fixture/cached file.bin"))
+                );
+                assert_eq!(
+                    archive.raw(chat, kind).unwrap().as_deref(),
+                    Some(&b"original"[..])
+                );
+            }
+        }
+        let archive = Archive::open(&file).unwrap();
+        let mut row = archive.message(chat, "image").unwrap().unwrap();
+        assert!(row.content.media().unwrap().path.is_some());
+        row.content.media_mut().unwrap().path = Some("/fixture/replacement.jpg".into());
+        archive.insert_message(&row, None).unwrap();
+        assert_eq!(
+            archive
+                .message(chat, "image")
+                .unwrap()
+                .unwrap()
+                .content
+                .media()
+                .unwrap()
+                .path,
+            Some("/fixture/replacement.jpg".into())
+        );
+        row.content = Content::Revoked;
+        archive.insert_messages([(&row, None)]).unwrap();
+        assert_eq!(
+            archive.message(chat, "image").unwrap().unwrap().content,
+            Content::Revoked
         );
     }
 

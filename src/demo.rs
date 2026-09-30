@@ -875,6 +875,10 @@ pub fn apply_flags(app: &mut App, page: Option<&str>) {
                 app.page = Page::Settings;
                 app.settings_search = "read receipts".into();
             }
+            "draft" => {
+                app.drafts
+                    .insert(SAMPLES[2].id.to_owned(), "Pick this up tomorrow 🌍".into());
+            }
             "image-preview" => {
                 let (path, _) = sample_files(app);
                 app.image_preview = Some(crate::image_preview::PreviewState::new(path));
@@ -1384,6 +1388,7 @@ mod tests {
             "settings",
             "settings-search",
             "image-preview",
+            "draft",
             "chat-search",
             "chat-search-day",
             "update",
@@ -1628,6 +1633,32 @@ mod tests {
                 .is_none(),
             "a short preview needs no tooltip"
         );
+    }
+
+    #[test]
+    fn preview_copy_is_one_image_command_and_leaves_the_draft_alone() {
+        let mut app = app();
+        app.image_preview = Some(crate::image_preview::PreviewState::new(
+            "fixture.png".into(),
+        ));
+        app.composer = "Keep draft".into();
+        let ctx = egui::Context::default();
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                events: vec![egui::Event::Copy, egui::Event::Copy],
+                ..Default::default()
+            },
+            |ui| crate::ui::keys::handle(&mut app, ui.ctx()),
+        );
+        output.textures_delta.clear();
+        assert_eq!(
+            app.actions
+                .iter()
+                .filter(|a| matches!(a, crate::model::Action::CopyImage(_)))
+                .count(),
+            1
+        );
+        assert_eq!(app.composer, "Keep draft");
     }
 
     #[test]
