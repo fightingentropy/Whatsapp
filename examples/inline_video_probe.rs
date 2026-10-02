@@ -11,6 +11,94 @@ fn apply(app: &mut whatsapp::app::App, ctx: &egui::Context, action: whatsapp::mo
     ctx.end_pass().textures_delta.clear();
 }
 
+fn preview_input(
+    app: &mut whatsapp::app::App,
+    ctx: &egui::Context,
+    events: Vec<egui::Event>,
+    elapsed: f64,
+) {
+    let time = ctx.input(|input| input.time) + elapsed;
+    ctx.run_ui(
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1180.0, 850.0),
+            )),
+            time: Some(time),
+            events,
+            ..Default::default()
+        },
+        |ui| app.frame_ui(ui),
+    )
+    .textures_delta
+    .clear();
+}
+
+fn overlay_controls(app: &mut whatsapp::app::App, ctx: &egui::Context) {
+    app.attach(ctx);
+    for _ in 0..3 {
+        preview_input(app, ctx, Vec::new(), 0.02);
+    }
+    let rect = ctx
+        .data(|data| data.get_temp::<egui::Rect>(egui::Id::new("video-preview-canvas")))
+        .unwrap();
+    let visible = || {
+        ctx.data(|data| data.get_temp::<bool>(egui::Id::new("video-preview-controls-visible")))
+            .unwrap()
+    };
+    preview_input(
+        app,
+        ctx,
+        vec![egui::Event::PointerMoved(rect.center())],
+        0.02,
+    );
+    assert!(visible(), "moving over the video reveals controls");
+    preview_input(app, ctx, Vec::new(), 3.0);
+    assert!(!visible(), "idle playback shows only the video");
+    let toggle = egui::pos2(rect.left() + 20.0, rect.bottom() - 23.0);
+    for playing in [false, true] {
+        preview_input(app, ctx, vec![egui::Event::PointerMoved(toggle)], 0.02);
+        for pressed in [true, false] {
+            preview_input(
+                app,
+                ctx,
+                vec![egui::Event::PointerButton {
+                    pos: toggle,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+                0.02,
+            );
+        }
+        assert_eq!(
+            app.video.active().unwrap().is_playing(),
+            playing,
+            "the overlaid button must toggle playback exactly once"
+        );
+    }
+    let close = rect.right_top() + egui::vec2(-24.0, 24.0);
+    preview_input(app, ctx, vec![egui::Event::PointerMoved(close)], 0.02);
+    for pressed in [true, false] {
+        preview_input(
+            app,
+            ctx,
+            vec![egui::Event::PointerButton {
+                pos: close,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            0.02,
+        );
+    }
+    assert!(app.video_preview.is_none());
+    assert!(
+        app.video.active().unwrap().is_playing(),
+        "closing the overlay must not toggle the video underneath"
+    );
+}
+
 fn expanded_playback(ctx: &egui::Context) {
     use whatsapp::{app::App, model::Action, paths::AppDirs, settings::Settings};
     let root = tempfile::tempdir().unwrap();
@@ -70,6 +158,8 @@ fn expanded_playback(ctx: &egui::Context) {
     assert!(active.is_playing() && active.muted);
     assert!((active.position - 3.0).abs() < 0.2);
     assert_eq!(active.texture.as_ref().unwrap().id(), texture);
+    apply(&mut app, ctx, preview);
+    overlay_controls(&mut app, ctx);
     app.video.stop();
 }
 
@@ -210,6 +300,11 @@ fn main() {
     );
     // Check the native track transform as painted, not just synthetic geometry.
     player.pause();
+    let displayed = player.active().unwrap().display_size().unwrap();
+    assert!(
+        (displayed.x / displayed.y - 9.0 / 16.0).abs() < 0.001,
+        "expanded playback must use the rotated track's aspect ratio"
+    );
     ctx.begin_pass(egui::RawInput::default());
     let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(180.0, 320.0));
     player

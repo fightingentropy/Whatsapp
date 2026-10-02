@@ -151,6 +151,7 @@ and archive. This is an explicit additional target; keep the Mac build intact.
   scrolling away pauses, while leaving the chat or hiding the window releases it.
   Only an explicit Play or double-click can autoplay after a download.
   Double-click opens an egui modal sharing that same player, texture and clock;
+  its bounds fit the rotated video aspect ratio, with controls over the picture.
   expanded playback stays active when the bubble is offscreen. Closing the preview
   restores the inline player; chat changes and window hiding release both views.
   Test with synthetic media and `inline_video_probe`, including decoded pixels

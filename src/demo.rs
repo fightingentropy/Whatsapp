@@ -1701,6 +1701,58 @@ mod tests {
     }
 
     #[test]
+    fn expanded_video_fits_its_aspect_ratio_without_a_surrounding_panel() {
+        for zoom in [1.0, 2.0] {
+            for (width, height) in [(640, 360), (360, 640), (480, 480), (1920, 240)] {
+                let mut app = app();
+                apply_flags(&mut app, Some("inline-video"));
+                app.settings.zoom = zoom;
+                let chat = SAMPLES[0].id;
+                let media = app
+                    .conversations
+                    .get_mut(chat)
+                    .unwrap()
+                    .message_mut("demo-inline-video")
+                    .unwrap()
+                    .content
+                    .media_mut()
+                    .unwrap();
+                media.width = Some(width);
+                media.height = Some(height);
+                media.path = None;
+                media.state = crate::model::MediaState::Downloading;
+                app.actions.push(crate::model::Action::PreviewVideo {
+                    chat: chat.into(),
+                    message: "demo-inline-video".into(),
+                });
+                let ctx = egui::Context::default();
+                app.attach(&ctx);
+                render(&mut app, &ctx);
+                let rect = |id| {
+                    ctx.data(|data| data.get_temp::<egui::Rect>(egui::Id::new(id)))
+                        .unwrap()
+                };
+                let canvas = rect("video-preview-canvas");
+                let bounds = rect("video-preview-bounds");
+                assert!((canvas.aspect_ratio() - width as f32 / height as f32).abs() < 0.005);
+                assert!(
+                    (bounds.width() - canvas.width()).abs() < 1.0,
+                    "no side panels"
+                );
+                assert!(
+                    (bounds.height() - canvas.height()).abs() < 1.0,
+                    "no title or control bars outside the video"
+                );
+                assert!(
+                    ctx.content_rect().contains_rect(bounds),
+                    "{width}x{height} at zoom {zoom}: {bounds:?} outside {:?}",
+                    ctx.content_rect()
+                );
+            }
+        }
+    }
+
+    #[test]
     fn expanded_video_keeps_keyboard_and_paste_out_of_the_draft() {
         use crate::model::{Action, MediaState};
         let mut app = app();

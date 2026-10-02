@@ -65,6 +65,17 @@ impl Playback {
         !self.paused && matches!(self.state, State::Loading | State::Playing)
     }
 
+    /// Display dimensions after applying the native track's rotation/mirroring.
+    pub fn display_size(&self) -> Option<egui::Vec2> {
+        let size = self.texture.as_ref()?.size_vec2();
+        let [a, b, c, d] = self.transform;
+        let displayed = egui::vec2(
+            a.abs() * size.x + c.abs() * size.y,
+            b.abs() * size.x + d.abs() * size.y,
+        );
+        (displayed.is_finite() && displayed.x > 0.0 && displayed.y > 0.0).then_some(displayed)
+    }
+
     pub fn paint(&self, painter: &egui::Painter, rect: Rect) {
         let Some(texture) = &self.texture else { return };
         let corners = frame_corners(texture.size(), self.transform, rect);

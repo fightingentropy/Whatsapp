@@ -170,7 +170,9 @@ See [PERFORMANCE.md](PERFORMANCE.md) for measurements, remaining costs and valid
   Escape closes the preview; typing and paste cannot alter the draft behind it.
   Videos play inside their message bubble with play/pause, seeking and mute.
   Double-click a video to enlarge it inside the app, keeping its playback position
-  and sound. Space plays or pauses; Escape or the close button returns to the chat.
+  and sound. The viewer fits the video's aspect ratio, with no surrounding panel;
+  controls sit over the picture and hide during playback until you move the pointer.
+  Space plays or pauses; Escape, a click outside, or the close button returns to the chat.
   Clicking Play downloads the video if needed and starts it when ready; automatic
   downloads never start playback. Scrolling the video out of view pauses it unless
   it is open in the larger player.
