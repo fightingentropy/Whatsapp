@@ -212,7 +212,7 @@ private struct ConversationTitle: View {
     let chatID: String
     let showInfo: () -> Void
     @Environment(ChatStore.self) private var store
-    private var chat: Chat? { store.chats.first { $0.id == store.canonical(chatID) } }
+    private var chat: Chat? { store.chatByID(chatID) }
     var body: some View {
         Button(action: showInfo) {
             VStack(spacing: 2) {

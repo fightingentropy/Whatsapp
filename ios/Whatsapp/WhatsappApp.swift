@@ -28,6 +28,7 @@ struct WhatsappApp: App {
             store.loadCachedPicturesDemo()
         }
         if demo && ProcessInfo.processInfo.arguments.contains("--demo-inline-video") { store.loadInlineVideoDemo() }
+        if demo && ProcessInfo.processInfo.arguments.contains("--demo-voice-recovery") { store.loadVoiceRecoveryDemo() }
         #endif
         _store = State(initialValue: store)
     }

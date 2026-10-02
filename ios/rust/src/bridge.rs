@@ -141,6 +141,7 @@ enum Input {
         chat: String,
         path: PathBuf,
         quoting: Option<String>,
+        request: String,
     },
     Played {
         chat: String,
@@ -406,26 +407,23 @@ fn parse_command(input: &str, dirs: Option<&AppDirs>) -> Option<Command> {
             chat,
             path,
             quoting,
-        } if valid_chat(&chat) && quoting.as_ref().is_none_or(|id| valid_id(id)) => {
+            request,
+        } if valid_chat(&chat)
+            && valid_id(&request)
+            && quoting.as_ref().is_none_or(|id| valid_id(id)) =>
+        {
             let path = scoped_file(&path, &dirs?.cache.join("outgoing"))?;
             let size = std::fs::metadata(&path).ok()?.len();
-            if size == 0 || size > 48_000 * 4 * 600 || size % 4 != 0 {
+            if size == 0 || size > crate::voice::MAX_PCM_BYTES || size % 4 != 0 {
                 return None;
             }
-            let bytes = std::fs::read(path).ok()?;
-            let samples: Vec<f32> = bytes
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .map(|chunk| f32::from_le_bytes(*chunk))
-                .collect();
-            if samples.iter().any(|s| !s.is_finite() || s.abs() > 1.0) {
-                return None;
-            }
-            Some(Command::SendVoice {
+            // Sample validation/encoding runs on the bounded upload worker.
+            // The UI retains this private source until the attachment ack.
+            Some(Command::SendVoiceFile {
                 chat,
-                samples,
+                path,
                 quoting,
+                request,
             })
         }
         Input::Played {
@@ -958,23 +956,30 @@ mod tests {
     }
 
     #[test]
-    fn voice_samples_are_bounded_finite_and_owned_by_the_command() {
+    fn voice_commands_validate_scoped_paths_without_reading_pcm_on_the_control_queue() {
         let f = FilesFixture::new();
         let path = f.dirs.cache.join("outgoing/recording.f32");
-        let command =
-            || json!({"type":"voice","chat":"fixture@g.us","path":path,"quoting":"reply"});
-        for sample in [f32::NAN, f32::INFINITY, 1.1] {
-            std::fs::write(&path, sample.to_le_bytes()).unwrap();
-            assert!(f.command(command()).is_none());
-        }
+        let command = || json!({"type":"voice","chat":"fixture@g.us","path":path,"quoting":"reply","request":"upload"});
         std::fs::write(&path, [0, 1, 2]).unwrap();
         assert!(f.command(command()).is_none());
         std::fs::write(&path, 0.5_f32.to_le_bytes()).unwrap();
         let parsed = f.command(command());
-        std::fs::remove_file(&path).unwrap();
+        let canonical = path.canonicalize().unwrap();
         assert!(
-            matches!(parsed, Some(Command::SendVoice { samples, quoting: Some(id), .. }) if samples == [0.5] && id == "reply")
+            matches!(parsed, Some(Command::SendVoiceFile { path: source, quoting: Some(id), request, .. }) if source == canonical && id == "reply" && request == "upload")
         );
+        assert!(
+            f.command(json!({"type":"voice","chat":"fixture@g.us","path":path,"request":""}))
+                .is_none()
+        );
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(crate::voice::MAX_PCM_BYTES + 4)
+            .unwrap();
+        assert!(f.command(command()).is_none());
+        assert!(f.command(json!({"type":"voice","chat":"fixture@g.us","path":f.dirs.state.join("keys"),"request":"upload"})).is_none());
     }
 
     #[test]

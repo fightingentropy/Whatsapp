@@ -47,6 +47,10 @@ Silicon Mac to build. This is a personal-device build, not an App Store release.
   Archived attachment acknowledgements release temporary originals. Unreferenced
   outgoing files older than seven days are pruned; draft/failed-upload files and
   archived media are retained.
+  Sending a voice recording uses this same durable queue, including its quoted
+  reply. Failed recordings stay visible as Voice message with Retry/Remove and
+  survive relaunch. PCM validation and encoding run on the bounded upload worker,
+  outside the engine-control queue, without a second whole-recording byte buffer.
 - A compact composer with an inline sticker control, separate camera button and
   green microphone/send button. Plus opens a rounded attachment panel beneath
   the composer; its keyboard control returns to typing without losing the draft.
@@ -69,7 +73,8 @@ Silicon Mac to build. This is a personal-device build, not an App Store release.
 - GIF search and sending through GIPHY with your API key in Settings. Saved and
   recent stickers, animated stickers/GIFs, and pack imports from signal.art links
   or .wastickers/ZIP files. Recent/received sticker downloads share two slots and
-  back off together on server rate limits. Imported pack deletion asks for confirmation.
+  back off together on server rate limits. Missing-sticker paging continues past
+  failed items to reach older stickers. Imported pack deletion asks for confirmation.
 - New conversations by phone number, synced contact names, optional saving to the
   primary phone's address book, full profile pictures and group member details.
 - Recent conversations reopen from a memory cache of at most four chats and
@@ -82,6 +87,8 @@ Silicon Mac to build. This is a personal-device build, not an App Store release.
   protected. Search and quote jumps load a bounded window around their target.
 - Contact names and chat lookup use indexes. SwiftUI observes individual identities,
   so a portrait, name, typing or presence update only invalidates its subscribers.
+  Conversation headers and details also subscribe to their own chat; updates to
+  another chat do not invalidate that lookup.
   It also observes separate store properties and chat rows, keeping
   typing, connection and avatar changes out of unrelated screen updates.
 - The first 64 saved chat pictures are restored with the local chat list on cold
@@ -89,7 +96,10 @@ Silicon Mac to build. This is a personal-device build, not an App Store release.
   batches. Up to 16 visible portraits and four recent downloaded
   photos are downsampled off the main thread before their rows appear; other
   images load from disk on demand. Decoded thumbnails share a 24 MiB memory
-  budget and show immediately when reused. Refresh failures retain saved
+  budget and show immediately when reused. Concurrent requests for the same file
+  revision and size share one decode, with at most two asynchronous decodes active.
+  Disappearing rows release their request; the last reader cancels queued work
+  and native video-frame generation. Refresh failures retain saved
   portraits; a confirmed removal clears the disk entry. Same-filename picture
   updates invalidate their thumbnails. Attachment paths are repaired when their
   messages are loaded, including after an app update moves the container. History
@@ -105,7 +115,9 @@ Silicon Mac to build. This is a personal-device build, not an App Store release.
   reusable caches.
 - Download and share attachments; preview images and files supported by iOS Quick
   Look. Visible attachments up to 64 MB can download automatically. Failed
-  downloads remain in their message with a retry action.
+  downloads remain in their message with a retry action. Attachment transfers
+  share two active slots, coalesce duplicate pending requests and stream to
+  private temporary files. Only verified, completed files replace saved media.
 - Ordinary videos play inside their message with native playback and seeking
   controls. Only an explicit Play starts playback; one player is active, scrolling
   away pauses it, and leaving the chat/backgrounding releases it.
@@ -148,9 +160,10 @@ GIPHY searches and previews contact GIPHY only when that picker is used; importi
 a signal.art link contacts Signal's pack service. The API key and UI preferences
 remain in app preferences. Attachment copies, decoded audio previews and imported
 stickers stay in the private app container. Text/reply drafts, staged files and
-attachment jobs persist locally; unsent voice-recording controls last only for
-the current session. This is not an always-running offline sender. A queued
-message is not proof of server delivery: check its delivery indicator.
+attachment and submitted voice jobs persist locally; a recording that has not
+yet been submitted lasts only for the current session. This is not an
+always-running offline sender. A queued message is not proof of server delivery:
+check its delivery indicator.
 
 ## Build and install
 
@@ -215,7 +228,11 @@ check command validation, symlink/file boundaries, GIF hosts, sticker deletion
 scope, finite voice samples, bounded Opus decoding and native WAV conversion.
 Additional regressions cover durable drafts and interrupted uploads, same-ID
 retry, upload budgets, contact/identity observation, interleaved event ordering,
-and deferred portrait restoration. `--demo-inline-video` supplies an eight-second
+and deferred portrait restoration. Voice-recovery tests cover snapshot failures,
+relaunch, quoted replies and archive acknowledgement; thumbnail tests cover
+shared cold decodes, cancellation and slot limits. `--demo-voice-recovery`
+shows the interrupted-recording retry controls using only offline fixtures.
+`--demo-inline-video` supplies an eight-second
 synthetic video with an audio track; tests require decoded video pixels, decoded
 audio samples, advancing playback and player release. UI checks cover inline
 playback, quoted names and the largest system accessibility text size.

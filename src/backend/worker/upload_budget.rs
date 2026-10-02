@@ -29,7 +29,8 @@ impl UploadBudget {
             .await
             .expect("upload budget stays open");
         // Oversized desktop files run alone. The native iOS bridge caps each
-        // source at 100 MiB, so the iPhone always stays within this source budget.
+        // attachments at 100 MiB and voice PCM at ten minutes (~110 MiB), so
+        // the iPhone always stays within this source budget.
         let weight = size.div_ceil(MIB).clamp(1, u64::from(SOURCE_MIB)) as u32;
         let bytes = self
             .bytes

@@ -161,6 +161,9 @@ struct OutgoingAttachment: Identifiable, Codable, Equatable {
     let mentions: [String]
     var state: State = .queued
     var error: String?
+    // Optional fields keep existing version-1 draft snapshots readable.
+    var voice: Bool? = nil
+    var quoting: String? = nil
 }
 
 struct Preferences: Codable, Equatable {
