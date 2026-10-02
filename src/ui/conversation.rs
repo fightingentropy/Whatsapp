@@ -2978,6 +2978,7 @@ pub(crate) fn forget_cached_messages(
             && !retained_paths.contains(path)
         {
             ctx.forget_image(&file_uri(path));
+            ctx.forget_image(&crate::video_poster::uri(path));
         }
     }
 }
@@ -2997,6 +2998,38 @@ pub(super) fn thumbnail_uri(ctx: &egui::Context, chat: &str, id: &str, bytes: &[
         ctx.include_bytes(uri.clone(), bytes.to_vec());
     }
     uri
+}
+
+/// Prefer a local high-quality frame once downloaded; keep the transmitted
+/// thumbnail visible while the serial poster worker prepares it.
+pub(super) fn paint_video_poster(ui: &egui::Ui, message: &Message, rect: Rect, radius: f32) {
+    if let Some(path) = message
+        .content
+        .media()
+        .and_then(|media| media.path.as_deref())
+    {
+        let image = egui::Image::new(crate::video_poster::uri(path))
+            .fit_to_exact_size(rect.size())
+            .corner_radius(radius);
+        if image
+            .load_for_size(ui.ctx(), rect.size())
+            .is_ok_and(|poll| poll.is_ready())
+        {
+            image.paint_at(ui, rect);
+            return;
+        }
+    }
+    if let Some(thumbnail) = message.thumbnail.as_deref() {
+        egui::Image::new(thumbnail_uri(
+            ui.ctx(),
+            &message.chat,
+            &message.id,
+            thumbnail,
+        ))
+        .fit_to_exact_size(rect.size())
+        .corner_radius(radius)
+        .paint_at(ui, rect);
+    }
 }
 
 /// Default image bounds based on [`CARD_WIDTH`].
@@ -3399,16 +3432,8 @@ fn inline_video(
         ui.painter().rect_filled(rect, 6.0, Color32::BLACK);
         if let Some(active) = active.filter(|active| active.texture.is_some()) {
             active.paint(ui.painter(), rect);
-        } else if let Some(thumbnail) = message.thumbnail.as_deref() {
-            egui::Image::new(thumbnail_uri(
-                ui.ctx(),
-                &message.chat,
-                &message.id,
-                thumbnail,
-            ))
-            .fit_to_exact_size(size)
-            .corner_radius(6.0)
-            .paint_at(ui, rect);
+        } else {
+            paint_video_poster(ui, message, rect, 6.0);
         }
         if !playing || active.is_some_and(|active| active.state == crate::video::State::Loading) {
             let disc = Rect::from_center_size(rect.center(), Vec2::splat(48.0));

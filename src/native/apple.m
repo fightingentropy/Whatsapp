@@ -7,10 +7,11 @@
 #include <stdlib.h>
 #include <string.h>
 
-// Runs only on an upload preparation worker. The source is a local file, the
-// decoder produces at most 96x96 pixels, and async operations have deadlines.
-bool whatsapp_video_poster(const char *path, double *seconds, uint32_t *width,
-                           uint32_t *height, void **jpeg, size_t *length) {
+// Runs only on bounded background workers. Sources are local files and both
+// native loading and frame generation have deadlines.
+static bool video_poster(const char *path, double *seconds, uint32_t *width,
+                         uint32_t *height, void **jpeg, size_t *length,
+                         unsigned side, size_t byte_limit, double quality) {
     @autoreleasepool {
         @try {
             NSString *name = [[NSFileManager defaultManager] stringWithFileSystemRepresentation:path length:strlen(path)];
@@ -46,7 +47,7 @@ bool whatsapp_video_poster(const char *path, double *seconds, uint32_t *width,
             *seconds = duration; *width = (uint32_t)llround(w); *height = (uint32_t)llround(h);
             AVAssetImageGenerator *generator = [AVAssetImageGenerator assetImageGeneratorWithAsset:asset];
             generator.appliesPreferredTrackTransform = YES;
-            generator.maximumSize = CGSizeMake(96, 96);
+            generator.maximumSize = CGSizeMake(side, side);
             dispatch_semaphore_t rendered = dispatch_semaphore_create(0);
             __block NSData *result = nil;
             NSValue *time = [NSValue valueWithCMTime:CMTimeMakeWithSeconds(fmin(1, duration / 2), 600)];
@@ -57,7 +58,7 @@ bool whatsapp_video_poster(const char *path, double *seconds, uint32_t *width,
                         NSMutableData *data = [NSMutableData data];
                         CGImageDestinationRef output = CGImageDestinationCreateWithData((__bridge CFMutableDataRef)data, CFSTR("public.jpeg"), 1, NULL);
                         if (output) {
-                            CGImageDestinationAddImage(output, image, (__bridge CFDictionaryRef)@{(__bridge NSString *)kCGImageDestinationLossyCompressionQuality: @0.7});
+                            CGImageDestinationAddImage(output, image, (__bridge CFDictionaryRef)@{(__bridge NSString *)kCGImageDestinationLossyCompressionQuality: @(quality)});
                             if (CGImageDestinationFinalize(output)) result = data;
                             CFRelease(output);
                         }
@@ -68,7 +69,7 @@ bool whatsapp_video_poster(const char *path, double *seconds, uint32_t *width,
                 [generator cancelAllCGImageGeneration];
                 return true; // dimensions/duration still help if decoding fails
             }
-            if (result.length > 0 && result.length <= 128 * 1024) {
+            if (result.length > 0 && result.length <= byte_limit) {
                 void *copy = malloc(result.length);
                 if (copy) {
                     memcpy(copy, result.bytes, result.length);
@@ -82,9 +83,21 @@ bool whatsapp_video_poster(const char *path, double *seconds, uint32_t *width,
     }
 }
 
+// Preserve the compact thumbnail sent over WhatsApp, including on iOS.
+bool whatsapp_video_poster(const char *path, double *seconds, uint32_t *width,
+                           uint32_t *height, void **jpeg, size_t *length) {
+    return video_poster(path, seconds, width, height, jpeg, length, 96, 128 * 1024, 0.7);
+}
+
 void whatsapp_native_free(void *bytes) { free(bytes); }
 
 #if TARGET_OS_OSX
+// A separate local preview never changes the transmitted/archive thumbnail.
+bool whatsapp_video_preview(const char *path, double *seconds, uint32_t *width,
+                            uint32_t *height, void **jpeg, size_t *length) {
+    return video_poster(path, seconds, width, height, jpeg, length, 640, 512 * 1024, 0.85);
+}
+
 #import <AppKit/AppKit.h>
 // Catch inside Objective-C rather than unwinding through Rust's event loop.
 // Keep the existing event-driven wake source and cap native work per drain.

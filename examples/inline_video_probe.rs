@@ -163,6 +163,65 @@ fn expanded_playback(ctx: &egui::Context) {
     app.video.stop();
 }
 
+fn local_posters() {
+    use whatsapp::{app::App, paths::AppDirs, settings::Settings};
+    for (page, dimensions) in [("inline-video", [640, 360]), ("portrait-video", [360, 640])] {
+        let ctx = egui::Context::default();
+        let root = tempfile::tempdir().unwrap();
+        let (mut app, _events) = App::headless(AppDirs::under(root.path()), Settings::default());
+        whatsapp::demo::populate(&mut app);
+        whatsapp::demo::apply_flags(&mut app, Some(page));
+        app.attach(&ctx);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut texture = None;
+        loop {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1180.0, 850.0),
+                    )),
+                    ..Default::default()
+                },
+                |ui| app.frame_ui(ui),
+            );
+            assert!(
+                app.video.active().is_none(),
+                "posters must not open a player"
+            );
+            for (id, deltas) in &output.textures_delta.set {
+                for delta in deltas {
+                    let egui::ImageData::Color(image) = &delta.image;
+                    if image.size == dimensions
+                        && image
+                            .pixels
+                            .iter()
+                            .any(|pixel| pixel.r() > 200 && pixel.g() < 30 && pixel.b() < 30)
+                    {
+                        texture = Some(*id);
+                    }
+                }
+            }
+            output.textures_delta.clear();
+            let painted = ctx
+                .tessellate(output.shapes, output.pixels_per_point)
+                .iter()
+                .any(|primitive| match &primitive.primitive {
+                    egui::epaint::Primitive::Mesh(mesh) => Some(mesh.texture_id) == texture,
+                    _ => false,
+                });
+            if texture.is_some() && painted {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "sharp {page} poster never painted"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
 fn step(player: &mut Player, ctx: &egui::Context) -> Option<[u8; 3]> {
     // AVFoundation completions use the main run loop.
     unsafe {
@@ -338,7 +397,8 @@ fn main() {
     });
     player.stop();
     expanded_playback(&ctx);
+    local_posters();
     println!(
-        "PASS: decoded color frames, enabled audio track, pause, forward/backward seek, mute, end/replay, portrait rotation, clip switching, bounded textures, expanded playback continuity and invalid-media failure"
+        "PASS: decoded color frames, enabled audio track, pause, forward/backward seek, mute, end/replay, portrait rotation, clip switching, bounded textures, expanded playback continuity, sharp posters painted before playback and invalid-media failure"
     );
 }

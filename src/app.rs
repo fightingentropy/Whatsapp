@@ -610,6 +610,11 @@ impl App {
             std::sync::Arc::clone(&self.selection_view),
         ));
         crate::theme::install(ctx);
+        crate::video_poster::install(
+            ctx,
+            self.dirs.media_cache_dir().join("video-posters"),
+            self.waker.clone(),
+        );
         // Use a faster wheel speed for short chat rows.
         ctx.options_mut(|options| options.input_options.line_scroll_speed = 120.0);
         self.applied_dark = None;
@@ -1229,7 +1234,12 @@ impl App {
                     chat,
                     message,
                     result,
-                } => self.handle_media(&chat, &message, result),
+                } => {
+                    if let Ok(path) = &result {
+                        self.actions.push(Action::RefreshVideoPoster(path.clone()));
+                    }
+                    self.handle_media(&chat, &message, result);
+                }
                 Event::Syncing(syncing) => {
                     if self.syncing && !syncing {
                         self.toast("History loaded");
@@ -2106,6 +2116,7 @@ impl App {
                 }
                 self.refocus_composer(ctx);
             }
+            Action::RefreshVideoPoster(path) => ctx.forget_image(&crate::video_poster::uri(&path)),
             Action::PauseVideo { chat, message } => {
                 if self.video.for_message(&chat, &message).is_some() {
                     self.video.pause();

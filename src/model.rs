@@ -528,6 +528,8 @@ pub enum Action {
         message: String,
     },
     CloseVideoPreview,
+    /// Discards a derived poster after its local attachment is replaced.
+    RefreshVideoPoster(PathBuf),
     PauseVideo {
         chat: ChatId,
         message: String,
