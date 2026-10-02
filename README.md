@@ -169,8 +169,11 @@ See [PERFORMANCE.md](PERFORMANCE.md) for measurements, remaining costs and valid
   runs off the UI thread and rejects images above 16 megapixels or an 8,192-pixel edge.
   Escape closes the preview; typing and paste cannot alter the draft behind it.
   Videos play inside their message bubble with play/pause, seeking and mute.
+  Double-click a video to enlarge it inside the app, keeping its playback position
+  and sound. Space plays or pauses; Escape or the close button returns to the chat.
   Clicking Play downloads the video if needed and starts it when ready; automatic
-  downloads never start playback. Scrolling the video out of view pauses it.
+  downloads never start playback. Scrolling the video out of view pauses it unless
+  it is open in the larger player.
   The message menu still offers opening a video in another app; documents open
   in their default desktop apps. If an attachment has expired, Whatsapp asks your
   phone to upload it again.
@@ -264,14 +267,16 @@ CPU timings exclude native rendering, tessellation and GPU work; they are not
 frame-rate measurements.
 
 The offline inline-video probe checks decoded frames and the audio track,
-pause, forward/backward seeking, mute, replay, switching and failed media:
+pause, forward/backward seeking, mute, replay, switching, failed media and
+playback continuity when expanding and closing the larger player:
 
 ```sh
 cargo run --locked --features demo --example inline_video_probe
 ```
 
 Use `--demo-page inline-video` or `--demo-page portrait-video` with `--demo`
-to try the same synthetic clips in the chat.
+to try the same synthetic clips in the chat. `video-preview` and
+`portrait-video-preview` open them in the larger player.
 
 For a local test DMG:
 

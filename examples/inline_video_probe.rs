@@ -4,6 +4,75 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 use whatsapp::video::{Player, State};
 
+fn apply(app: &mut whatsapp::app::App, ctx: &egui::Context, action: whatsapp::model::Action) {
+    app.actions.push(action);
+    ctx.begin_pass(egui::RawInput::default());
+    app.background_frame(ctx);
+    ctx.end_pass().textures_delta.clear();
+}
+
+fn expanded_playback(ctx: &egui::Context) {
+    use whatsapp::{app::App, model::Action, paths::AppDirs, settings::Settings};
+    let root = tempfile::tempdir().unwrap();
+    let (mut app, _events) = App::headless(AppDirs::under(root.path()), Settings::default());
+    whatsapp::demo::populate(&mut app);
+    whatsapp::demo::apply_flags(&mut app, Some("inline-video"));
+    let chat = app.open_chat.clone().unwrap();
+    let message = "demo-inline-video".to_owned();
+    apply(
+        &mut app,
+        ctx,
+        Action::PlayVideo {
+            chat: chat.clone(),
+            message: message.clone(),
+        },
+    );
+    apply(
+        &mut app,
+        ctx,
+        Action::MuteVideo {
+            chat: chat.clone(),
+            message: message.clone(),
+        },
+    );
+    until(
+        &mut app.video,
+        ctx,
+        "preview fixture ready",
+        |player, color| player.active().unwrap().position > 0.15 && color.is_some(),
+    );
+    app.video.pause();
+    app.video.seek(&chat, &message, 0.5);
+    until(
+        &mut app.video,
+        ctx,
+        "preview fixture seeks before expanding",
+        |player, color| (player.active().unwrap().position - 3.0).abs() < 0.1 && color.is_some(),
+    );
+    let texture = app.video.active().unwrap().texture.as_ref().unwrap().id();
+    let preview = Action::PreviewVideo {
+        chat: chat.clone(),
+        message: message.clone(),
+    };
+    // A double-click must resume the first click's pause and retain the clock,
+    // texture, audio and mute state. Expanding an already playing clip is idempotent.
+    for _ in 0..2 {
+        apply(&mut app, ctx, preview.clone());
+        assert_eq!(app.video_preview, Some((chat.clone(), message.clone())));
+        let active = app.video.active().unwrap();
+        assert!(active.is_playing() && active.has_audio && active.muted);
+        assert!((active.position - 3.0).abs() < 0.2);
+        assert_eq!(active.texture.as_ref().unwrap().id(), texture);
+    }
+    apply(&mut app, ctx, Action::CloseVideoPreview);
+    assert!(app.video_preview.is_none());
+    let active = app.video.active().unwrap();
+    assert!(active.is_playing() && active.muted);
+    assert!((active.position - 3.0).abs() < 0.2);
+    assert_eq!(active.texture.as_ref().unwrap().id(), texture);
+    app.video.stop();
+}
+
 fn step(player: &mut Player, ctx: &egui::Context) -> Option<[u8; 3]> {
     // AVFoundation completions use the main run loop.
     unsafe {
@@ -173,7 +242,8 @@ fn main() {
         player.active().unwrap().state == State::Failed
     });
     player.stop();
+    expanded_playback(&ctx);
     println!(
-        "PASS: decoded color frames, enabled audio track, pause, forward/backward seek, mute, end/replay, portrait rotation, clip switching, bounded textures and invalid-media failure"
+        "PASS: decoded color frames, enabled audio track, pause, forward/backward seek, mute, end/replay, portrait rotation, clip switching, bounded textures, expanded playback continuity and invalid-media failure"
     );
 }

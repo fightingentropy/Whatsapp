@@ -1071,8 +1071,8 @@ pub fn apply_flags(app: &mut App, page: Option<&str>) {
                 app.open_chat = Some(chat.into());
                 app.scroll_to_bottom = true;
             }
-            "inline-video" | "portrait-video" => {
-                let portrait = part == "portrait-video";
+            "inline-video" | "portrait-video" | "video-preview" | "portrait-video-preview" => {
+                let portrait = part.starts_with("portrait-video");
                 let bytes: &[u8] = if portrait {
                     include_bytes!("../tests/fixtures/inline-video-portrait.mp4")
                 } else {
@@ -1109,6 +1109,12 @@ pub fn apply_flags(app: &mut App, page: Option<&str>) {
                 }
                 app.open_chat = Some(chat.into());
                 app.scroll_to_bottom = true;
+                if part.ends_with("preview") {
+                    app.actions.push(crate::model::Action::PreviewVideo {
+                        chat: chat.into(),
+                        message: id.into(),
+                    });
+                }
             }
             "voice" => {
                 // Use a valid clip for playback tests.
@@ -1417,6 +1423,8 @@ mod tests {
             "video",
             "inline-video",
             "portrait-video",
+            "video-preview",
+            "portrait-video-preview",
             "recording",
             "gifs",
             "gifs-badkey",
@@ -1503,7 +1511,7 @@ mod tests {
     }
 
     #[test]
-    fn video_poster_click_plays_inside_the_chat_even_without_a_thumbnail() {
+    fn video_click_plays_inline_and_double_click_expands_without_opening_another_app() {
         for (thumbnail, own) in [(true, false), (false, false), (true, true)] {
             let mut app = app();
             apply_flags(&mut app, Some("inline-video"));
@@ -1529,7 +1537,7 @@ mod tests {
                 })
                 .unwrap();
             app.actions.clear();
-            for pressed in [true, false] {
+            for pressed in [true, false, true, false] {
                 let mut output = ctx.run_ui(
                     egui::RawInput {
                         screen_rect: Some(egui::Rect::from_min_size(
@@ -1551,7 +1559,8 @@ mod tests {
                 );
                 output.textures_delta.clear();
             }
-            assert!(app.actions.iter().any(|action| matches!(action, crate::model::Action::PlayVideo { chat: id, message } if id == chat && message == "demo-inline-video")));
+            assert_eq!(app.actions.iter().filter(|action| matches!(action, crate::model::Action::PlayVideo { chat: id, message } if id == chat && message == "demo-inline-video")).count(), 1);
+            assert_eq!(app.actions.iter().filter(|action| matches!(action, crate::model::Action::PreviewVideo { chat: id, message } if id == chat && message == "demo-inline-video")).count(), 1);
             assert!(
                 !app.actions
                     .iter()
@@ -1688,6 +1697,61 @@ mod tests {
             vec![key(egui::Key::Escape, egui::Modifiers::NONE)],
         );
         assert!(app.image_preview.is_none());
+        assert_eq!(app.composer, "Keep this draft");
+    }
+
+    #[test]
+    fn expanded_video_keeps_keyboard_and_paste_out_of_the_draft() {
+        use crate::model::{Action, MediaState};
+        let mut app = app();
+        apply_flags(&mut app, Some("inline-video"));
+        let chat = SAMPLES[0].id;
+        let media = app
+            .conversations
+            .get_mut(chat)
+            .unwrap()
+            .message_mut("demo-inline-video")
+            .unwrap()
+            .content
+            .media_mut()
+            .unwrap();
+        media.path = None;
+        media.state = MediaState::Downloading;
+        let ctx = egui::Context::default();
+        app.attach(&ctx);
+        app.composer = "Keep this draft".into();
+        render(&mut app, &ctx);
+        app.actions.push(Action::PreviewVideo {
+            chat: chat.into(),
+            message: "demo-inline-video".into(),
+        });
+        frame_with(&mut app, &ctx, Vec::new());
+        assert!(app.video_preview.is_some());
+        frame_with(
+            &mut app,
+            &ctx,
+            vec![
+                egui::Event::Text("unwanted".into()),
+                egui::Event::Paste("paste".into()),
+                key(egui::Key::Enter, egui::Modifiers::NONE),
+                key(egui::Key::Space, egui::Modifiers::NONE),
+                key(egui::Key::F, egui::Modifiers::COMMAND),
+            ],
+        );
+        assert!(app.video_preview.is_some());
+        assert_eq!(app.composer, "Keep this draft");
+        assert!(app.pending.is_empty());
+        assert!(app.chat_search.chat.is_none());
+        let canvas = ctx
+            .data(|data| data.get_temp::<egui::Rect>(egui::Id::new("video-preview-canvas")))
+            .unwrap();
+        assert!(canvas.width() > 900.0 && canvas.height() > 500.0);
+        frame_with(
+            &mut app,
+            &ctx,
+            vec![key(egui::Key::Escape, egui::Modifiers::NONE)],
+        );
+        assert!(app.video_preview.is_none());
         assert_eq!(app.composer, "Keep this draft");
     }
 

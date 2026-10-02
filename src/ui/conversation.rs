@@ -967,7 +967,10 @@ fn composer(app: &mut App, ui: &mut egui::Ui, chat: &Chat) {
                                 {
                                     app.mention_start = None;
                                 }
-                                if app.focus_composer && app.image_preview.is_none() {
+                                if app.focus_composer
+                                    && app.image_preview.is_none()
+                                    && app.video_preview.is_none()
+                                {
                                     app.focus_composer = false;
                                     response.request_focus();
                                 }
@@ -1486,6 +1489,7 @@ fn messages(app: &mut App, ui: &mut egui::Ui, chat: &Chat) {
         actions.push(Action::LoadOlder(chat.id.clone()));
     }
     if !video_visible.get()
+        && app.video_preview.is_none()
         && let Some(active) = app.video.active().filter(|active| active.is_playing())
     {
         actions.push(Action::PauseVideo {
@@ -2978,7 +2982,7 @@ pub(crate) fn forget_cached_messages(
     }
 }
 
-fn thumbnail_uri(ctx: &egui::Context, chat: &str, id: &str, bytes: &[u8]) -> String {
+pub(super) fn thumbnail_uri(ctx: &egui::Context, chat: &str, id: &str, bytes: &[u8]) -> String {
     let uri = thumbnail_key(chat, id);
     let known: Thumbnails = ctx.data_mut(|data| {
         data.get_temp_mut_or_default::<Thumbnails>(egui::Id::new("thumbnails"))
@@ -3248,7 +3252,7 @@ fn video(
     actions: &mut Vec<Action>,
 ) -> f32 {
     if !gif {
-        return inline_video(ui, view, message, media, seconds, width, actions);
+        return inline_video(ui, view, message, media, width, actions);
     }
     let palette = view.palette;
     let Some(thumbnail) = message.thumbnail.as_deref() else {
@@ -3379,7 +3383,6 @@ fn inline_video(
     view: &View<'_>,
     message: &Message,
     media: &Media,
-    seconds: Option<u32>,
     width: f32,
     actions: &mut Vec<Action>,
 ) -> f32 {
@@ -3447,11 +3450,16 @@ fn inline_video(
         .on_hover_text(if failed {
             "Retry playback. Open in another app is available in the message menu."
         } else if playing {
-            "Pause video"
+            "Pause video · double-click to enlarge"
         } else {
-            "Play video"
+            "Play video · double-click to enlarge"
         });
-    if response.clicked() {
+    if response.double_clicked() {
+        actions.push(Action::PreviewVideo {
+            chat: message.chat.clone(),
+            message: message.id.clone(),
+        });
+    } else if response.clicked() {
         actions.push(Action::PlayVideo {
             chat: message.chat.clone(),
             message: message.id.clone(),
@@ -3467,86 +3475,7 @@ fn inline_video(
             message: message.id.clone(),
         });
     }
-    let total = active.map_or_else(|| f64::from(seconds.unwrap_or(0)), |active| active.duration);
-    let position = active.map_or(0.0, |active| active.position);
-    let mut fraction = if total > 0.0 {
-        (position / total).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
-    ui.allocate_ui_with_layout(
-        vec2(size.x, 30.0),
-        Layout::left_to_right(Align::Center),
-        |ui| {
-            ui.spacing_mut().item_spacing.x = 4.0;
-            if theme::icon_button(
-                ui,
-                if playing { Icon::Pause } else { Icon::Play },
-                14.0,
-                palette.secondary,
-                palette.text,
-                if playing { "Pause video" } else { "Play video" },
-            )
-            .clicked()
-            {
-                actions.push(Action::PlayVideo {
-                    chat: message.chat.clone(),
-                    message: message.id.clone(),
-                });
-            }
-            ui.spacing_mut().slider_width = (size.x - 102.0).max(16.0);
-            let slider = ui
-                .add_enabled(
-                    active.is_some_and(|active| active.duration > 0.0 && !failed),
-                    egui::Slider::new(&mut fraction, 0.0..=1.0).show_value(false),
-                )
-                .on_hover_text(format!(
-                    "{} / {}",
-                    crate::util::duration(position as u32),
-                    crate::util::duration(total as u32)
-                ));
-            if slider.changed() {
-                actions.push(Action::SeekVideo {
-                    chat: message.chat.clone(),
-                    message: message.id.clone(),
-                    fraction,
-                });
-            }
-            let label = widgets::line(
-                ui,
-                &crate::util::duration(if active.is_some() { position } else { total } as u32),
-                theme::regular(10.5),
-                palette.secondary,
-                36.0,
-                1,
-            );
-            let (time_rect, _) = ui.allocate_exact_size(vec2(36.0, label.size().y), Sense::hover());
-            if ui.is_rect_visible(time_rect) {
-                label.paint(ui, time_rect.min, palette.secondary);
-            }
-            let muted = active.is_some_and(|active| active.muted);
-            ui.add_enabled_ui(
-                active.is_some_and(|active| active.has_audio && !failed),
-                |ui| {
-                    if theme::icon_button(
-                        ui,
-                        if muted { Icon::VolumeX } else { Icon::Volume2 },
-                        14.0,
-                        palette.secondary,
-                        palette.text,
-                        if muted { "Unmute video" } else { "Mute video" },
-                    )
-                    .clicked()
-                    {
-                        actions.push(Action::MuteVideo {
-                            chat: message.chat.clone(),
-                            message: message.id.clone(),
-                        });
-                    }
-                },
-            );
-        },
-    );
+    super::video_preview::controls(ui, &palette, active, message, size.x, actions);
     // Offline UI tests can target the actual poster without accessing message data.
     #[cfg(any(test, feature = "demo"))]
     ui.ctx().data_mut(|data| {

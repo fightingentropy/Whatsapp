@@ -522,6 +522,12 @@ pub enum Action {
         chat: ChatId,
         message: String,
     },
+    /// Expands the same video player without restarting its clock.
+    PreviewVideo {
+        chat: ChatId,
+        message: String,
+    },
+    CloseVideoPreview,
     PauseVideo {
         chat: ChatId,
         message: String,
