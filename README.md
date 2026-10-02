@@ -122,6 +122,7 @@ See [PERFORMANCE.md](PERFORMANCE.md) for measurements, remaining costs and valid
 - **Conversations.** See replies, reactions, edits, deleted messages, read
   receipts, sender names, and group pictures. Older messages load as you
   scroll up, first from the local archive and then from your phone.
+  Reaction badges have no outline; clicking your reaction still removes it.
   Group messages show two gray checks after every recipient has received
   them, and blue checks after every recipient has read them. The recipient
   list and individual receipts are saved locally; later membership changes
