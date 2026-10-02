@@ -7,7 +7,7 @@ struct OutgoingAttachmentRow: View {
         HStack {
             Spacer(minLength: 34)
             VStack(alignment: .leading, spacing: 8) {
-                Label(item.file.name, systemImage: "doc").font(.subheadline.weight(.medium)).lineLimit(2)
+                Label(item.voice == true ? "Voice message" : item.file.name, systemImage: item.voice == true ? "waveform" : "doc").font(.subheadline.weight(.medium)).lineLimit(2)
                 if !item.caption.isEmpty { Text(item.caption).font(.subheadline).lineLimit(3) }
                 if item.state == .uploading { ProgressView("Uploading…").font(.caption) }
                 else if item.state == .queued { Label("Waiting to upload", systemImage: "clock").font(.caption).foregroundStyle(.secondary) }

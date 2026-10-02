@@ -31,14 +31,23 @@ enum Thumbnails {
     }
 
     static func cached(_ request: Request) -> UIImage? { cache.object(forKey: request.key) }
+    static let loader = ThumbnailLoader()
+
+    static func keep(_ image: UIImage, for request: Request) {
+        let cost = image.cgImage.map { $0.bytesPerRow * $0.height } ?? 0
+        cache.setObject(image, forKey: request.key, cost: cost)
+    }
 
     // Used on the engine queue before publishing locally restored rows. Only
     // small, downsampled stills are decoded; videos remain asynchronous/on demand.
     @discardableResult static func prepareStill(_ url: URL, maximumSize: Int) -> UIImage? {
-        prepareStill(Request(url, maximumSize: maximumSize, revision: MediaFiles.inspect(url)))
+        let request = Request(url, maximumSize: maximumSize, revision: MediaFiles.inspect(url))
+        guard let image = cached(request) ?? decodeStill(request) else { return nil }
+        keep(image, for: request)
+        return image
     }
 
-    private static func prepareStill(_ request: Request) -> UIImage? {
+    private static func decodeStill(_ request: Request) -> UIImage? {
         let url = request.url
         let maximumSize = request.maximumSize
         if let image = cached(request) { return image }
@@ -50,9 +59,7 @@ enum Thumbnails {
                 kCGImageSourceThumbnailMaxPixelSize: maximumSize,
                 kCGImageSourceShouldCacheImmediately: true
               ] as CFDictionary) else { return nil }
-        let image = UIImage(cgImage: cg)
-        cache.setObject(image, forKey: request.key, cost: cg.bytesPerRow * cg.height)
-        return image
+        return UIImage(cgImage: cg)
     }
 
     static func load(_ url: URL, maximumSize: Int) async -> UIImage? {
@@ -60,6 +67,11 @@ enum Thumbnails {
     }
 
     static func load(_ request: Request) async -> UIImage? {
+        await loader.load(request)
+    }
+
+    static func decode(_ request: Request) async -> UIImage? {
+        guard !Task.isCancelled else { return nil }
         if let image = cached(request) { return image }
         let url = request.url
         let maximumSize = request.maximumSize
@@ -68,13 +80,15 @@ enum Thumbnails {
             let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
             generator.maximumSize = CGSize(width: maximumSize, height: maximumSize)
             generator.appliesPreferredTrackTransform = true
-            guard let frame = try? await generator.image(at: .zero) else { return nil }
+            let frame = try? await withTaskCancellationHandler {
+                try await generator.image(at: .zero)
+            } onCancel: { generator.cancelAllCGImageGeneration() }
+            guard !Task.isCancelled, let frame else { return nil }
             cg = frame.image
         } else {
-            return prepareStill(request)
+            return autoreleasepool { decodeStill(request) }
         }
         let image = UIImage(cgImage: cg)
-        cache.setObject(image, forKey: request.key, cost: cg.bytesPerRow * cg.height)
         return image
     }
 }
@@ -109,7 +123,7 @@ struct LocalImage: View {
                 loaded = Loaded(request: request, image: image)
                 return
             }
-            let image = await Task.detached(priority: .utility) { await Thumbnails.load(request) }.value
+            let image = await Thumbnails.load(request)
             if !Task.isCancelled, let image { loaded = Loaded(request: request, image: image) }
         }
     }

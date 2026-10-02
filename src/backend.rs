@@ -220,6 +220,13 @@ pub enum Command {
         samples: Vec<f32>,
         quoting: Option<String>,
     },
+    /// Native recording retained until the archive acknowledges its upload.
+    SendVoiceFile {
+        chat: ChatId,
+        path: PathBuf,
+        quoting: Option<String>,
+        request: String,
+    },
     /// Sends a played receipt for a voice message.
     MarkPlayed {
         chat: ChatId,
@@ -325,6 +332,7 @@ pub enum Command {
     Downloaded {
         chat: ChatId,
         id: String,
+        token: u64,
         result: Result<PathBuf, String>,
     },
     /// Internal recent-sticker download result.

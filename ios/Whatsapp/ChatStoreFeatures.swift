@@ -334,12 +334,11 @@ extension ChatStore {
             do {
                 guard let path = try await audio.finishRecording(), canPost, selectedChat == canonical(chat),
                       recording == audio.recordingID, audio.recordingChat.map(canonical) == canonical(chat) else { voiceSending = false; completion(false); return }
-                var command: [String: Any] = ["type": "voice", "chat": chat, "path": path.path]
-                if let quote { command["quoting"] = quote }
-                perform(command) { accepted in
+                queueVoice(path, chat: chat, quoting: quote) { accepted in
                     self.voiceSending = false
-                    if accepted, self.audio.recordingID == recording { self.audio.discardRecording() }
+                    if accepted, self.audio.recordingID == recording { self.audio.releaseRecording(keeping: path) }
                     if accepted, self.reply?.id == quote { self.reply = nil }
+                    if accepted, self.draftReplies[chat]?.id == quote { self.draftReplies[chat] = nil }
                     completion(accepted)
                 }
             } catch { voiceSending = false; self.error = "Could not prepare the recording. Your recording has not been sent."; completion(false) }

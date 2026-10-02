@@ -4,6 +4,13 @@ import UniformTypeIdentifiers
 
 extension ChatStore {
     static let demoRoot = FileManager.default.temporaryDirectory.appendingPathComponent("WhatsappOfflinePreview", isDirectory: true)
+    func loadVoiceRecoveryDemo() {
+        guard isDemo else { return }
+        outgoingAttachments = [OutgoingAttachment(id: "voice-recovery", chat: "weekend@g.us",
+            file: PendingAttachment(url: Self.demoRoot.appendingPathComponent("voice.f32")), caption: "", mentions: [],
+            state: .failed, error: "Interrupted. Check this chat before retrying.", voice: true)]
+    }
+
     func loadInlineVideoDemo() {
         guard isDemo, let source = Bundle.main.url(forResource: "inline-video", withExtension: "mp4") else { return }
         let file = Self.demoRoot.appendingPathComponent("inline-video.mp4")

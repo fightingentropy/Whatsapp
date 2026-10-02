@@ -6,6 +6,7 @@ import ImageIO
 
 enum AttachmentImport {
     static let maximumBytes = 100 * 1024 * 1024
+    static let maximumVoiceBytes = 48_000 * 4 * 600
     static func directory() throws -> URL {
         let url = try CoreEngine.storageDirectory().appendingPathComponent("cache/outgoing", isDirectory: true)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
@@ -63,14 +64,14 @@ enum AttachmentImport {
         }
     }
 
-    static func restoredURL(_ url: URL, root: URL) -> URL? {
+    static func restoredURL(_ url: URL, root: URL, maximumSize: Int = maximumBytes) -> URL? {
         let outgoing = root.appendingPathComponent("cache/outgoing", isDirectory: true).resolvingSymlinksInPath()
         guard let range = url.path.range(of: "/cache/outgoing/", options: .backwards) else { return nil }
         let relative = String(url.path[range.upperBound...])
         let candidate = outgoing.appendingPathComponent(relative).standardizedFileURL.resolvingSymlinksInPath()
         guard candidate.path.hasPrefix(outgoing.path + "/"),
               let values = try? candidate.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
-              values.isRegularFile == true, let size = values.fileSize, size <= maximumBytes else { return nil }
+              values.isRegularFile == true, let size = values.fileSize, size <= maximumSize else { return nil }
         return candidate
     }
 

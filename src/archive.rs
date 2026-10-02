@@ -16,6 +16,15 @@ mod receipts;
 #[path = "archive/search.rs"]
 mod search;
 
+/// Stable position in the missing-sticker queue, including equal timestamps.
+#[derive(Clone, Debug)]
+pub struct MissingSticker {
+    pub chat: String,
+    pub id: String,
+    pub from_me: bool,
+    pub timestamp: i64,
+}
+
 /// Recent phone sticker metadata, last-used time, and optional local file.
 #[derive(Clone, Debug)]
 pub struct PhoneSticker {
@@ -901,17 +910,45 @@ impl Archive {
 
     /// Returns undownloaded sticker messages, outgoing first and newest first.
     pub fn stickers_without_file(&self, limit: usize) -> Result<Vec<(String, String)>> {
+        Ok(self
+            .missing_sticker_page(limit, None)?
+            .into_iter()
+            .map(|row| (row.chat, row.id))
+            .collect())
+    }
+
+    /// Pages past already attempted stickers without offset drift as files arrive.
+    pub fn missing_sticker_page(
+        &self,
+        limit: usize,
+        after: Option<&MissingSticker>,
+    ) -> Result<Vec<MissingSticker>> {
         let mut statement = self.connection.prepare(
-            "SELECT chat, id FROM messages
+            "SELECT chat, id, from_me, timestamp FROM messages
              WHERE json_extract(content, '$.kind') = 'sticker'
                AND json_extract(content, '$.media.path') IS NULL
                AND raw IS NOT NULL
-             ORDER BY from_me DESC, timestamp DESC
+               AND (?2 IS NULL OR (from_me, timestamp, chat, id) < (?2, ?3, ?4, ?5))
+             ORDER BY from_me DESC, timestamp DESC, chat DESC, id DESC
              LIMIT ?1",
         )?;
-        let rows = statement.query_map(params![limit as i64], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })?;
+        let rows = statement.query_map(
+            params![
+                limit as i64,
+                after.map(|row| row.from_me),
+                after.map(|row| row.timestamp),
+                after.map(|row| &row.chat),
+                after.map(|row| &row.id)
+            ],
+            |row| {
+                Ok(MissingSticker {
+                    chat: row.get(0)?,
+                    id: row.get(1)?,
+                    from_me: row.get(2)?,
+                    timestamp: row.get(3)?,
+                })
+            },
+        )?;
         rows.collect()
     }
 
@@ -2119,6 +2156,46 @@ mod tests {
 mod sticker_tests {
     use super::*;
     use crate::model::{Content, Delivery, Media, MediaState};
+
+    #[test]
+    fn missing_sticker_pages_skip_a_failed_frontier_and_keep_equal_timestamp_rows() {
+        let archive = Archive::in_memory().unwrap();
+        archive.ensure_chat("fixture@g.us", "Fixture").unwrap();
+        for index in 0..50 {
+            let mut row = sticker("fixture@g.us", &format!("sticker-{index:03}"), 100, None);
+            row.from_me = index % 2 == 0;
+            archive.insert_message(&row, Some(b"raw")).unwrap();
+        }
+        // These 40 could all fail without changing the archive. The next page
+        // must still reach the remaining ten, including all equal timestamps.
+        let first = archive.missing_sticker_page(40, None).unwrap();
+        let second = archive.missing_sticker_page(40, first.last()).unwrap();
+        assert_eq!((first.len(), second.len()), (40, 10));
+        let ids: std::collections::HashSet<_> =
+            first.iter().chain(&second).map(|row| &row.id).collect();
+        assert_eq!(ids.len(), 50);
+        // Completed downloads disappearing ahead of the cursor cannot skip rows.
+        for row in first.iter().take(15) {
+            archive
+                .set_media_path(&row.chat, &row.id, Path::new("/fixture/downloaded.webp"))
+                .unwrap();
+        }
+        assert_eq!(
+            archive
+                .missing_sticker_page(40, first.last())
+                .unwrap()
+                .iter()
+                .map(|row| &row.id)
+                .collect::<Vec<_>>(),
+            second.iter().map(|row| &row.id).collect::<Vec<_>>()
+        );
+        assert!(
+            archive
+                .missing_sticker_page(40, second.last())
+                .unwrap()
+                .is_empty()
+        );
+    }
 
     fn sticker(chat: &str, id: &str, timestamp: i64, path: Option<&str>) -> Message {
         Message {

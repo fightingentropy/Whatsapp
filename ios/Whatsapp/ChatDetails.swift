@@ -7,7 +7,7 @@ struct ChatDetails: View {
     @Environment(\.dismiss) private var dismiss
     @State private var editingName = false
     @State private var name = ""
-    private var chat: Chat? { store.chats.first { $0.id == store.canonical(id) } }
+    private var chat: Chat? { store.chatByID(id) }
     var body: some View {
         List {
             Section {

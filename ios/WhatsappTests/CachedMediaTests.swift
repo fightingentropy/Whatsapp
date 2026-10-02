@@ -97,6 +97,17 @@ final class CachedMediaTests: XCTestCase {
         XCTAssertNil(Thumbnails.cached(.init(url, maximumSize: 264)))
     }
 
+    func testConcurrentColdImageRequestsReuseDecodedPixels() async throws {
+        let url = try picture("cache/media/shared.png")
+        let request = Thumbnails.Request(url, maximumSize: 156)
+        let tasks = (0..<8).map { _ in Task.detached { await Thumbnails.load(request) } }
+        var images: [UIImage] = []
+        for task in tasks { let image = await task.value; images.append(try XCTUnwrap(image)) }
+        XCTAssertEqual(Set(images.map(ObjectIdentifier.init)).count, 1)
+        XCTAssertEqual(images[0].cgImage?.width, 64)
+        XCTAssertTrue(Thumbnails.cached(request) === images[0])
+    }
+
     func testMissingRemovedAndOutsideContainerFilesAreNotRestored() throws {
         let url = try picture("cache/avatars/alex_lid.jpg")
         var chats = CoreEvent(type: "chats"); chats.chats = [chat("alex@lid")]

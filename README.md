@@ -156,8 +156,11 @@ See [PERFORMANCE.md](PERFORMANCE.md) for measurements, remaining costs and valid
   Reply, react, edit, forward, delete, and check when a message was sent,
   delivered, or read. Sending while reading older messages keeps your place.
 - **View attachments.** Whatsapp downloads files up to 64 MB automatically or
-  on click. Photos, stickers, GIFs, voice messages, audio, locations, contacts,
-  polls, and link previews appear in the chat. Click a downloaded photo to open
+  on click. Attachment transfers share four active slots on Mac (two on iPhone),
+  merge duplicate pending requests and stream to private temporary files. Only
+  verified, completed downloads replace the saved file. Photos, stickers, GIFs,
+  voice messages, audio, locations, contacts, polls, and link previews appear in
+  the chat. Click a downloaded photo to open
   an in-app preview with zoom, fit, original size, and an external-app button.
   Pinch or use the mouse wheel to zoom around the pointer; drag or scroll with
   two fingers to pan. Double-click toggles fit and original size. Copy an image
@@ -174,8 +177,10 @@ See [PERFORMANCE.md](PERFORMANCE.md) for measurements, remaining costs and valid
   and stickers, and save stickers with a right-click. Emoji autocomplete and
   picker search select their first match; use the arrow keys and Enter to
   choose it. GIF search needs a free GIPHY API key unless the build includes
-  one. Recent/received sticker downloads share two slots and pause with increasing
-  backoff when the server limits requests. Other failures retry when the picker reopens.
+  one. Missing sticker history is paged past failed items so older stickers can
+  still load. Recent/received sticker downloads share two slots and pause with
+  increasing backoff when the server limits requests. Other failures retry when
+  the picker reopens.
 - **Sticker packs.** Import a pack from a `signal.art` link or `.wastickers`
   file. Animated packs remain animated. Packs are stored as WebP files on your
   computer.

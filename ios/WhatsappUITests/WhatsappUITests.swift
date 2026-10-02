@@ -1,6 +1,22 @@
 import XCTest
 
 final class WhatsappUITests: XCTestCase {
+    func testInterruptedVoiceOffersRetryAndRemovalInsideTheChat() {
+        let app = XCUIApplication(); app.launchArguments = ["--demo", "--demo-voice-recovery"]; app.launch()
+        let chat = app.buttons["chat-weekend@g.us"]
+        XCTAssertTrue(chat.waitForExistence(timeout: 10)); chat.tap()
+        XCTAssertTrue(app.staticTexts["Voice message"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Interrupted. Check this chat before retrying."].exists)
+        XCTAssertTrue(app.buttons["Retry"].isHittable)
+        XCTAssertTrue(app.buttons["Remove"].isHittable)
+        capture(app, "Interrupted voice upload — retained for retry")
+        app.buttons["Retry"].tap()
+        XCTAssertTrue(app.staticTexts["Waiting to upload"].waitForExistence(timeout: 3))
+        app.buttons["Remove"].tap()
+        XCTAssertFalse(app.staticTexts["Voice message"].exists)
+        XCTAssertTrue(composer(app).exists)
+    }
+
     func testInlineVideoAndQuotedMentionStayInsideConversation() {
         let app = XCUIApplication(); app.launchArguments = ["--demo", "--demo-inline-video"]; app.launch()
         let chat = app.buttons["chat-weekend@g.us"]

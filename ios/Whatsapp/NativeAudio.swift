@@ -168,6 +168,12 @@ final class NativeAudio: NSObject, ObservableObject, AVAudioPlayerDelegate {
         return output
     }
 
+    func releaseRecording(keeping path: URL) {
+        if pcmURL == path { pcmURL = nil }
+        if recordingURL == path { recordingURL = nil }
+        discardRecording()
+    }
+
     func discardRecording() {
         recorder?.stop(); recorder = nil; isRecording = false; hasRecording = false
         timer?.invalidate(); timer = nil

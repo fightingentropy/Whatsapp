@@ -52,10 +52,11 @@ extension ChatStore {
             }
         }
         outgoingAttachments = saved.outgoing.compactMap { item in
-            guard let url = AttachmentImport.restoredURL(item.file.url, root: draftStorage.root) else { return nil }
+            guard let url = AttachmentImport.restoredURL(item.file.url, root: draftStorage.root,
+                maximumSize: item.voice == true ? AttachmentImport.maximumVoiceBytes : AttachmentImport.maximumBytes) else { return nil }
             return OutgoingAttachment(id: item.id, chat: item.chat, file: PendingAttachment(url: url, id: item.file.id),
                 caption: item.caption, mentions: item.mentions, state: .failed,
-                error: "Interrupted. Check this chat before retrying.")
+                error: "Interrupted. Check this chat before retrying.", voice: item.voice, quoting: item.quoting)
         }
         draftReplies = saved.replies
         let retained = Set(attachments.values.flatMap { $0.map(\.url) } + outgoingAttachments.map { $0.file.url })
@@ -98,10 +99,31 @@ extension ChatStore {
             guard let self, self.uploadingAttachment == item.id else { return }
             guard saved else { self.failAttachment(item.id, error: "Could not save this upload. Try again."); return }
             self.prepareForBackground()
-            self.engine.send(["type": "attachment", "chat": self.canonical(item.chat), "request": item.id,
-                "path": item.file.url.path, "caption": item.caption, "mentions": item.mentions]) { [weak self] accepted in
+            var command: [String: Any] = ["type": item.voice == true ? "voice" : "attachment",
+                "chat": self.canonical(item.chat), "request": item.id, "path": item.file.url.path]
+            if item.voice == true { if let quote = item.quoting { command["quoting"] = quote } }
+            else { command["caption"] = item.caption; command["mentions"] = item.mentions }
+            self.engine.send(command) { [weak self] accepted in
                 if !accepted { self?.failAttachment(item.id, error: "The upload was not accepted. Try again after reconnecting.") }
             }
+        }
+    }
+
+    /// Transfer the prepared recording only after its recoverable job is durable.
+    func queueVoice(_ path: URL, chat: String, quoting: String?, completion: @escaping (Bool) -> Void) {
+        let chat = canonical(chat)
+        guard outgoingAttachments.filter({ canonical($0.chat) == chat }).count + attachments[chat, default: []].count < 30 else {
+            error = "Send or remove some pending attachments before sending this recording."
+            completion(false); return
+        }
+        let item = OutgoingAttachment(id: UUID().uuidString, chat: chat, file: PendingAttachment(url: path),
+            caption: "", mentions: [], voice: true, quoting: quoting)
+        outgoingAttachments.append(item)
+        flushDrafts { [weak self] saved in
+            guard let self else { completion(false); return }
+            if !saved { self.outgoingAttachments.removeAll { $0.id == item.id } }
+            completion(saved)
+            if saved { self.pumpAttachments() }
         }
     }
 

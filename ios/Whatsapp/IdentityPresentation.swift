@@ -4,6 +4,7 @@ import Observation
 /// A row subscribes to the identity it displays, rather than every dictionary key.
 @MainActor @Observable
 final class IdentityPresentation {
+    var chat: Chat?
     var contact: CoreEvent.Contact?
     var savedName: String?
     var chatName: String?
@@ -65,6 +66,7 @@ extension ChatStore {
         let indexed = Dictionary(chats.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
         for id in Set(chatsByID.keys).union(indexed.keys) {
             let state = identity(id)
+            if state.chat != indexed[id] { state.chat = indexed[id] }
             if state.chatName != indexed[id]?.name { state.chatName = indexed[id]?.name }
         }
         chatsByID = indexed
@@ -80,8 +82,6 @@ extension ChatStore {
     func isTyping(in chat: String) -> Bool { !identity(canonical(chat)).typing.isEmpty }
 
     func chatByID(_ id: String) -> Chat? {
-        // The collection supplies observation; the index supplies constant-time lookup.
-        _ = chats
-        return chatsByID[canonical(id)]
+        identity(canonical(id)).chat
     }
 }

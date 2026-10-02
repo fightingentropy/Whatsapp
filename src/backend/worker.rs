@@ -32,6 +32,8 @@ use whatsapp_rust::{MediaRetryResult, MediaReuploadRequest};
 
 #[path = "worker/device_store.rs"]
 mod device_store;
+#[path = "worker/downloads.rs"]
+mod downloads;
 #[path = "worker/early_events.rs"]
 mod early_events;
 use early_events::WaitingReaction;
@@ -215,6 +217,7 @@ pub async fn run(
         older_warned: HashSet::new(),
         pending_avatars: HashMap::new(),
         sticker_pace: Default::default(),
+        sticker_cursor: None,
         stickers_requested: false,
         sticker_failed: HashSet::new(),
         sticker_download_failed: HashSet::new(),
@@ -224,6 +227,7 @@ pub async fn run(
         early: Default::default(),
         link_watch: Default::default(),
         upload_budget: Default::default(),
+        downloads: Default::default(),
     };
     worker.load_state();
     worker.backfill();
@@ -265,6 +269,7 @@ pub async fn run(
 }
 
 struct Worker {
+    downloads: downloads::Downloads,
     upload_budget: upload_budget::UploadBudget,
     /// None while in flight, otherwise the next retry time.
     read_syncs: HashMap<ChatId, Option<Instant>>,
@@ -308,6 +313,7 @@ struct Worker {
     /// Deferred profile-picture requests and retry counts.
     pending_avatars: HashMap<(String, bool), u32>,
     sticker_pace: sticker_pace::Pace,
+    sticker_cursor: Option<crate::archive::MissingSticker>,
     stickers_requested: bool,
     sticker_failed: HashSet<String>,
     sticker_download_failed: HashSet<(ChatId, String)>,
@@ -315,6 +321,11 @@ struct Worker {
     sticker_fetches: HashSet<String>,
     /// Active chat-sticker downloads by chat and message id.
     sticker_downloads: HashSet<(ChatId, String)>,
+}
+
+enum VoiceSource {
+    Samples(Vec<f32>),
+    File(PathBuf),
 }
 
 /// Decoded history chunk waiting to be canonicalized and archived.
@@ -734,6 +745,8 @@ impl Worker {
             .drain()
             .map(|(chat, id)| (if chat == from { into.clone() } else { chat }, id))
             .collect();
+        self.sticker_cursor = None;
+        self.downloads.rekey(&from, &into);
         self.sticker_download_failed = self
             .sticker_download_failed
             .drain()
@@ -1327,12 +1340,14 @@ impl Worker {
             log::warn!("could not clear the archive: {error}");
         }
         self.early.clear();
+        self.downloads.clear();
         self.stickers_requested = false;
         self.sticker_failed.clear();
         self.sticker_download_failed.clear();
         self.sticker_fetches.clear();
         self.sticker_downloads.clear();
         self.sticker_pace = Default::default();
+        self.sticker_cursor = None;
         self.lid_to_pn.clear();
         self.contacts.clear();
         self.group_info_requested.clear();
@@ -2219,6 +2234,7 @@ impl Worker {
             | Command::SendImage { chat, .. }
             | Command::SetMuted(chat, _)
             | Command::SendVoice { chat, .. }
+            | Command::SendVoiceFile { chat, .. }
             | Command::SendSticker { chat, .. }
             | Command::SendGif { chat, .. }
             | Command::React { chat, .. }
@@ -2588,7 +2604,15 @@ impl Worker {
                 chat,
                 samples,
                 quoting,
-            } => self.send_voice(chat, samples, quoting),
+            } => self.send_voice(chat, VoiceSource::Samples(samples), quoting, None),
+            Command::SendVoiceFile {
+                chat,
+                path,
+                quoting,
+                request,
+            } => {
+                self.send_voice(chat, VoiceSource::File(path), quoting, Some(request));
+            }
             Command::MarkPlayed {
                 chat,
                 message,
@@ -2633,6 +2657,7 @@ impl Worker {
             }
             Command::RecentStickers => {
                 self.stickers_requested = true;
+                self.sticker_cursor = None;
                 self.sticker_failed.clear();
                 self.sticker_download_failed.clear();
                 self.fetch_missing_stickers();
@@ -2824,7 +2849,15 @@ impl Worker {
                     self.emit(Event::Error(format!("Message not sent: {error}")));
                 }
             }
-            Command::Downloaded { chat, id, result } => {
+            Command::Downloaded {
+                chat,
+                id,
+                token,
+                result,
+            } => {
+                if !self.downloads.finish(&chat, &id, token, result.is_ok()) {
+                    return;
+                }
                 if let Ok(path) = &result {
                     let _ = self.archive.set_media_path(&chat, &id, path);
                 }
@@ -2832,6 +2865,7 @@ impl Worker {
                 if for_picker && let Err(error) = &result {
                     if sticker_pace::rate_limited(error) {
                         self.sticker_pace.limited(Instant::now());
+                        self.sticker_cursor = None;
                     } else {
                         self.sticker_download_failed
                             .insert((chat.clone(), id.clone()));
@@ -3444,6 +3478,19 @@ impl Worker {
             (Some(jid), Some(row)) if jid.is_group() => Self::jid_of(&row.sender),
             _ => None,
         };
+        let token = match self.downloads.admit(&chat, &id) {
+            Ok(Some(token)) => token,
+            Ok(None) => return true,
+            Err(()) => {
+                self.emit(Event::Media {
+                    chat,
+                    message: id,
+                    result: Err("Download queue is full. Tap to retry.".into()),
+                });
+                return false;
+            }
+        };
+        let slots = self.downloads.slots.clone();
         let mut fresh_base = base;
         let mut refreshed = move |direct: String| -> Option<Box<dyn Downloadable>> {
             if let Some(media) = fresh_base.image_message.as_option_mut() {
@@ -3480,21 +3527,13 @@ impl Worker {
         let dir = self.dirs.media_cache_dir();
         let commands = self.commands.clone();
         tokio::spawn(async move {
-            let keep = |bytes: Vec<u8>| {
-                let dir = dir.clone();
-                let path = media_path(&dir, &chat, &id, &mime, file_name.as_deref());
-                async move {
-                    tokio::fs::create_dir_all(&dir)
-                        .await
-                        .map_err(|error| error.to_string())?;
-                    tokio::fs::write(&path, &bytes)
-                        .await
-                        .map_err(|error| error.to_string())?;
-                    Ok(path)
-                }
-            };
-            let result = match client.download(&*downloadable).await {
-                Ok(bytes) => keep(bytes).await,
+            let _permit = slots
+                .acquire_owned()
+                .await
+                .expect("download budget stays open");
+            let path = media_path(&dir, &chat, &id, &mime, file_name.as_deref());
+            let result = match downloads::to_file(&client, &*downloadable, &path).await {
+                Ok(path) => Ok(path),
                 Err(error) => {
                     let text = error.to_string();
                     let expired = ["403", "404", "410"].iter().any(|code| text.contains(code));
@@ -3511,10 +3550,9 @@ impl Worker {
                             match client.media_reupload().request(&request).await {
                                 Ok(MediaRetryResult::Success { direct_path }) => {
                                     match refreshed(direct_path) {
-                                        Some(again) => match client.download(&*again).await {
-                                            Ok(bytes) => keep(bytes).await,
-                                            Err(error) => Err(error.to_string()),
-                                        },
+                                        Some(again) => {
+                                            downloads::to_file(&client, &*again, &path).await
+                                        }
                                         None => Err(text),
                                     }
                                 }
@@ -3531,7 +3569,12 @@ impl Worker {
                     }
                 }
             };
-            let _ = commands.send(Command::Downloaded { chat, id, result });
+            let _ = commands.send(Command::Downloaded {
+                chat,
+                id,
+                token,
+                result,
+            });
         });
         true
     }
@@ -3577,32 +3620,34 @@ impl Worker {
             let commands = self.commands.clone();
             let dir = dir.clone();
             let hash = sticker.hash;
+            let download_slots = self.downloads.slots.clone();
             slots -= 1;
             tokio::spawn(async move {
                 let result = async {
-                    let bytes = client
-                        .download(&PhoneSticker(meta))
+                    let _permit = download_slots
+                        .acquire_owned()
                         .await
-                        .map_err(|error| error.to_string())?;
-                    tokio::fs::create_dir_all(&dir)
-                        .await
-                        .map_err(|error| error.to_string())?;
+                        .expect("download budget stays open");
                     let path = dir.join(format!("{hash}.webp"));
-                    tokio::fs::write(&path, &bytes)
-                        .await
-                        .map_err(|error| error.to_string())?;
-                    Ok(path)
+                    downloads::to_file(&client, &PhoneSticker(meta), &path).await
                 }
                 .await;
                 let _ = commands.send(Command::StickerFetched { hash, result });
             });
         }
-        match self.archive.stickers_without_file(STICKER_FETCH_LIMIT) {
+        let exhausted;
+        match self
+            .archive
+            .missing_sticker_page(STICKER_FETCH_LIMIT, self.sticker_cursor.as_ref())
+        {
             Ok(list) => {
-                for (chat, id) in list {
+                exhausted = list.len() < STICKER_FETCH_LIMIT;
+                for row in list {
                     if slots == 0 {
                         return;
                     }
+                    self.sticker_cursor = Some(row.clone());
+                    let (chat, id) = (row.chat, row.id);
                     if !self
                         .sticker_download_failed
                         .contains(&(chat.clone(), id.clone()))
@@ -3617,9 +3662,12 @@ impl Worker {
                     }
                 }
             }
-            Err(error) => log::warn!("could not list unfetched stickers: {error}"),
+            Err(error) => {
+                exhausted = true;
+                log::warn!("could not list unfetched stickers: {error}");
+            }
         }
-        if self.sticker_fetches.is_empty() && self.sticker_downloads.is_empty() {
+        if exhausted && self.sticker_fetches.is_empty() && self.sticker_downloads.is_empty() {
             self.stickers_requested = false;
         }
     }
@@ -4139,9 +4187,24 @@ impl Worker {
     }
 
     /// Encodes and sends an OGG/Opus voice message with optional quote.
-    fn send_voice(&mut self, chat: ChatId, samples: Vec<f32>, quoting: Option<String>) {
+    fn send_voice(
+        &mut self,
+        chat: ChatId,
+        source: VoiceSource,
+        quoting: Option<String>,
+        request: Option<String>,
+    ) {
         let Some(client) = self.client.clone() else {
-            self.emit(Event::Error("Not connected to WhatsApp".to_owned()));
+            if let Some(request) = request {
+                self.emit(Event::Attachment {
+                    chat,
+                    request,
+                    message: None,
+                    error: Some("Not connected to WhatsApp".into()),
+                });
+            } else {
+                self.emit(Event::Error("Not connected to WhatsApp".to_owned()));
+            }
             return;
         };
         let quote = quoting.as_deref().and_then(|id| {
@@ -4179,10 +4242,22 @@ impl Worker {
         let commands = self.commands.clone();
         let dir = self.dirs.media_cache_dir();
         let me = self.me();
+        let budget = self.upload_budget.clone();
         tokio::spawn(async move {
             let outcome = async {
+                let size = match &source {
+                    VoiceSource::Samples(samples) => (samples.len() * 4) as u64,
+                    VoiceSource::File(path) => tokio::fs::metadata(path)
+                        .await
+                        .map_err(|_| "Could not read the voice recording".to_owned())?
+                        .len(),
+                };
+                let _reservation = budget.reserve(size).await;
                 let (bytes, seconds, waveform) = tokio::task::spawn_blocking(move || {
-                    let mut samples = samples;
+                    let mut samples = match source {
+                        VoiceSource::Samples(samples) => samples,
+                        VoiceSource::File(path) => crate::voice::read_pcm(&path)?,
+                    };
                     crate::voice::normalize(&mut samples);
                     let seconds = (samples.len() as f64 / f64::from(crate::voice::RATE))
                         .round()
@@ -4196,6 +4271,18 @@ impl Worker {
                 file_outbound(&client, &chat, &me, &dir, prepared, None, Vec::new()).await
             }
             .await;
+            if let Some(request) = request {
+                let result = outcome.map(|(mut row, raw)| {
+                    row.quoted = shown;
+                    (Box::new(row), raw)
+                });
+                let _ = commands.send(Command::AttachmentPrepared {
+                    chat,
+                    request,
+                    result,
+                });
+                return;
+            }
             match outcome {
                 Ok((mut row, raw)) => {
                     row.quoted = shown;
@@ -5851,6 +5938,7 @@ mod receipt_tests {
         let root =
             std::env::temp_dir().join(format!("whatsapp-worker-test-{}", std::process::id()));
         let worker = Worker {
+            downloads: Default::default(),
             upload_budget: Default::default(),
             dirs: AppDirs::under(&root),
             events,
@@ -5882,6 +5970,7 @@ mod receipt_tests {
             older_warned: HashSet::new(),
             pending_avatars: HashMap::new(),
             sticker_pace: Default::default(),
+            sticker_cursor: None,
             stickers_requested: false,
             sticker_failed: HashSet::new(),
             sticker_download_failed: HashSet::new(),
@@ -6908,6 +6997,29 @@ mod receipt_tests {
             ),
             2
         );
+    }
+
+    #[tokio::test]
+    async fn failed_native_voice_preparation_acknowledges_the_retained_job() {
+        let (mut worker, events, _inbox, _wa) = worker();
+        worker
+            .handle_command(Command::SendVoiceFile {
+                chat: PEER.into(),
+                path: "/fixture/recording.f32".into(),
+                quoting: None,
+                request: "recording-job".into(),
+            })
+            .await;
+        assert!(events.try_iter().any(|event| matches!(event, Event::Attachment { request, message: None, error: Some(_), .. } if request == "recording-job")));
+        worker
+            .handle_command(Command::AttachmentPrepared {
+                chat: PEER.into(),
+                request: "recording-job".into(),
+                result: Err("Synthetic upload failure".into()),
+            })
+            .await;
+        assert!(events.try_iter().any(|event| matches!(event, Event::Attachment { request, message: None, error: Some(_), .. } if request == "recording-job")));
+        assert!(worker.archive.messages(PEER, None, 60).unwrap().is_empty());
     }
 
     #[test]

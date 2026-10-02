@@ -6,6 +6,39 @@ use std::io::{Cursor, Read, Seek};
 
 /// Opus sample rate used for every mono clip.
 pub const RATE: u32 = 48_000;
+/// Ten minutes of mono, little-endian float PCM from the native recorder.
+pub const MAX_PCM_BYTES: u64 = 48_000 * 4 * 600;
+
+/// Read/validate native PCM on an upload worker without a second whole-file buffer.
+pub fn read_pcm(path: &std::path::Path) -> Result<Vec<f32>, String> {
+    let invalid = || "Could not read the voice recording".to_owned();
+    let mut file = std::fs::File::open(path).map_err(|_| invalid())?;
+    let metadata = file.metadata().map_err(|_| invalid())?;
+    let size = metadata.len();
+    if !metadata.is_file() || size == 0 || size > MAX_PCM_BYTES || size % 4 != 0 {
+        return Err(invalid());
+    }
+    let mut samples = Vec::with_capacity(size as usize / 4);
+    let mut buffer = [0u8; 16_384];
+    let mut remaining = size;
+    while remaining > 0 {
+        let count = remaining.min(buffer.len() as u64) as usize;
+        file.read_exact(&mut buffer[..count])
+            .map_err(|_| invalid())?;
+        for chunk in buffer[..count].as_chunks::<4>().0 {
+            let value = f32::from_le_bytes(*chunk);
+            if !value.is_finite() || value.abs() > 1.0 {
+                return Err(invalid());
+            }
+            samples.push(value);
+        }
+        remaining -= count as u64;
+    }
+    if file.read(&mut buffer[..1]).map_err(|_| invalid())? != 0 {
+        return Err(invalid());
+    }
+    Ok(samples)
+}
 /// One Opus frame: 20 ms.
 const FRAME: usize = 960;
 /// Maximum decoded Opus packet size: 120 ms of stereo.
@@ -263,6 +296,30 @@ pub fn mono_at_rate(interleaved: &[f32], channels: u16, rate: u32) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_pcm_is_bounded_finite_and_read_across_chunk_boundaries() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("recording.f32");
+        for sample in [f32::NAN, f32::INFINITY, 1.1, -1.1] {
+            std::fs::write(&path, sample.to_le_bytes()).unwrap();
+            assert!(read_pcm(&path).is_err());
+        }
+        for bytes in [vec![], vec![0, 1, 2]] {
+            std::fs::write(&path, bytes).unwrap();
+            assert!(read_pcm(&path).is_err());
+        }
+        let samples: Vec<f32> = (0..10_003).map(|n| (n % 10) as f32 / 10.0).collect();
+        let bytes: Vec<u8> = samples
+            .iter()
+            .flat_map(|sample| sample.to_le_bytes())
+            .collect();
+        std::fs::write(&path, bytes).unwrap();
+        assert_eq!(read_pcm(&path).unwrap(), samples);
+        let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.set_len(MAX_PCM_BYTES + 4).unwrap();
+        assert!(read_pcm(&path).is_err());
+    }
 
     fn tone(seconds: f32) -> Vec<f32> {
         (0..(RATE as f32 * seconds) as usize)

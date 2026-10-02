@@ -519,6 +519,7 @@ final class ChatStore {
                     chatUpdates[chat.id] = chat
                     chatsByID[chat.id] = chat
                     let state = identity(chat.id)
+                    if state.chat != chat { state.chat = chat }
                     if state.chatName != chat.name { state.chatName = chat.name }
                 }
             case "messages":
