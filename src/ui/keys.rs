@@ -6,6 +6,26 @@ use crate::app::App;
 use crate::model::{Action, Dialog, Page};
 
 pub fn handle(app: &mut App, ctx: &egui::Context) {
+    if let Some((chat, message)) = app.video_preview.clone() {
+        ctx.input_mut(|input| {
+            if input.consume_key(Modifiers::NONE, Key::Escape) {
+                app.actions.push(Action::CloseVideoPreview);
+            }
+            if input.consume_key(Modifiers::NONE, Key::Space) {
+                app.actions.push(Action::PlayVideo { chat, message });
+            }
+            if input.consume_key(Modifiers::COMMAND, Key::Q) {
+                app.actions.push(Action::Quit);
+            }
+            if input.consume_key(Modifiers::COMMAND, Key::W) {
+                app.actions.push(Action::CloseWindow);
+            }
+            input
+                .events
+                .retain(|event| !crate::image_preview::consumes_key(event));
+        });
+        return;
+    }
     if app.image_preview.is_some() {
         preview_keys(app, ctx);
         return;

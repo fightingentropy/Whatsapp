@@ -149,8 +149,12 @@ and archive. This is an explicit additional target; keep the Mac build intact.
   to 640 pixels per side, honoring the track rotation/mirroring. No whole-movie
   frame cache or native overlay window. Paused players stop scheduling repaints;
   scrolling away pauses, while leaving the chat or hiding the window releases it.
-  Only an explicit Play can autoplay after a download. Test with synthetic media
-  and `inline_video_probe`, including decoded pixels and the audio track.
+  Only an explicit Play or double-click can autoplay after a download.
+  Double-click opens an egui modal sharing that same player, texture and clock;
+  expanded playback stays active when the bubble is offscreen. Closing the preview
+  restores the inline player; chat changes and window hiding release both views.
+  Test with synthetic media and `inline_video_probe`, including decoded pixels
+  and the audio track.
 - Message bodies paint through `markup::paint_selectable` and single lines
   through `widgets::selectable_rich_text`: both hand the galley to
   `egui::text_selection::LabelSelectionState` (which paints it) and only
