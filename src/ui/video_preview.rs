@@ -61,12 +61,8 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             ui.painter().rect_filled(rect, 0.0, Color32::BLACK);
             if let Some(active) = active.filter(|active| active.texture.is_some()) {
                 active.paint(ui.painter(), rect);
-            } else if let Some(thumbnail) = row.thumbnail.as_deref() {
-                egui::Image::new(super::conversation::thumbnail_uri(
-                    ctx, chat, message, thumbnail,
-                ))
-                .fit_to_exact_size(size)
-                .paint_at(ui, rect);
+            } else {
+                super::conversation::paint_video_poster(ui, row, rect, 0.0);
             }
             if !playing || loading {
                 let disc = Rect::from_center_size(rect.center(), Vec2::splat(64.0));

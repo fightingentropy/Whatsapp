@@ -1,4 +1,4 @@
-//! Bounded AVFoundation posters for outgoing local videos, off the UI thread.
+//! Bounded AVFoundation posters for local videos, off the UI thread.
 use std::ffi::{CString, c_char, c_void};
 use std::path::Path;
 
@@ -20,18 +20,45 @@ unsafe extern "C" {
         length: *mut usize,
     ) -> bool;
     fn whatsapp_native_free(bytes: *mut c_void);
+    #[cfg(target_os = "macos")]
+    fn whatsapp_video_preview(
+        path: *const c_char,
+        seconds: *mut f64,
+        width: *mut u32,
+        height: *mut u32,
+        jpeg: *mut *mut c_void,
+        length: *mut usize,
+    ) -> bool;
 }
 
 /// Called from a bounded upload worker, never from the main/FFI control queue.
 pub fn read(path: &Path) -> Option<VideoMetadata> {
+    read_native(path, false)
+}
+
+/// Higher quality, local-only desktop poster; called by the serial preview worker.
+#[cfg(target_os = "macos")]
+pub fn preview(path: &Path) -> Option<Vec<u8>> {
+    read_native(path, true)?.thumbnail
+}
+
+fn read_native(path: &Path, preview: bool) -> Option<VideoMetadata> {
+    let native = whatsapp_video_poster;
+    #[cfg(target_os = "macos")]
+    let native = if preview {
+        whatsapp_video_preview
+    } else {
+        native
+    };
+    let byte_limit = if preview { 512 * 1024 } else { 128 * 1024 };
     let path = CString::new(path.as_os_str().as_encoded_bytes()).ok()?;
     let (mut seconds, mut width, mut height) = (0.0, 0, 0);
     let (mut jpeg, mut length) = (std::ptr::null_mut(), 0);
     // SAFETY: C receives live output pointers; it returns a malloc-owned buffer
-    // no larger than 128 KiB. All native completions finish before copying output
+    // bounded by byte_limit. All native completions finish before copying output
     // or own their captures without retaining any Rust address on timeout.
     let success = unsafe {
-        whatsapp_video_poster(
+        native(
             path.as_ptr(),
             &mut seconds,
             &mut width,
@@ -43,7 +70,7 @@ pub fn read(path: &Path) -> Option<VideoMetadata> {
     let thumbnail = if jpeg.is_null() {
         None
     } else {
-        let bytes = (success && length > 0 && length <= 128 * 1024)
+        let bytes = (success && length > 0 && length <= byte_limit)
             .then(|| unsafe { std::slice::from_raw_parts(jpeg.cast::<u8>(), length).to_vec() });
         unsafe { whatsapp_native_free(jpeg) };
         bytes

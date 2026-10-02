@@ -156,6 +156,12 @@ and archive. This is an explicit additional target; keep the Mac build intact.
   restores the inline player; chat changes and window hiding release both views.
   Test with synthetic media and `inline_video_probe`, including decoded pixels
   and the audio track.
+- `src/video_poster.rs` prepares local stills for visible downloaded videos on one
+  background worker, without opening a player or downloading anything. Its egui
+  texture loader owns at most eight 640px previews; a 64 MiB cache under
+  `media/video-posters` is keyed by source path, size and modification time.
+  Eviction/forgetting invalidates pending jobs; never prune original attachments.
+  Keep the transmitted 96px thumbnail separate and show it until a local still is ready.
 - Message bodies paint through `markup::paint_selectable` and single lines
   through `widgets::selectable_rich_text`: both hand the galley to
   `egui::text_selection::LabelSelectionState` (which paints it) and only

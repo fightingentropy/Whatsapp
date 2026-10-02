@@ -38,4 +38,5 @@ pub mod updates;
 pub mod util;
 pub mod video;
 pub mod video_metadata;
+pub mod video_poster;
 pub mod voice;

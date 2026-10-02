@@ -74,6 +74,10 @@ Build from source below; signed, notarized public downloads will appear under
   the app does not cache a movie's decoded frames. Native decoder buffers are
   additional memory. Paused playback stops requesting frames, and leaving the
   chat or hiding the window releases the player.
+- Downloaded videos get a sharper still preview from one background worker,
+  without starting playback. Up to eight preview textures stay resident, bounded
+  to 640 pixels per side; a 64 MiB disk cache avoids decoding the video again
+  when reopening chats. Previews are prepared only for visible videos.
 - System font scanning and emoji indexing start in one background worker during
   native window setup and are reused when the window reopens. Font collections
   share their bytes across faces. Apple Color Emoji
@@ -174,7 +178,9 @@ See [PERFORMANCE.md](PERFORMANCE.md) for measurements, remaining costs and valid
   controls sit over the picture and hide during playback until you move the pointer.
   Space plays or pauses; Escape, a click outside, or the close button returns to the chat.
   Clicking Play downloads the video if needed and starts it when ready; automatic
-  downloads never start playback. Scrolling the video out of view pauses it unless
+  downloads never start playback. Until the video is downloaded and its local
+  preview is ready, the bubble shows WhatsApp's small thumbnail, which can look
+  blurry when enlarged. Scrolling the video out of view pauses it unless
   it is open in the larger player.
   The message menu still offers opening a video in another app; documents open
   in their default desktop apps. If an attachment has expired, Whatsapp asks your
@@ -269,7 +275,8 @@ CPU timings exclude native rendering, tessellation and GPU work; they are not
 frame-rate measurements.
 
 The offline inline-video probe checks decoded frames and the audio track,
-pause, forward/backward seeking, mute, replay, switching, failed media and
+pause, forward/backward seeking, mute, replay, switching, failed media,
+sharp landscape/rotated portrait previews painted before playback, and
 playback continuity when expanding and closing the larger player:
 
 ```sh
@@ -331,6 +338,8 @@ Settings, `session.db`, `archive.db`, saved stickers and logs are under
 `~/Library/Application Support/org.erlin.whatsapp/`.
 Downloaded media and avatars are under
 `~/Library/Caches/org.erlin.whatsapp/`.
+Derived video previews are in its `media/video-posters/` subdirectory and are
+trimmed independently of the original videos.
 Window state uses eframe's independent `whatsapp` app id.
 On first launch after upgrading from our previous **ZapFast Silicon** build,
 Whatsapp moves only the `org.erlin.zapfast-silicon` profile and cache to these
