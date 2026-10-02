@@ -1,8 +1,6 @@
 //! Expanded presentation and shared controls for the single native video player.
 
-use egui::{
-    Align, Align2, Color32, CornerRadius, Frame, Layout, Margin, Rect, Sense, Stroke, Vec2, vec2,
-};
+use egui::{Align, Align2, Color32, Frame, Layout, Rect, Sense, UiBuilder, Vec2, vec2};
 
 use super::widgets;
 use crate::app::App;
@@ -35,58 +33,40 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     let failed = matches!(media.state, MediaState::Failed(_))
         || active.is_some_and(|active| active.state == State::Failed);
     let mut actions = Vec::new();
-    let size = (ctx.content_rect().size() - vec2(64.0, 80.0))
-        .max(vec2(160.0, 160.0))
-        .min(vec2(1440.0, 1000.0));
-    let response = egui::Modal::new(egui::Id::new("video-preview"))
-        .frame(
-            Frame::new()
-                .fill(palette.overlay)
-                .stroke(Stroke::new(1.0, palette.outline))
-                .corner_radius(CornerRadius::same(theme::RADIUS + 4))
-                .inner_margin(Margin::same(14)),
+    let source = active.and_then(Playback::display_size).unwrap_or_else(|| {
+        vec2(
+            media.width.filter(|width| *width > 0).unwrap_or(16) as f32,
+            media.height.filter(|height| *height > 0).unwrap_or(9) as f32,
         )
+    });
+    let available = (ctx.content_rect().size() - Vec2::splat(48.0)).max(Vec2::splat(1.0));
+    let size = source * (available.x / source.x).min(available.y / source.y);
+    let id = egui::Id::new("video-preview");
+    // Position from this frame's dimensions rather than the area's last size,
+    // which may belong to a different rotation, window size or UI zoom.
+    let area = egui::Area::new(id)
+        .kind(egui::UiKind::Modal)
+        .sense(Sense::hover())
+        .order(egui::Order::Foreground)
+        .fixed_pos(ctx.content_rect().center() - size * 0.5)
+        .default_size(size)
+        .constrain(false);
+    let response = egui::Modal::new(id)
+        .area(area)
+        .frame(Frame::NONE)
         .backdrop_color(palette.shadow)
         .show(ctx, |ui| {
-            ui.set_width(size.x);
-            ui.set_height(size.y);
-            ui.horizontal(|ui| {
-                widgets::rich_text(ui, "Video", theme::semibold(14.0), palette.text);
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if theme::icon_button(
-                        ui,
-                        Icon::X,
-                        18.0,
-                        palette.secondary,
-                        palette.text,
-                        "Back to chat (Esc)",
-                    )
-                    .clicked()
-                    {
-                        actions.push(Action::CloseVideoPreview);
-                    }
-                });
-            });
-            ui.separator();
-            let canvas = vec2(
-                ui.available_width(),
-                (ui.available_height() - 38.0).max(1.0),
-            );
-            let (rect, response) = ui.allocate_exact_size(canvas, Sense::click());
-            ui.painter().rect_filled(rect, 6.0, Color32::BLACK);
+            let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+            ui.set_clip_rect(rect);
+            ui.painter().rect_filled(rect, 0.0, Color32::BLACK);
             if let Some(active) = active.filter(|active| active.texture.is_some()) {
                 active.paint(ui.painter(), rect);
             } else if let Some(thumbnail) = row.thumbnail.as_deref() {
-                let source = vec2(
-                    media.width.unwrap_or(16).max(1) as f32,
-                    media.height.unwrap_or(9).max(1) as f32,
-                );
-                let fitted = source * (canvas.x / source.x).min(canvas.y / source.y);
                 egui::Image::new(super::conversation::thumbnail_uri(
                     ctx, chat, message, thumbnail,
                 ))
-                .fit_to_exact_size(fitted)
-                .paint_at(ui, Rect::from_center_size(rect.center(), fitted));
+                .fit_to_exact_size(size)
+                .paint_at(ui, rect);
             }
             if !playing || loading {
                 let disc = Rect::from_center_size(rect.center(), Vec2::splat(64.0));
@@ -106,7 +86,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             }
             if failed {
                 ui.painter().text(
-                    rect.center_bottom() - vec2(0.0, 16.0),
+                    rect.center_bottom() - vec2(0.0, 64.0),
                     Align2::CENTER_BOTTOM,
                     "Cannot play · click to retry",
                     theme::regular(13.0),
@@ -122,10 +102,81 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                     message: message.clone(),
                 });
             }
-            controls(ui, palette, active, row, canvas.x, &mut actions);
+            let bar = Rect::from_min_max(rect.left_bottom() - vec2(0.0, 46.0), rect.right_bottom());
+            let close = Rect::from_min_size(rect.right_top() + vec2(-40.0, 8.0), Vec2::splat(32.0));
+            let show_controls = !playing
+                || ctx.memory(|memory| memory.focused().is_some())
+                || ctx.input(|input| {
+                    input.key_pressed(egui::Key::Tab)
+                        || input.pointer.hover_pos().is_some_and(|pos| {
+                            rect.contains(pos)
+                                && (input
+                                    .pointer
+                                    .time_since_last_movement()
+                                    .min(input.pointer.time_since_last_click())
+                                    < 2.0
+                                    || bar.contains(pos)
+                                    || close.contains(pos)
+                                    || input.pointer.any_down())
+                        })
+                });
+            if show_controls {
+                // Child UIs overlay the picture without adding to the modal's
+                // measured size. No title bar, padding or surrounding panel.
+                if rect.width() >= 160.0 {
+                    ui.painter()
+                        .rect_filled(bar, 0.0, Color32::from_black_alpha(170));
+                    let mut overlay = ui.new_child(UiBuilder::new().max_rect(bar.shrink(8.0)));
+                    let overlay_palette = Palette {
+                        text: Color32::WHITE,
+                        secondary: Color32::WHITE,
+                        ..*palette
+                    };
+                    controls(
+                        &mut overlay,
+                        &overlay_palette,
+                        active,
+                        row,
+                        bar.width() - 16.0,
+                        &mut actions,
+                    );
+                }
+                ui.painter()
+                    .circle_filled(close.center(), 16.0, Color32::from_black_alpha(150));
+                let mut overlay = ui.new_child(
+                    UiBuilder::new()
+                        .max_rect(close)
+                        .layout(Layout::centered_and_justified(egui::Direction::LeftToRight)),
+                );
+                if theme::icon_button(
+                    &mut overlay,
+                    Icon::X,
+                    18.0,
+                    Color32::WHITE,
+                    Color32::WHITE,
+                    "Back to chat (Esc)",
+                )
+                .clicked()
+                {
+                    actions.push(Action::CloseVideoPreview);
+                }
+            }
             #[cfg(any(test, feature = "demo"))]
-            ctx.data_mut(|data| data.insert_temp(egui::Id::new("video-preview-canvas"), rect));
+            ctx.data_mut(|data| {
+                data.insert_temp(egui::Id::new("video-preview-canvas"), rect);
+                data.insert_temp(
+                    egui::Id::new("video-preview-controls-visible"),
+                    show_controls,
+                );
+            });
         });
+    #[cfg(any(test, feature = "demo"))]
+    ctx.data_mut(|data| {
+        data.insert_temp(
+            egui::Id::new("video-preview-bounds"),
+            response.response.rect,
+        )
+    });
     if response.should_close() {
         actions.push(Action::CloseVideoPreview);
     }
