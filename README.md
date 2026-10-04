@@ -167,7 +167,8 @@ See [PERFORMANCE.md](PERFORMANCE.md) for measurements, remaining costs and valid
   voice messages, audio, locations, contacts, polls, and link previews appear in
   the chat. Click a downloaded photo to open
   an in-app preview with zoom, fit, original size, and an external-app button.
-  Pinch or use the mouse wheel to zoom around the pointer; drag or scroll with
+  The preview panel wraps the fitted photo and grows with it up to the window's
+  limit. Pinch or use the mouse wheel to zoom around the pointer; drag or scroll with
   two fingers to pan. Double-click toggles fit and original size. Copy an image
   from the preview toolbar, with ⌘C, or from its message menu. Clipboard decoding
   runs off the UI thread and rejects images above 16 megapixels or an 8,192-pixel edge.

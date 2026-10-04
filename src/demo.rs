@@ -1753,6 +1753,90 @@ mod tests {
     }
 
     #[test]
+    fn image_preview_wraps_the_fitted_picture_without_empty_bands() {
+        let dir = tempfile::tempdir().unwrap();
+        for (width, height) in [(900u32, 1200u32), (1600, 400), (120, 90)] {
+            // WhatsApp's long file names must not widen the panel.
+            let path = dir.path().join(format!(
+                "1203634050838010434_g_us-AC7A99455D4DAE58158B3029B7D56742-{width}x{height}.png"
+            ));
+            image::RgbImage::from_pixel(width, height, image::Rgb([90, 140, 200]))
+                .save(&path)
+                .unwrap();
+            let mut app = app();
+            let ctx = egui::Context::default();
+            app.attach(&ctx);
+            let image = egui::Image::new(crate::ui::conversation::file_uri(&path));
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while !matches!(
+                image.load_for_size(&ctx, egui::vec2(320.0, 260.0)),
+                Ok(egui::load::TexturePoll::Ready { .. })
+            ) {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "fixture image must decode before measuring the preview"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            app.image_preview = Some(crate::image_preview::PreviewState::new(path));
+            app.focus_composer = false;
+            render(&mut app, &ctx);
+            let rect = |name: &str| {
+                ctx.data(|data| {
+                    data.get_temp::<egui::Rect>(egui::Id::new("image-preview").with(name))
+                })
+                .unwrap()
+            };
+            let (picture, bounds) = (rect("picture"), rect("bounds"));
+            let content = ctx.content_rect();
+            let label = format!("{width}x{height}: {picture:?} in {bounds:?}");
+            assert!(
+                (picture.aspect_ratio() - width as f32 / height as f32).abs() < 0.01,
+                "{label}"
+            );
+            assert!(bounds.contains_rect(picture), "{label}");
+            assert!(content.contains_rect(bounds), "{label}");
+            assert!(
+                (bounds.center().x - content.center().x).abs() < 1.0
+                    && (bounds.center().y - content.center().y).abs() < 1.0,
+                "{label} is centered"
+            );
+            // Only the frame's margin and stroke, 15 points, beside and below
+            // the picture; a small image keeps room for the title row's controls.
+            assert!(
+                (bounds.bottom() - picture.bottom() - 15.0).abs() < 1.0,
+                "no band below {label}"
+            );
+            let inner = bounds.width() - 30.0;
+            if width >= 360 {
+                assert!(
+                    (inner - picture.width()).abs() < 1.0,
+                    "no bands beside {label}"
+                );
+            } else {
+                assert!((inner - 360.0).abs() < 1.0, "{label}");
+                assert!(
+                    (picture.center().x - bounds.center().x).abs() < 1.0,
+                    "{label}"
+                );
+            }
+
+            // At the original size a large photo scrolls inside the window.
+            app.actions.push(crate::model::Action::ImageActualSize);
+            render(&mut app, &ctx);
+            let (picture, bounds) = (rect("picture"), rect("bounds"));
+            let label = format!("{width}x{height} at 100%: {picture:?} in {bounds:?}");
+            assert!((picture.width() - width as f32).abs() < 1.0, "{label}");
+            assert!(content.contains_rect(bounds), "{label}");
+            assert_eq!(
+                picture.height() > bounds.height(),
+                height == 1200,
+                "{label}"
+            );
+        }
+    }
+
+    #[test]
     fn expanded_video_keeps_keyboard_and_paste_out_of_the_draft() {
         use crate::model::{Action, MediaState};
         let mut app = app();

@@ -169,9 +169,12 @@ impl PreviewState {
     }
 }
 
-/// Keeps an image point anchored as its size changes inside a centered canvas.
+/// Keeps an image point anchored as its size changes, centered in a viewport
+/// that may change size too: `from` is the point in the old viewport, `to`
+/// where it should land in the new one.
 pub fn anchored_offset(
     viewport: egui::Vec2,
+    new_viewport: egui::Vec2,
     old: egui::Vec2,
     new: egui::Vec2,
     offset: egui::Vec2,
@@ -179,14 +182,14 @@ pub fn anchored_offset(
     to: egui::Vec2,
 ) -> egui::Vec2 {
     let axis = |d: usize| {
-        let origin = |size: f32| (viewport[d].max(size) - size) / 2.0;
+        let origin = |viewport: f32, size: f32| (viewport.max(size) - size) / 2.0;
         let fraction = if old[d] > 0.0 {
-            (offset[d] + from[d] - origin(old[d])) / old[d]
+            (offset[d] + from[d] - origin(viewport[d], old[d])) / old[d]
         } else {
             0.5
         };
-        let limit = viewport[d].max(new[d]) - viewport[d];
-        (origin(new[d]) + fraction * new[d] - to[d]).clamp(0.0, limit)
+        let limit = new_viewport[d].max(new[d]) - new_viewport[d];
+        (origin(new_viewport[d], new[d]) + fraction * new[d] - to[d]).clamp(0.0, limit)
     };
     egui::vec2(axis(0), axis(1))
 }
@@ -256,6 +259,7 @@ mod tests {
             anchored_offset(
                 vec2(400., 400.),
                 vec2(400., 400.),
+                vec2(400., 400.),
                 vec2(800., 800.),
                 vec2(0., 0.),
                 vec2(100., 200.),
@@ -266,6 +270,7 @@ mod tests {
         assert_eq!(
             anchored_offset(
                 vec2(400., 400.),
+                vec2(400., 400.),
                 vec2(800., 800.),
                 vec2(200., 200.),
                 vec2(400., 400.),
@@ -273,6 +278,22 @@ mod tests {
                 vec2(100., 200.)
             ),
             vec2(0., 0.)
+        );
+        // A 300x400 picture area that wraps the image grows to a 600x500 one,
+        // its corner moving by half the growth (150, 50): the pointed-at pixel
+        // (100, 200) of the old image is (200, 400) of the doubled one, under
+        // the pointer at (100, 200) + (150, 50) in the new area.
+        assert_eq!(
+            anchored_offset(
+                vec2(300., 400.),
+                vec2(600., 500.),
+                vec2(300., 400.),
+                vec2(600., 800.),
+                vec2(0., 0.),
+                vec2(100., 200.),
+                vec2(250., 250.)
+            ),
+            vec2(0., 150.)
         );
         let mut preview = PreviewState::new("fixture.png".into());
         preview.zoom_by(f32::NAN);
