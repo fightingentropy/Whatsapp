@@ -32,8 +32,11 @@ use whatsapp_rust::{MediaRetryResult, MediaReuploadRequest};
 
 #[path = "worker/device_store.rs"]
 mod device_store;
+#[path = "worker/disappearing.rs"]
+mod disappearing;
 #[path = "worker/downloads.rs"]
 mod downloads;
+use disappearing::SendState;
 #[path = "worker/early_events.rs"]
 mod early_events;
 use early_events::WaitingReaction;
@@ -344,6 +347,7 @@ struct ParsedChat {
     archived: bool,
     pinned: bool,
     muted_until: Option<i64>,
+    timer: Option<crate::archive::DisappearingTimer>,
     last_activity: i64,
     pn_jid: Option<String>,
     lid_jid: Option<String>,
@@ -1220,6 +1224,15 @@ impl Worker {
             E::ContactUpdate(update) => self.on_contact_update(update),
             E::GroupUpdate(update) => {
                 let chat = self.canonical(&update.group_jid);
+                if let whatsapp_rust::wacore::stanza::groups::GroupNotificationAction::Ephemeral {
+                    expiration,
+                    ..
+                } = update.action.as_ref()
+                    && let Some(timer) =
+                        disappearing::timer(*expiration, update.timestamp.timestamp())
+                {
+                    self.remember_timer(&chat, timer);
+                }
                 self.request_group_info(&chat, true);
             }
             E::ArchiveUpdate(update) => {
@@ -1538,6 +1551,14 @@ impl Worker {
         let push_name = (!info.push_name.is_empty()).then(|| info.push_name.clone());
         let base = message.get_base_message();
 
+        if (base.protocol_message.is_set()
+            || (!from_me
+                && ChatKind::from_id(&chat) == ChatKind::Direct
+                && self.archive.chat_timer(&chat).ok().flatten().is_none()))
+            && let Some(timer) = disappearing::from_message(base, info.timestamp.timestamp())
+        {
+            self.remember_timer(&chat, timer);
+        }
         if let Some(protocol) = base.protocol_message.as_option() {
             let Some(target) = protocol.key.as_option().and_then(|key| key.id.clone()) else {
                 return;
@@ -1980,6 +2001,9 @@ impl Worker {
             if id.ends_with("@broadcast") {
                 continue;
             }
+            if let Some(timer) = chat.timer {
+                self.remember_timer(&id, timer);
+            }
             let existing = self.archive.chat(&id).ok().flatten();
             if metadata || existing.is_none() {
                 let name = match chat.name.filter(|name| !name.is_empty()) {
@@ -2243,6 +2267,7 @@ impl Worker {
             | Command::Sent { chat, .. }
             | Command::Downloaded { chat, .. }
             | Command::GroupRecipients { chat, .. }
+            | Command::PrepareSend { chat, .. }
             | Command::GroupInfo { chat, .. } => *chat = self.canonical_str(chat),
             Command::MarkPlayed { chat, sender, .. } => {
                 *chat = self.canonical_str(chat);
@@ -2907,6 +2932,23 @@ impl Worker {
                     self.pending_avatars.remove(&(id, full));
                 }
             }
+            Command::PrepareSend {
+                chat,
+                id,
+                generation,
+                raw,
+                previous_timer,
+                group_timer,
+                retry,
+                prepared,
+            } => {
+                let result = if generation != self.bot_generation {
+                    Err("The connection changed. Retry the message.".to_owned())
+                } else {
+                    self.prepare_send(&chat, &id, &raw, previous_timer, group_timer, retry)
+                };
+                let _ = prepared.send(result);
+            }
             Command::GroupRecipients {
                 chat,
                 id,
@@ -3015,14 +3057,7 @@ impl Worker {
             thumbnail: None,
         };
         self.store_message(row, Some(message.encode_to_vec()), None);
-        tokio::spawn(send_outgoing(
-            client,
-            self.commands.clone(),
-            chat,
-            jid,
-            id,
-            message,
-        ));
+        self.queue_send(client, chat, jid, id, message, false);
     }
 
     fn forward_message(&mut self, from_chat: ChatId, message_id: String, to_chat: ChatId) {
@@ -3057,7 +3092,10 @@ impl Worker {
         };
         // whatsapp-rust owns the forwarding rules: unwrap transient wrappers,
         // strip quote chains and secrets, and retain reusable media metadata.
-        let message = original.get_base_message().prepare_for_forward();
+        let mut message = original.get_base_message().prepare_for_forward();
+        // Clear the source policy before archiving: if the metadata query fails,
+        // retry must not mistake it for a timer prepared for this destination.
+        disappearing::clear_timer(&mut message);
         let id = client.generate_message_id();
         let mentions = self.mentions_of(&mentioned_of(&message));
         let thumbnail = thumbnail_of(&message).or_else(|| source.thumbnail.clone());
@@ -3071,14 +3109,7 @@ impl Worker {
             thumbnail,
         );
         self.store_message(row, Some(message.encode_to_vec()), None);
-        tokio::spawn(send_outgoing(
-            client,
-            self.commands.clone(),
-            to_chat,
-            jid,
-            id,
-            message,
-        ));
+        self.queue_send(client, to_chat, jid, id, message, false);
     }
 
     fn mark_read(&mut self, chat: ChatId, receipts: bool) {
@@ -4427,14 +4458,7 @@ impl Worker {
         if self.archive.raw(&chat, &id).ok().flatten().is_none() {
             return Err("Could not save the attachment. Keep it and retry.".to_owned());
         }
-        tokio::spawn(send_outgoing(
-            client,
-            self.commands.clone(),
-            chat,
-            jid,
-            id,
-            message,
-        ));
+        self.queue_send(client, chat, jid, id, message, false);
         Ok(())
     }
 
@@ -4459,14 +4483,7 @@ impl Worker {
             return;
         }
         self.emit_message(&chat, &id);
-        tokio::spawn(send_outgoing(
-            client,
-            self.commands.clone(),
-            chat,
-            jid,
-            id,
-            message,
-        ));
+        self.queue_send(client, chat, jid, id, message, true);
     }
 
     fn react(&mut self, chat: ChatId, id: String, emoji: String) {
@@ -4505,8 +4522,44 @@ async fn send_outgoing(
     jid: Jid,
     id: String,
     message: wa::Message,
+    state: SendState,
 ) {
     let result = async {
+        // Group settings are separate from the library's slim routing cache.
+        // A fresh query also repairs existing chats whose timers older builds
+        // discarded. Concurrent sends share the library's metadata request.
+        let group_timer = if jid.is_group() {
+            let observed_at = crate::util::now();
+            let metadata = client.groups().fetch_metadata(&jid).await.map_err(|_| {
+                "Could not check the chat's disappearing-message timer. Retry when connected."
+                    .to_owned()
+            })?;
+            Some(crate::archive::DisappearingTimer {
+                seconds: disappearing::group_duration(metadata.ephemeral)?,
+                updated_at: observed_at,
+            })
+        } else {
+            None
+        };
+        let (prepared, mut ready) = mpsc::unbounded_channel();
+        commands
+            .send(Command::PrepareSend {
+                chat: chat.clone(),
+                id: id.clone(),
+                generation: state.generation,
+                raw: message.encode_to_vec(),
+                previous_timer: state.timer,
+                group_timer,
+                retry: state.retry,
+                prepared,
+            })
+            .map_err(|_| "The application is shutting down".to_owned())?;
+        let raw = ready
+            .recv()
+            .await
+            .ok_or_else(|| "The application is shutting down".to_owned())??;
+        let message = wa::Message::decode_from_slice(&raw)
+            .map_err(|_| "Could not prepare the message".to_owned())?;
         if jid.is_group() {
             // Uses whatsapp-rust's send cache; only a miss queries the server,
             // exactly as encryption would. No separate burst of metadata queries.
@@ -4685,7 +4738,7 @@ fn outgoing_text(
     }
 }
 
-/// Extracts quote and mention context from a message.
+/// Extracts context from the message types the app displays and forwards.
 fn context_of(base: &wa::Message) -> Option<&wa::ContextInfo> {
     if let Some(text) = base.extended_text_message.as_option() {
         return text.context_info.as_option();
@@ -4693,7 +4746,11 @@ fn context_of(base: &wa::Message) -> Option<&wa::ContextInfo> {
     if let Some(image) = base.image_message.as_option() {
         return image.context_info.as_option();
     }
-    if let Some(video) = base.video_message.as_option() {
+    if let Some(video) = base
+        .video_message
+        .as_option()
+        .or(base.ptv_message.as_option())
+    {
         return video.context_info.as_option();
     }
     if let Some(audio) = base.audio_message.as_option() {
@@ -4708,8 +4765,22 @@ fn context_of(base: &wa::Message) -> Option<&wa::ContextInfo> {
     if let Some(location) = base.location_message.as_option() {
         return location.context_info.as_option();
     }
+    if let Some(location) = base.live_location_message.as_option() {
+        return location.context_info.as_option();
+    }
     if let Some(contact) = base.contact_message.as_option() {
         return contact.context_info.as_option();
+    }
+    if let Some(contacts) = base.contacts_array_message.as_option() {
+        return contacts.context_info.as_option();
+    }
+    if let Some(poll) = base
+        .poll_creation_message
+        .as_option()
+        .or(base.poll_creation_message_v2.as_option())
+        .or(base.poll_creation_message_v3.as_option())
+    {
+        return poll.context_info.as_option();
     }
     None
 }
@@ -5514,6 +5585,12 @@ fn parse_conversation(conversation: wa::Conversation) -> ParsedChat {
     let mut messages = Vec::new();
     let mut revoked = Vec::new();
     let mut newest = 0;
+    let mut timer = conversation.ephemeral_expiration.and_then(|seconds| {
+        disappearing::timer(
+            seconds,
+            conversation.ephemeral_setting_timestamp.unwrap_or(0),
+        )
+    });
     for entry in &conversation.messages {
         let Some(info) = entry.message.as_option() else {
             continue;
@@ -5532,6 +5609,11 @@ fn parse_conversation(conversation: wa::Conversation) -> ParsedChat {
         newest = newest.max(timestamp);
         let base = message.get_base_message();
         if let Some(protocol) = base.protocol_message.as_option() {
+            if let Some(update) = disappearing::from_message(base, timestamp)
+                && timer.is_none_or(|known| update.updated_at >= known.updated_at)
+            {
+                timer = Some(update);
+            }
             if protocol.r#type == Some(wa::message::protocol_message::Type::REVOKE)
                 && let Some(target) = protocol.key.as_option().and_then(|key| key.id.clone())
             {
@@ -5657,6 +5739,7 @@ fn parse_conversation(conversation: wa::Conversation) -> ParsedChat {
         pn_jid: conversation.pn_jid.clone(),
         lid_jid: conversation.lid_jid.clone(),
         more_on_phone,
+        timer,
         messages,
         revoked,
     }
@@ -5926,7 +6009,7 @@ mod receipt_tests {
         assert_eq!(worker.group_info_tries.get("busy@g.us"), Some(&1));
     }
 
-    fn worker() -> (
+    pub(super) fn worker() -> (
         Worker,
         std::sync::mpsc::Receiver<Event>,
         mpsc::UnboundedReceiver<Command>,
@@ -6321,7 +6404,7 @@ mod receipt_tests {
         assert!(events.try_iter().any(|event| matches!(event, Event::ChatMerged { from, into } if from == PEER_LID && into == PEER)));
     }
 
-    fn own_message(id: &str, timestamp: i64) -> Message {
+    pub(super) fn own_message(id: &str, timestamp: i64) -> Message {
         Message {
             id: id.into(),
             chat: PEER.into(),

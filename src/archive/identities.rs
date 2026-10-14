@@ -11,7 +11,8 @@ impl Archive {
                 "SELECT lid, pn FROM lids WHERE
                  EXISTS (SELECT 1 FROM chats WHERE id = lid || '@lid') OR
                  EXISTS (SELECT 1 FROM contacts WHERE id = lid || '@lid') OR
-                 EXISTS (SELECT 1 FROM messages WHERE chat = lid || '@lid')",
+                 EXISTS (SELECT 1 FROM messages WHERE chat = lid || '@lid') OR
+                 EXISTS (SELECT 1 FROM chat_timers WHERE chat = lid || '@lid')",
             )?
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
             .collect()
@@ -20,6 +21,16 @@ impl Archive {
     /// Called only for a protocol-provided mapping, inside put_lid's transaction.
     /// Move unique rows in place so their order, raw keys and search rowids survive.
     pub(super) fn merge_chat_identity(&self, from: &str, into: &str) -> Result<()> {
+        self.connection.execute(
+            "INSERT INTO chat_timers (chat, seconds, updated_at)
+             SELECT ?2, seconds, updated_at FROM chat_timers WHERE chat = ?1
+             ON CONFLICT(chat) DO UPDATE SET seconds = excluded.seconds,
+                 updated_at = excluded.updated_at
+             WHERE excluded.updated_at > chat_timers.updated_at",
+            params![from, into],
+        )?;
+        self.connection
+            .execute("DELETE FROM chat_timers WHERE chat = ?1", [from])?;
         let had_chat: bool = self.connection.query_row(
             "SELECT EXISTS(SELECT 1 FROM chats WHERE id = ?1)",
             [from],

@@ -9,12 +9,15 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::model::{Chat, ChatKind, Contact, Content, Delivery, LastMessage, Message};
 
+#[path = "archive/disappearing.rs"]
+mod disappearing;
 #[path = "archive/identities.rs"]
 mod identities;
 #[path = "archive/receipts.rs"]
 mod receipts;
 #[path = "archive/search.rs"]
 mod search;
+pub use disappearing::DisappearingTimer;
 
 /// Stable position in the missing-sticker queue, including equal timestamps.
 #[derive(Clone, Debug)]
@@ -88,6 +91,11 @@ CREATE TABLE IF NOT EXISTS meta (
 CREATE TABLE IF NOT EXISTS lids (
     lid TEXT PRIMARY KEY,
     pn TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS chat_timers (
+    chat TEXT PRIMARY KEY,
+    seconds INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS stickers (
     hash TEXT PRIMARY KEY,
@@ -1305,7 +1313,7 @@ impl Archive {
     /// Clears all archived data during unlinking.
     pub fn clear(&self) -> Result<()> {
         self.connection.execute_batch(
-            "DELETE FROM group_receipts; DELETE FROM messages; DELETE FROM chats; DELETE FROM contacts; DELETE FROM meta; DELETE FROM lids;",
+            "DELETE FROM group_receipts; DELETE FROM messages; DELETE FROM chats; DELETE FROM contacts; DELETE FROM meta; DELETE FROM lids; DELETE FROM chat_timers;",
         )
     }
 }

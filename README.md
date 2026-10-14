@@ -160,6 +160,14 @@ See [PERFORMANCE.md](PERFORMANCE.md) for measurements, remaining costs and valid
   an emoji without leaving the composer, or `@` in a group to mention a member.
   Reply, react, edit, forward, delete, and check when a message was sent,
   delivered, or read. Sending while reading older messages keeps your place.
+- **Send with disappearing timers.** New text and attachments use the chat's
+  timer, including captions and quoted replies. Groups check their current
+  setting with WhatsApp before sending; a failed check leaves the message
+  retryable instead of sending without a timer. Direct chats use settings synced
+  from the phone, with a bounded lookup of recent received messages for older
+  archives. Forwards use the destination chat's timer; retries retain an already
+  prepared expiration. This does not change previously sent permanent messages.
+  Automatic removal from this app's local archive is not implemented yet.
 - **View attachments.** Whatsapp downloads files up to 64 MB automatically or
   on click. Attachment transfers share four active slots on Mac (two on iPhone),
   merge duplicate pending requests and stream to private temporary files. Only

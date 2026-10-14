@@ -75,6 +75,18 @@ and archive. This is an explicit additional target; keep the Mac build intact.
   privacy-id mappings. WhatsApp replays history once, at link time, so the
   archive is the only copy. It keeps each message's raw protobuf because
   the keys to fetch an attachment live in it.
+- `src/archive/disappearing.rs` stores chat timers separately, including explicit
+  off, ordered by setting timestamp and merged with privacy identities. History,
+  keyless ephemeral controls and group notifications update them. Shared sends
+  fetch full group metadata (the routing cache omits timers), then return to the
+  worker to apply whatsapp-rust's expiration helper and durably save the final
+  pending protobuf before sending. A concurrent live setting wins over that query;
+  stale worker generations cannot prepare a send. Forwards use the destination
+  policy and retries retain a positive prepared expiration. Direct-chat upgrade
+  hints read only the latest non-forwarded received body, capped at 256 KiB; never
+  scan on startup or look past a newer untimed/missing/oversized body. This fixes
+  outgoing metadata only; local archive expiration is not implemented. Test with
+  synthetic archives, not sends.
 - `src/agent.rs` exposes read-only archive tools through `whatsapp agent mcp`
   (stdio MCP) and `whatsapp agent call` (JSON). This branch runs before GUI,
   logging, migration, or single-instance setup. Never construct an App, Worker

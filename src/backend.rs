@@ -372,6 +372,17 @@ pub enum Command {
         row: Box<Message>,
         raw: Vec<u8>,
     },
+    /// Resolve the destination timer and durably prepare the actual wire body.
+    PrepareSend {
+        chat: ChatId,
+        id: String,
+        generation: u64,
+        raw: Vec<u8>,
+        previous_timer: Option<crate::archive::DisappearingTimer>,
+        group_timer: Option<crate::archive::DisappearingTimer>,
+        retry: bool,
+        prepared: tokio::sync::mpsc::UnboundedSender<Result<Vec<u8>, String>>,
+    },
     /// Internal send audience. The sender waits for it to be archived.
     GroupRecipients {
         chat: ChatId,
