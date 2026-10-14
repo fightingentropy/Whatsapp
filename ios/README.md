@@ -22,6 +22,12 @@ Silicon Mac to build. This is a personal-device build, not an App Store release.
   details, select several messages for a dated transcript, or delete. Editing
   and deletion for everyone use the same time windows as desktop. Deletion asks
   for confirmation; forwarding requires choosing a destination and pressing Forward.
+- Outgoing text, replies and attachments use the chat's disappearing-message
+  timer. The shared sender checks current group settings before sending and
+  retains direct-chat settings synced from the phone. A failed group check keeps
+  the message retryable. Forwards use the destination timer, and retries preserve
+  an already prepared expiration. Previously sent permanent messages are not
+  changed; automatic removal from this app's local archive is not implemented yet.
 - Bold, italic, strike-through, monospace, lists, quotes, links and resolved
   mentions. Native previews for links, locations, contact cards and read-only polls.
   Formatted text is reused in a memory-only cache with a 512-entry / approximately
