@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 use std::num::NonZero;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -435,12 +435,6 @@ fn record(stop: &AtomicBool, levels: &Mutex<Vec<f32>>, waker: &Waker) -> Result<
         return Err("The microphone did not record any audio".to_owned());
     }
     Ok(voice::mono_at_rate(&heard, channels, rate))
-}
-
-/// Temporary recording path used before sending and archiving.
-#[allow(dead_code)]
-pub fn recording_path(dir: &Path) -> PathBuf {
-    dir.join(format!("voice-{}.ogg", crate::util::now()))
 }
 
 #[cfg(test)]

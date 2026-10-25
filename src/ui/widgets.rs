@@ -456,17 +456,6 @@ pub fn setting_row(
     ui.add_space(10.0);
 }
 
-pub fn paint_vertical_gradient(ui: &Ui, rect: Rect, top: Color32, bottom: Color32) {
-    let mut mesh = egui::Mesh::default();
-    mesh.colored_vertex(rect.left_top(), top);
-    mesh.colored_vertex(rect.right_top(), top);
-    mesh.colored_vertex(rect.right_bottom(), bottom);
-    mesh.colored_vertex(rect.left_bottom(), bottom);
-    mesh.add_triangle(0, 1, 2);
-    mesh.add_triangle(0, 2, 3);
-    ui.painter().add(egui::Shape::mesh(mesh));
-}
-
 /// Small pill label used for date separators and pinned markers.
 pub fn chip(ui: &mut Ui, palette: &Palette, label: &str) -> egui::Response {
     let galley =

@@ -35,8 +35,6 @@ pub struct Text {
     placements: Vec<String>,
     /// Character ranges linked to web addresses.
     pub links: Vec<(Range<usize>, String)>,
-    /// Whether the message is emoji-only and should use a larger size.
-    pub big: bool,
 }
 
 impl Text {
@@ -134,7 +132,6 @@ pub fn layout(
         galley,
         placements,
         links,
-        big,
     }
 }
 
@@ -193,14 +190,6 @@ pub fn plain(text: &str, mentions: &[Mention]) -> String {
         .into_iter()
         .map(|span| span.text)
         .collect()
-}
-
-/// Replaces mention ids with names without parsing other markup.
-pub fn name_mentions(text: &str, mentions: &[Mention]) -> String {
-    if mentions.is_empty() {
-        return text.to_owned();
-    }
-    plain(text, mentions)
 }
 
 fn parse(text: &str, mentions: &[Mention]) -> Vec<Span> {

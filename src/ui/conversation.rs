@@ -14,8 +14,7 @@ use crate::animation;
 use crate::app::{App, Conversation};
 use crate::markup;
 use crate::model::{
-    Action, Chat, ChatId, Content, Delivery, Dialog, LinkPreview, Media, MediaState, Message,
-    PickerTab,
+    Action, Chat, Content, Delivery, Dialog, LinkPreview, Media, MediaState, Message, PickerTab,
 };
 use crate::theme::{self, Icon, Palette};
 
@@ -3856,30 +3855,6 @@ fn recording_strip(app: &mut App, ui: &mut egui::Ui) {
 
 pub(crate) fn file_uri(path: &Path) -> String {
     format!("file://{}", path.display())
-}
-
-/// Whether a conversation has visible content. Used by tests.
-#[allow(dead_code)]
-pub fn has_messages(conversation: &Conversation) -> bool {
-    !conversation.messages.is_empty()
-}
-
-#[allow(dead_code)]
-fn status_label(status: Delivery) -> &'static str {
-    match status {
-        Delivery::None => "",
-        Delivery::Pending => "sending",
-        Delivery::Sent => "sent",
-        Delivery::Delivered => "delivered",
-        Delivery::Read => "read",
-        Delivery::Played => "played",
-        Delivery::Failed => "failed",
-    }
-}
-
-#[allow(dead_code)]
-fn chat_of(chat: &ChatId) -> &str {
-    chat
 }
 
 #[cfg(test)]

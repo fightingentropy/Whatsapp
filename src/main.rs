@@ -155,7 +155,6 @@ fn main() -> eframe::Result<()> {
     let settings = settings::Settings::load(&dirs.settings_file());
     let demo_persistence = demo.then(|| dirs.state.join("window.ron"));
 
-    #[allow(unused_mut)]
     let mut app = if demo {
         app::App::headless(dirs, settings).0
     } else {

@@ -10,8 +10,8 @@ use std::time::{Duration, Instant};
 use crate::audio::{Player, Recorder};
 use crate::backend::{Backend, Command, Event, LinkStatus, Waker};
 use crate::model::{
-    Action, Chat, ChatId, Contact, Content, Delivery, Dialog, Gif, GifError, Media, MediaState,
-    Message, Page, PickerTab, StickerPack, Toast, ToastKind,
+    Action, Chat, ChatId, Contact, Content, Delivery, Dialog, Gif, GifError, MediaState, Message,
+    Page, PickerTab, StickerPack, Toast, ToastKind,
 };
 use crate::paths::AppDirs;
 use crate::settings::{Settings, ThemeChoice};
@@ -950,14 +950,6 @@ impl App {
         self.chats.iter().filter(|chat| chat.archived).count()
     }
 
-    pub fn unread_total(&self) -> u32 {
-        self.chats
-            .iter()
-            .filter(|chat| !chat.archived && !chat.muted(crate::util::now()))
-            .map(|chat| chat.unread)
-            .sum()
-    }
-
     /// Returns or requests a cached profile picture.
     fn cached_avatar(&self, id: &str) -> Option<PathBuf> {
         let path = self.dirs.avatar_file(id, false);
@@ -1727,29 +1719,6 @@ impl App {
         self.follow_outgoing();
     }
 
-    #[allow(dead_code)]
-    fn send_files(&mut self, paths: Vec<PathBuf>) {
-        let Some(chat) = self.open_chat.clone() else {
-            self.toast_error("Open a chat first");
-            return;
-        };
-        if paths.is_empty() {
-            return;
-        }
-        self.toast(format!(
-            "Sending {} file{}…",
-            paths.len(),
-            if paths.len() == 1 { "" } else { "s" }
-        ));
-        self.backend.send(Command::SendFiles {
-            chat,
-            paths,
-            caption: None,
-            mentions: Vec::new(),
-        });
-        self.follow_outgoing();
-    }
-
     fn pump_search(&mut self, now: Instant, ctx: &egui::Context) {
         self.pump_chat_search(now, ctx);
         if let Some(due) = self.search_due {
@@ -1937,7 +1906,6 @@ impl App {
             }
             Action::MarkRead(chat) => self.mark_read(&chat),
             Action::LoadOlder(chat) => self.load_older(&chat),
-            Action::FetchOlder(chat) => self.fetch_older(&chat),
             Action::Download { chat, message } => {
                 if let Some(media) = self
                     .conversations
@@ -3063,11 +3031,6 @@ impl App {
     pub fn shutdown(&mut self) {
         self.save_state();
         self.backend.shutdown();
-    }
-
-    /// Returns attachment state for a loaded message.
-    pub fn media_of(&self, chat: &str, id: &str) -> Option<&Media> {
-        self.conversations.get(chat)?.message(id)?.content.media()
     }
 }
 

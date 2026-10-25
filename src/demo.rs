@@ -4,8 +4,6 @@
 pub mod benchmark;
 pub mod tour;
 
-use std::collections::HashMap;
-
 use crate::app::{App, Conversation, Presence};
 use crate::backend::LinkStatus;
 use crate::model::{
@@ -1246,14 +1244,6 @@ fn sample_qr() -> String {
 /// Names of all sample chats.
 pub fn sample_ids() -> Vec<&'static str> {
     SAMPLES.iter().map(|sample| sample.id).collect()
-}
-
-#[allow(dead_code)]
-fn contacts_by_id(app: &App) -> HashMap<&str, &Contact> {
-    app.contacts
-        .iter()
-        .map(|(id, contact)| (id.as_str(), contact))
-        .collect()
 }
 
 #[cfg(test)]

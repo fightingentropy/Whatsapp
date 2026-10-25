@@ -67,7 +67,6 @@ final class ChatStore {
     @ObservationIgnored var loadLatestAfterPage = false
     @ObservationIgnored var recentConversations = ConversationCache()
     @ObservationIgnored var phoneHistory: [String: (complete: Bool, retryAfter: Date)] = [:]
-    var infoChatID: String?
     var gifQuery = ""
     var gifs: [GifItem] = []
     var gifError: String?
