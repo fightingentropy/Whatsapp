@@ -2453,9 +2453,13 @@ impl Worker {
                 width,
                 height,
                 rgba,
+                source,
                 caption,
                 mentions,
-            } => self.send_pasted_image(chat, width, height, rgba, caption, mentions),
+            } => {
+                let still = image::RgbaImage::from_raw(width, height, rgba);
+                self.send_pasted_image(chat, still, source, caption, mentions)
+            }
             Command::Outbound { chat, row, raw } => {
                 if let Err(error) = self.outbound(chat, *row, raw) {
                     self.emit(Event::Error(error));
@@ -4127,15 +4131,26 @@ impl Worker {
                     let file_name = path
                         .file_name()
                         .map(|name| name.to_string_lossy().into_owned());
-                    let prepared = prepare_media(
-                        &client,
-                        bytes,
-                        &mime,
-                        file_name.as_deref(),
-                        false,
-                        Some(path),
-                    )
-                    .await?;
+                    // An animated GIF file goes out as a GIF, a still one as before.
+                    let animation = if mime == "image/gif" {
+                        prepare_animation(&client, bytes, &dir).await?
+                    } else {
+                        Animation::Still(bytes)
+                    };
+                    let prepared = match animation {
+                        Animation::Video(prepared) => *prepared,
+                        Animation::Still(bytes) => {
+                            prepare_media(
+                                &client,
+                                bytes,
+                                &mime,
+                                file_name.as_deref(),
+                                false,
+                                Some(path),
+                            )
+                            .await?
+                        }
+                    };
                     file_outbound(&client, &chat, &me, &dir, prepared, caption, mentions).await
                 }
                 .await;
@@ -4171,9 +4186,8 @@ impl Worker {
     fn send_pasted_image(
         &mut self,
         chat: ChatId,
-        width: u32,
-        height: u32,
-        rgba: Vec<u8>,
+        still: Option<image::RgbaImage>,
+        source: Option<String>,
         caption: Option<String>,
         mentions: Vec<String>,
     ) {
@@ -4184,17 +4198,41 @@ impl Worker {
         let commands = self.commands.clone();
         let dir = self.dirs.media_cache_dir();
         let me = self.me();
+        let budget = self.upload_budget.clone();
         tokio::spawn(async move {
             let outcome = async {
-                let encoded = tokio::task::spawn_blocking(move || {
-                    let image = image::RgbaImage::from_raw(width, height, rgba)
-                        .ok_or_else(|| "Clipboard image data is invalid".to_owned())?;
-                    encode_jpeg(&image::DynamicImage::ImageRgba8(image), 88)
-                })
-                .await
-                .map_err(|error| error.to_string())??;
-                let prepared =
-                    prepare_media(&client, encoded, "image/jpeg", None, false, None).await?;
+                // A browser copies only the first frame of a web GIF. Its
+                // original goes out as a GIF; anything else keeps the still.
+                let animated = match source {
+                    Some(source) => {
+                        let _reservation = budget.reserve(crate::gif_video::MAX_BYTES as u64).await;
+                        match tokio::task::spawn_blocking(move || fetch_animation(&source)).await {
+                            Ok(Ok(bytes)) => match prepare_animation(&client, bytes, &dir).await? {
+                                Animation::Video(prepared) => Some(*prepared),
+                                Animation::Still(_) => None,
+                            },
+                            Ok(Err(reason)) => {
+                                log::info!("Sending the copied still: {reason}");
+                                None
+                            }
+                            Err(_) => None,
+                        }
+                    }
+                    None => None,
+                };
+                let prepared = match animated {
+                    Some(prepared) => prepared,
+                    None => {
+                        let encoded = tokio::task::spawn_blocking(move || {
+                            let image = still
+                                .ok_or_else(|| "Clipboard image data is invalid".to_owned())?;
+                            encode_jpeg(&image::DynamicImage::ImageRgba8(image), 88)
+                        })
+                        .await
+                        .map_err(|error| error.to_string())??;
+                        prepare_media(&client, encoded, "image/jpeg", None, false, None).await?
+                    }
+                };
                 file_outbound(&client, &chat, &me, &dir, prepared, caption, mentions).await
             }
             .await;
@@ -5127,6 +5165,83 @@ fn decode_upload_picture(bytes: &[u8], mobile: bool) -> Result<image::DynamicIma
     reader.decode().map_err(|error| error.to_string())
 }
 
+/// What became of a GIF or WebP that may animate.
+enum Animation {
+    /// Uploaded as WhatsApp's looping GIF video.
+    Video(Box<Prepared>),
+    /// A still image, or one that could not be encoded; the source comes back.
+    Still(Vec<u8>),
+}
+
+/// Encodes an animated GIF or WebP as an MP4 on the blocking pool and uploads
+/// it as a GIF. The staging file is removed before returning.
+async fn prepare_animation(
+    client: &Client,
+    bytes: Vec<u8>,
+    dir: &Path,
+) -> Result<Animation, String> {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    if bytes.len() > crate::gif_video::MAX_BYTES
+        || !crate::gif_video::is_animation_container(&bytes)
+    {
+        return Ok(Animation::Still(bytes));
+    }
+    let next = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let staging = dir.join(format!(".gif-{}-{next}.mp4", std::process::id()));
+    let path = staging.clone();
+    let (encoded, bytes) = tokio::task::spawn_blocking(move || {
+        // A crashed earlier run may have left the same name behind.
+        let _ = std::fs::create_dir_all(path.parent().unwrap_or(&path));
+        let _ = std::fs::remove_file(&path);
+        (crate::gif_video::encode(&bytes, &path), bytes)
+    })
+    .await
+    .map_err(|error| error.to_string())?;
+    if !encoded {
+        return Ok(Animation::Still(bytes));
+    }
+    let prepared = match tokio::fs::read(&staging).await {
+        Ok(video) => prepare_media(
+            client,
+            video,
+            "video/mp4",
+            None,
+            true,
+            Some(staging.clone()),
+        )
+        .await
+        .map(|prepared| Animation::Video(Box::new(prepared))),
+        Err(_) => Ok(Animation::Still(bytes)),
+    };
+    let _ = tokio::fs::remove_file(&staging).await;
+    prepared
+}
+
+/// Fetches a copied web image's original, bounded like any attachment source.
+/// Only HTTPS GIF and WebP responses are kept.
+fn fetch_animation(url: &str) -> Result<Vec<u8>, &'static str> {
+    if !url.starts_with("https://") {
+        return Err("the original is not on HTTPS");
+    }
+    let mut response = ureq::get(url)
+        .config()
+        .timeout_global(Some(Duration::from_secs(30)))
+        .build()
+        .call()
+        .map_err(|_| "could not fetch the original")?;
+    let bytes = response
+        .body_mut()
+        .with_config()
+        .limit(crate::gif_video::MAX_BYTES as u64)
+        .read_to_vec()
+        .map_err(|_| "could not read the original")?;
+    if crate::gif_video::is_animation_container(&bytes) {
+        Ok(bytes)
+    } else {
+        Err("the original is not a GIF or WebP")
+    }
+}
+
 /// Uploads a file and builds its message. Images are encoded as JPEG.
 async fn prepare_media(
     client: &Client,
@@ -5807,6 +5922,18 @@ mod tests {
         );
         assert_eq!(extension_for("audio/ogg; codecs=opus", None), "ogg");
         assert_eq!(extension_for("application/x-unknown", None), "x-unknown");
+    }
+
+    #[test]
+    fn copied_originals_are_only_fetched_over_https() {
+        // Rejected before any request is made.
+        for url in [
+            "http://media.example/a.gif",
+            "file:///tmp/a.gif",
+            "ftp://x/a.gif",
+        ] {
+            assert!(fetch_animation(url).is_err(), "{url}");
+        }
     }
 
     #[test]

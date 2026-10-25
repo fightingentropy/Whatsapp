@@ -16,6 +16,7 @@ pub fn build(root: &std::path::Path) {
             "Foundation",
             "AVFoundation",
             "CoreMedia",
+            "CoreVideo",
             "CoreGraphics",
             "ImageIO",
         ] {

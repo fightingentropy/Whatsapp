@@ -1166,6 +1166,7 @@ pub fn apply_flags(app: &mut App, page: Option<&str>) {
                     width: side,
                     height: side,
                     rgba: std::sync::Arc::new(rgba),
+                    source: Some("https://media.example/loop.gif".into()),
                     texture: None,
                 });
                 app.pending.push(crate::app::Pending::File(photo));
@@ -2548,6 +2549,7 @@ mod tests {
             width: 2,
             height: 2,
             rgba: vec![200; 16],
+            source: None,
         });
         render(&mut app, &ctx);
         assert_eq!(app.pending.len(), 1, "staged, not sent");

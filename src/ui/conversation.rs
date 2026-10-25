@@ -4071,6 +4071,7 @@ fn pending_strip(app: &mut App, ui: &mut egui::Ui) {
                         width,
                         height,
                         rgba,
+                        source,
                         texture,
                     } => {
                         let handle = texture.get_or_insert_with(|| {
@@ -4118,6 +4119,24 @@ fn pending_strip(app: &mut App, ui: &mut egui::Ui) {
                         egui::Image::from_texture((handle.id(), fitted))
                             .corner_radius(6.0)
                             .paint_at(ui, inner);
+                        if source.as_deref().is_some_and(crate::app::is_gif_source) {
+                            let galley = ui.painter().layout_no_wrap(
+                                "GIF".to_owned(),
+                                theme::medium(10.5),
+                                Color32::WHITE,
+                            );
+                            let chip = Rect::from_min_size(
+                                pos2(rect.left() + 6.0, rect.bottom() - galley.size().y - 10.0),
+                                galley.size() + vec2(8.0, 4.0),
+                            );
+                            ui.painter().rect_filled(
+                                chip,
+                                chip.height() / 2.0,
+                                Color32::from_black_alpha(140),
+                            );
+                            ui.painter()
+                                .galley(chip.min + vec2(4.0, 2.0), galley, Color32::WHITE);
+                        }
                     }
                     crate::app::Pending::File(path) => {
                         if crate::app::Pending::is_picture_file(path) {

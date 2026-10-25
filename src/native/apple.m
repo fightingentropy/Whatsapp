@@ -6,6 +6,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 // Runs only on bounded background workers. Sources are local files and both
 // native loading and frame generation have deadlines.
@@ -90,6 +91,146 @@ bool whatsapp_video_poster(const char *path, double *seconds, uint32_t *width,
 }
 
 void whatsapp_native_free(void *bytes) { free(bytes); }
+
+// Browsers play frame delays of 10 ms or less at 100 ms; so does this.
+static int64_t animation_delay_ms(CGImageSourceRef source, size_t index) {
+    NSDictionary *properties = CFBridgingRelease(CGImageSourceCopyPropertiesAtIndex(source, index, NULL));
+    NSDictionary *gif = properties[(__bridge NSString *)kCGImagePropertyGIFDictionary];
+    NSDictionary *webp = properties[(__bridge NSString *)kCGImagePropertyWebPDictionary];
+    NSNumber *delay = gif[(__bridge NSString *)kCGImagePropertyGIFUnclampedDelayTime]
+        ?: gif[(__bridge NSString *)kCGImagePropertyGIFDelayTime]
+        ?: webp[(__bridge NSString *)kCGImagePropertyWebPUnclampedDelayTime]
+        ?: webp[(__bridge NSString *)kCGImagePropertyWebPDelayTime];
+    double seconds = delay.doubleValue;
+    if (!isfinite(seconds) || seconds <= 0.011) return 100;
+    return llround(fmin(seconds, 60) * 1000);
+}
+
+static bool animation_video(CGImageSourceRef source, NSURL *output) {
+    size_t count = CGImageSourceGetCount(source);
+    if (count < 2 || count > 1500) return false; // still images keep their own path
+    NSDictionary *uncached = @{(__bridge NSString *)kCGImageSourceShouldCache: @NO};
+    CGImageRef first = CGImageSourceCreateImageAtIndex(source, 0, (__bridge CFDictionaryRef)uncached);
+    if (!first) return false;
+    size_t canvas_width = CGImageGetWidth(first), canvas_height = CGImageGetHeight(first);
+    CGImageRelease(first);
+    if (canvas_width < 1 || canvas_height < 1 || canvas_width > 4096 || canvas_height > 4096 ||
+        canvas_width * canvas_height > 8 * 1024 * 1024) return false;
+    // WhatsApp's GIF videos are small; H.264 4:2:0 needs even dimensions.
+    double scale = fmin(1.0, 640.0 / (double)MAX(canvas_width, canvas_height));
+    size_t width = (size_t)(canvas_width * scale) & ~(size_t)1;
+    size_t height = (size_t)(canvas_height * scale) & ~(size_t)1;
+    if (width < 16 || height < 16) return false;
+    NSError *error = nil;
+    AVAssetWriter *writer = [AVAssetWriter assetWriterWithURL:output fileType:AVFileTypeMPEG4 error:&error];
+    if (!writer) return false;
+    writer.shouldOptimizeForNetworkUse = YES;
+    long bitrate = lround(fmin(fmax(width * height * 3.0, 250000), 2500000));
+    NSDictionary *settings = @{
+        AVVideoCodecKey: AVVideoCodecTypeH264,
+        AVVideoWidthKey: @(width),
+        AVVideoHeightKey: @(height),
+        AVVideoColorPropertiesKey: @{
+            AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_709_2,
+            AVVideoTransferFunctionKey: AVVideoTransferFunction_ITU_R_709_2,
+            AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_709_2,
+        },
+        AVVideoCompressionPropertiesKey: @{
+            AVVideoProfileLevelKey: AVVideoProfileLevelH264MainAutoLevel,
+            AVVideoAverageBitRateKey: @(bitrate),
+            AVVideoAllowFrameReorderingKey: @NO,
+        },
+    };
+    AVAssetWriterInput *input = [AVAssetWriterInput assetWriterInputWithMediaType:AVMediaTypeVideo outputSettings:settings];
+    input.expectsMediaDataInRealTime = NO;
+    AVAssetWriterInputPixelBufferAdaptor *adaptor = [AVAssetWriterInputPixelBufferAdaptor
+        assetWriterInputPixelBufferAdaptorWithAssetWriterInput:input
+        sourcePixelBufferAttributes:@{
+            (__bridge NSString *)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA),
+            (__bridge NSString *)kCVPixelBufferWidthKey: @(width),
+            (__bridge NSString *)kCVPixelBufferHeightKey: @(height),
+        }];
+    if (![writer canAddInput:input]) return false;
+    [writer addInput:input];
+    if (![writer startWriting]) return false;
+    [writer startSessionAtSourceTime:kCMTimeZero];
+    CGColorSpaceRef space = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    if (!space) {
+        [writer cancelWriting];
+        return false;
+    }
+    dispatch_time_t deadline = dispatch_time(DISPATCH_TIME_NOW, 60 * NSEC_PER_SEC);
+    int64_t elapsed = 0;
+    bool written = true;
+    for (size_t index = 0; index < count && written; index++) {
+        @autoreleasepool {
+            CGImageRef frame = CGImageSourceCreateImageAtIndex(source, index, (__bridge CFDictionaryRef)uncached);
+            while (frame && !input.readyForMoreMediaData && writer.status == AVAssetWriterStatusWriting &&
+                   dispatch_time(DISPATCH_TIME_NOW, 0) < deadline) {
+                usleep(2000);
+            }
+            CVPixelBufferRef buffer = NULL;
+            written = frame && input.readyForMoreMediaData && adaptor.pixelBufferPool &&
+                CVPixelBufferPoolCreatePixelBuffer(NULL, adaptor.pixelBufferPool, &buffer) == kCVReturnSuccess;
+            if (written) {
+                CVPixelBufferLockBaseAddress(buffer, 0);
+                CGContextRef context = CGBitmapContextCreate(
+                    CVPixelBufferGetBaseAddress(buffer), width, height, 8, CVPixelBufferGetBytesPerRow(buffer),
+                    space, kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
+                written = context != NULL;
+                if (context) {
+                    // Video has no alpha: transparent pixels show the page white they were copied from.
+                    CGRect bounds = CGRectMake(0, 0, width, height);
+                    CGContextSetRGBFillColor(context, 1, 1, 1, 1);
+                    CGContextFillRect(context, bounds);
+                    CGContextSetInterpolationQuality(context, kCGInterpolationHigh);
+                    CGContextDrawImage(context, bounds, frame);
+                    CGContextRelease(context);
+                }
+                CVPixelBufferUnlockBaseAddress(buffer, 0);
+                written = written && [adaptor appendPixelBuffer:buffer withPresentationTime:CMTimeMake(elapsed, 1000)];
+                elapsed += animation_delay_ms(source, index);
+            }
+            if (buffer) CVPixelBufferRelease(buffer);
+            if (frame) CGImageRelease(frame);
+        }
+    }
+    CGColorSpaceRelease(space);
+    if (!written) {
+        [writer cancelWriting];
+        return false;
+    }
+    [input markAsFinished];
+    // The last frame keeps its own delay before the clip loops.
+    [writer endSessionAtSourceTime:CMTimeMake(elapsed, 1000)];
+    dispatch_semaphore_t finished = dispatch_semaphore_create(0);
+    [writer finishWritingWithCompletionHandler:^{
+        dispatch_semaphore_signal(finished);
+    }];
+    if (dispatch_semaphore_wait(finished, deadline)) return false;
+    return writer.status == AVAssetWriterStatusCompleted;
+}
+
+// Converts an animated GIF or WebP into the looping H.264 MP4 that WhatsApp
+// sends as a GIF. Runs only on bounded upload workers; `output` must not exist.
+// Returns false for still images and anything that cannot be encoded.
+bool whatsapp_animation_video(const uint8_t *bytes, size_t length, const char *output) {
+    @autoreleasepool {
+        @try {
+            if (!bytes || length == 0 || !output) return false;
+            NSString *path = [[NSFileManager defaultManager] stringWithFileSystemRepresentation:output length:strlen(output)];
+            if (!path) return false;
+            NSData *data = [NSData dataWithBytesNoCopy:(void *)bytes length:length freeWhenDone:NO];
+            CGImageSourceRef source = CGImageSourceCreateWithData((__bridge CFDataRef)data, NULL);
+            if (!source) return false;
+            bool encoded = animation_video(source, [NSURL fileURLWithPath:path]);
+            CFRelease(source);
+            return encoded;
+        } @catch (NSException *exception) {
+            return false; // Never allow Objective-C exceptions to cross Rust.
+        }
+    }
+}
 
 #if TARGET_OS_OSX
 // A separate local preview never changes the transmitted/archive thumbnail.
