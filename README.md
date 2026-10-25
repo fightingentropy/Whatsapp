@@ -143,6 +143,12 @@ See [PERFORMANCE.md](PERFORMANCE.md) for measurements, remaining costs and valid
   picture, drop files, or use the file picker. Copied files attach the original
   document, not Finder's icon preview; filenames do not become captions.
   Each ⌘V or Edit > Paste adds the copied attachment once.
+  Animated GIF files, and GIFs copied with a browser's Copy Image, are sent as
+  looping GIFs. Browsers copy only a GIF's first frame. When that frame comes
+  with the address of an HTTPS `.gif` or `.webp` original, sending fetches the
+  original (up to 24 MiB) and Apple's encoder turns it into the small H.264 video
+  WhatsApp uses for GIFs. Stills, other addresses and failed fetches send the
+  copied picture as before.
   They stay in the composer until you send them or press Escape. Local videos
   include a small JPEG preview, dimensions and duration when Apple can decode them;
   metadata preparation runs on the bounded upload worker.

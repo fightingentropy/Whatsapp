@@ -18,6 +18,8 @@ pub mod util;
 #[path = "../../../src/voice.rs"]
 pub mod voice;
 
+#[path = "../../../src/gif_video.rs"]
+pub mod gif_video;
 #[path = "../../../src/video_metadata.rs"]
 pub mod video_metadata;
 

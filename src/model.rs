@@ -582,6 +582,8 @@ pub enum Action {
         width: usize,
         height: usize,
         rgba: Vec<u8>,
+        /// HTTPS address of the web GIF or WebP a browser copied this still from.
+        source: Option<String>,
     },
     /// Toggles a picker tab.
     TogglePicker(PickerTab),

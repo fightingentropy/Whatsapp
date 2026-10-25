@@ -209,6 +209,9 @@ pub enum Command {
         width: u32,
         height: u32,
         rgba: Vec<u8>,
+        /// HTTPS address of a copied web GIF or WebP whose still this is.
+        /// An animated original is sent as a GIF instead of the still.
+        source: Option<String>,
         caption: Option<String>,
         mentions: Vec<String>,
     },

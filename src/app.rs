@@ -308,6 +308,8 @@ pub enum Pending {
         width: usize,
         height: usize,
         rgba: std::sync::Arc<Vec<u8>>,
+        /// The web animation it stands for, sent instead when it animates.
+        source: Option<String>,
         texture: Option<egui::TextureHandle>,
     },
     File(PathBuf),
@@ -1688,6 +1690,7 @@ impl App {
                     width,
                     height,
                     rgba,
+                    source,
                     ..
                 } => {
                     self.backend.send(Command::SendImage {
@@ -1695,6 +1698,7 @@ impl App {
                         width: width as u32,
                         height: height as u32,
                         rgba: std::sync::Arc::try_unwrap(rgba).unwrap_or_else(|arc| (*arc).clone()),
+                        source,
                         caption: caption.take(),
                         mentions: std::mem::take(&mut mentions),
                     });
@@ -2291,6 +2295,7 @@ impl App {
                 width,
                 height,
                 rgba,
+                source,
             } => {
                 // Stage the files so the user can add a caption.
                 if self.open_chat.is_some() {
@@ -2298,6 +2303,7 @@ impl App {
                         width,
                         height,
                         rgba: std::sync::Arc::new(rgba),
+                        source,
                         texture: None,
                     });
                     self.focus_composer = true;
@@ -2929,10 +2935,18 @@ impl App {
             && self.open_chat.is_some()
             && let Some(attachment) = read_clipboard(paste)
         {
-            if matches!(attachment, Action::SendFiles(_)) {
-                // Finder supplies a filename as text as well as the file URL.
-                // Suppress it before TextEdit can make it a caption, including
-                // on platforms that stage the attachment on key-up instead.
+            if matches!(
+                attachment,
+                Action::SendFiles(_)
+                    | Action::PasteImage {
+                        source: Some(_),
+                        ..
+                    }
+            ) {
+                // Finder supplies a filename as text as well as the file URL,
+                // and Safari a copied image's address. Suppress it before
+                // TextEdit can make it a caption, including on platforms that
+                // stage the attachment on key-up instead.
                 ctx.input_mut(|input| {
                     input
                         .events
@@ -3132,18 +3146,23 @@ fn clipboard_attachment(include_image: bool) -> Option<Action> {
     let mut clipboard = arboard::Clipboard::new().ok()?;
     let files = clipboard.get().file_list().unwrap_or_default();
     attachment_from_clipboard(files, || {
-        include_image.then(|| clipboard.get_image().ok()).flatten()
+        let image = include_image
+            .then(|| clipboard.get_image().ok())
+            .flatten()?;
+        let html = clipboard.get().html().ok();
+        let text = clipboard.get_text().ok();
+        Some((image, copied_animation(html.as_deref(), text.as_deref())))
     })
 }
 
 fn attachment_from_clipboard(
     files: Vec<PathBuf>,
-    image: impl FnOnce() -> Option<arboard::ImageData<'static>>,
+    image: impl FnOnce() -> Option<(arboard::ImageData<'static>, Option<String>)>,
 ) -> Option<Action> {
     if !files.is_empty() {
         return Some(Action::SendFiles(files));
     }
-    let image = image()?;
+    let (image, source) = image()?;
     if image.width == 0 || image.height == 0 {
         return None;
     }
@@ -3151,7 +3170,83 @@ fn attachment_from_clipboard(
         width: image.width,
         height: image.height,
         rgba: image.bytes.into_owned(),
+        source,
     })
+}
+
+/// A browser's Copy Image puts only the first frame of a GIF on the clipboard.
+/// Chromium and Firefox name the original in a lone `<img>` tag, Safari as
+/// plain text. Only an HTTPS GIF or WebP qualifies; the worker fetches it when
+/// the picture is sent and keeps the still unless it animates.
+fn copied_animation(html: Option<&str>, text: Option<&str>) -> Option<String> {
+    html.and_then(lone_image_source)
+        .or_else(|| text.map(|text| text.trim().to_owned()))
+        .filter(|url| is_animation_url(url))
+}
+
+fn lone_image_source(html: &str) -> Option<String> {
+    // ASCII lowercasing keeps byte offsets, so indexes apply to both.
+    let lower = html.to_ascii_lowercase();
+    let mut images = lower.match_indices("<img");
+    let (start, _) = images.next()?;
+    if images.next().is_some() || markup_has_text(html) {
+        return None; // a copied selection of the page, not one image
+    }
+    let end = start + lower[start..].find('>')?;
+    let (tag, lower_tag) = (&html[start..end], &lower[start..end]);
+    let (at, _) = lower_tag
+        .match_indices("src=")
+        .find(|(at, _)| lower_tag[..*at].ends_with(char::is_whitespace))?;
+    let value = &tag[at + 4..];
+    let value = match value.chars().next()? {
+        quote @ ('"' | '\'') => value[1..].split(quote).next()?,
+        _ => value.split(char::is_whitespace).next()?,
+    };
+    Some(
+        value
+            .replace("&quot;", "\"")
+            .replace("&#39;", "'")
+            .replace("&#x27;", "'")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&amp;", "&"),
+    )
+}
+
+fn markup_has_text(html: &str) -> bool {
+    let mut in_tag = false;
+    html.chars().any(|character| match character {
+        '<' => {
+            in_tag = true;
+            false
+        }
+        '>' => {
+            in_tag = false;
+            false
+        }
+        _ => !in_tag && !character.is_whitespace(),
+    })
+}
+
+fn is_animation_url(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("https://") else {
+        return false;
+    };
+    if url.len() > 2048 || url.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return false;
+    }
+    let address = rest.split(['?', '#']).next().unwrap_or(rest);
+    let Some((host, path)) = address.split_once('/') else {
+        return false;
+    };
+    let path = path.to_ascii_lowercase();
+    !host.is_empty() && (path.ends_with(".gif") || path.ends_with(".webp"))
+}
+
+/// Whether a staged web picture is labelled as a GIF; WebP is often still.
+pub fn is_gif_source(source: &str) -> bool {
+    let address = source.split(['?', '#']).next().unwrap_or(source);
+    address.to_ascii_lowercase().ends_with(".gif")
 }
 
 impl Delivery {
@@ -3213,16 +3308,105 @@ mod tests {
     #[test]
     fn clipboard_screenshot_fallback_preserves_pixels() {
         let attachment = attachment_from_clipboard(Vec::new(), || {
-            Some(arboard::ImageData {
-                width: 2,
-                height: 1,
-                bytes: std::borrow::Cow::Owned(vec![200; 8]),
-            })
+            Some((
+                arboard::ImageData {
+                    width: 2,
+                    height: 1,
+                    bytes: std::borrow::Cow::Owned(vec![200; 8]),
+                },
+                None,
+            ))
         });
         assert!(
-            matches!(attachment, Some(Action::PasteImage { width: 2, height: 1, rgba }) if rgba == vec![200; 8])
+            matches!(attachment, Some(Action::PasteImage { width: 2, height: 1, rgba, source: None }) if rgba == vec![200; 8])
         );
         assert!(attachment_from_clipboard(Vec::new(), || None).is_none());
+    }
+
+    #[test]
+    fn a_browser_copied_gif_keeps_the_address_of_its_original() {
+        let tenor = "https://media1.tenor.com/m/ln5FZ0SixssAAAAd/corner-sit.gif";
+        // Chromium: a lone tag with an escaped address and alt text.
+        let chrome = "<meta charset='utf-8'><img src=\"https://media.example/a.gif?w=1&amp;h=2\" alt=\"a &quot;deer&quot; &gt; corner\"/>";
+        assert_eq!(
+            copied_animation(Some(chrome), None).as_deref(),
+            Some("https://media.example/a.gif?w=1&h=2")
+        );
+        let firefox = format!(
+            "<html><body>\n<!--StartFragment--><IMG alt='x' SRC='{tenor}'><!--EndFragment-->\n</body></html>"
+        );
+        assert_eq!(
+            copied_animation(Some(&firefox), None).as_deref(),
+            Some(tenor)
+        );
+        // Safari names the original as plain text.
+        assert_eq!(
+            copied_animation(None, Some(&format!(" {tenor}\n"))).as_deref(),
+            Some(tenor)
+        );
+        assert_eq!(
+            copied_animation(None, Some("https://i.example/Loop.WEBP#t")).as_deref(),
+            Some("https://i.example/Loop.WEBP#t")
+        );
+    }
+
+    #[test]
+    fn only_a_lone_https_gif_or_webp_counts_as_a_copied_animation() {
+        let image = |src: &str| format!("<meta charset='utf-8'><img src=\"{src}\"/>");
+        for rejected in [
+            image("https://media.example/photo.png"),
+            image("http://media.example/loop.gif"),
+            image("data:image/gif;base64,R0lGODlh"),
+            image("https:///loop.gif"),
+            image("https://media.example/loop.gif.html"),
+            // A copied selection of the page, not one image.
+            format!("<p>Look</p>{}", image("https://media.example/loop.gif")),
+            format!(
+                "{}{}",
+                image("https://media.example/a.gif"),
+                image("https://media.example/b.gif")
+            ),
+            "<img data-src=\"https://media.example/loop.gif\">".to_owned(),
+        ] {
+            assert_eq!(copied_animation(Some(&rejected), None), None, "{rejected}");
+        }
+        assert_eq!(
+            copied_animation(None, Some("see https://x.example/a.gif")),
+            None
+        );
+        assert_eq!(copied_animation(None, None), None);
+        assert!(is_gif_source("https://x.example/A.GIF?size=2"));
+        assert!(!is_gif_source("https://x.example/a.webp"));
+    }
+
+    #[test]
+    fn a_copied_gif_address_never_becomes_the_caption() {
+        let mut app = app();
+        app.open_chat = Some("fixture@lid".into());
+        let ctx = egui::Context::default();
+        let source = "https://media.example/loop.gif";
+        let remaining = paste_frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::Paste(source.into()), paste_release()],
+            |_| {
+                Some(Action::PasteImage {
+                    width: 2,
+                    height: 1,
+                    rgba: vec![200; 8],
+                    source: Some(source.into()),
+                })
+            },
+        );
+        assert!(
+            !remaining
+                .iter()
+                .any(|event| matches!(event, egui::Event::Paste(_)))
+        );
+        assert!(matches!(
+            app.pending.as_slice(),
+            [Pending::Picture { source: Some(found), .. }] if found == source
+        ));
     }
 
     #[cfg(target_os = "macos")]
@@ -3236,6 +3420,7 @@ mod tests {
                 width: 2,
                 height: 1,
                 rgba: vec![200; 8],
+                source: None,
             })
         };
         // The native menu handles Cmd+V first. Winit forwards the physical

@@ -14,6 +14,7 @@ pub mod background;
 #[cfg(any(test, feature = "demo"))]
 pub mod demo;
 pub mod emoji;
+pub mod gif_video;
 pub mod image_preview;
 #[cfg(target_os = "macos")]
 pub mod macos;

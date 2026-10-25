@@ -174,6 +174,12 @@ and archive. This is an explicit additional target; keep the Mac build intact.
   `media/video-posters` is keyed by source path, size and modification time.
   Eviction/forgetting invalidates pending jobs; never prune original attachments.
   Keep the transmitted 96px thumbnail separate and show it until a local still is ready.
+- `src/gif_video.rs` turns an animated GIF/WebP into WhatsApp's GIF video (H.264
+  MP4, gif_playback) with ImageIO and AVAssetWriter in `apple.m`, on the upload
+  worker within the shared budget. Stills return false and keep their old path.
+  A browser's Copy Image leaves only the first frame; the paste keeps the lone
+  `<img src>` (Safari: plain text) when it is an HTTPS `.gif`/`.webp`, and the
+  worker fetches it only on send, bounded to 24 MiB. Test with synthetic GIFs.
 - Message bodies paint through `markup::paint_selectable` and single lines
   through `widgets::selectable_rich_text`: both hand the galley to
   `egui::text_selection::LabelSelectionState` (which paints it) and only
