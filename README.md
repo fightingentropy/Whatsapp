@@ -103,7 +103,8 @@ See [PERFORMANCE.md](PERFORMANCE.md) for measurements, remaining costs and valid
   or by dragging the list to reveal it. The list follows the pull with resistance,
   then smoothly settles open when pulled far enough or slides back after a short
   pull. Scrolling away hides it again; returning to the top keeps it hidden until
-  another pull. Search chats, saved messages, and contacts. Hover a cut-short or
+  another pull. Search chats, saved messages, and contacts; your own chat also
+  answers to "me" and your profile name. Hover a cut-short or
   multiline last-message preview to see more of it, including the sender in groups
   (up to twelve lines). Unsent text drafts appear in the chat list; desktop drafts
   last for the current app session.

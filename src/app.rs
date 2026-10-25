@@ -891,6 +891,7 @@ impl App {
             .filter(|(_, chat)| {
                 needle.is_empty()
                     || chat.name.to_lowercase().contains(&needle)
+                    || self.own_chat_matches(chat, &needle)
                     || chat.phone().is_some_and(|phone| phone.contains(&needle))
                     || chat
                         .last
@@ -906,6 +907,14 @@ impl App {
                 .then(b.last_activity.cmp(&a.last_activity))
         });
         chats
+    }
+
+    /// Our own chat is titled "You"; searching "me" or our name finds it too.
+    fn own_chat_matches(&self, chat: &Chat, needle: &str) -> bool {
+        self.me.as_deref() == Some(chat.id.as_str())
+            && std::iter::once("me")
+                .chain(self.me_name.as_deref())
+                .any(|name| name.to_lowercase().contains(needle))
     }
 
     /// Matching individual contacts without an existing chat, sorted by name.
@@ -4128,6 +4137,33 @@ mod tests {
             vec![2, 0, 1],
             "equal timestamps keep their order"
         );
+    }
+
+    #[test]
+    fn our_own_chat_is_found_as_me_and_by_our_name() {
+        let mut app = app();
+        app.me = Some("15550001111@s.whatsapp.net".into());
+        app.me_name = Some("Erlin".into());
+        app.chats = vec![
+            Chat::new("15550001111@s.whatsapp.net".into(), "You".into()),
+            Chat::new("1@s.whatsapp.net".into(), "Meti".into()),
+            Chat::new("2@s.whatsapp.net".into(), "Bob".into()),
+        ];
+        let found = |app: &mut App, query: &str| {
+            app.search = query.into();
+            app.visible_chats()
+                .iter()
+                .map(|chat| chat.name.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(found(&mut app, "you"), vec!["You"]);
+        assert_eq!(found(&mut app, " ME "), vec!["You", "Meti"]);
+        assert_eq!(found(&mut app, "erl"), vec!["You"]);
+        assert_eq!(found(&mut app, "bob"), vec!["Bob"]);
+        // Only our own chat answers to "me" or our name.
+        app.me = Some("9@s.whatsapp.net".into());
+        assert_eq!(found(&mut app, "erlin"), Vec::<String>::new());
+        assert_eq!(found(&mut app, "me"), vec!["Meti"]);
     }
 
     #[test]
