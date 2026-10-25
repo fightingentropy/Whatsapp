@@ -136,7 +136,6 @@ fn hsl(hue: f32, saturation: f32, lightness: f32) -> Color32 {
 pub const RADIUS: u8 = 8;
 pub const RADIUS_SMALL: u8 = 4;
 pub const ROW_HEIGHT: f32 = 68.0;
-pub const TOP_BAR_HEIGHT: f32 = 60.0;
 
 const INTER_MEDIUM: &str = "inter-medium";
 const INTER_SEMIBOLD: &str = "inter-semibold";
@@ -339,47 +338,33 @@ pub enum Icon {
     Calendar,
     Check,
     CheckCheck,
-    ChevronDown,
-    ChevronLeft,
-    ChevronRight,
-    ChevronUp,
     CircleAlert,
     CircleCheck,
-    CircleX,
     Clock,
     Contact,
     Copy,
     Download,
     Ellipsis,
     ExternalLink,
-    Eye,
     EyeOff,
     FileText,
     Forward,
     Gif,
-    Image,
     Info,
     Keyboard,
-    Lock,
     LogOut,
     MapPin,
-    Maximize,
     MessageCircle,
     Mic,
-    Minimize,
     Minus,
-    Monitor,
-    Moon,
     PanelLeft,
     Paperclip,
     Pause,
     Pencil,
-    Phone,
     Pin,
     PinOff,
     Play,
     Plus,
-    QrCode,
     Refresh,
     Reply,
     Search,
@@ -389,7 +374,6 @@ pub enum Icon {
     Smile,
     SquarePen,
     Sticker,
-    Sun,
     Trash,
     User,
     Users,
@@ -410,47 +394,33 @@ const ICONS: &[(Icon, &str, &[u8])] = icons! {
     Calendar => "calendar",
     Check => "check",
     CheckCheck => "check-check",
-    ChevronDown => "chevron-down",
-    ChevronLeft => "chevron-left",
-    ChevronRight => "chevron-right",
-    ChevronUp => "chevron-up",
     CircleAlert => "circle-alert",
     CircleCheck => "circle-check",
-    CircleX => "circle-x",
     Clock => "clock",
     Contact => "contact",
     Copy => "copy",
     Download => "download",
     Ellipsis => "ellipsis",
     ExternalLink => "external-link",
-    Eye => "eye",
     EyeOff => "eye-off",
     FileText => "file-text",
     Forward => "forward",
     Gif => "gif",
-    Image => "image",
     Info => "info",
     Keyboard => "keyboard",
-    Lock => "lock",
     LogOut => "log-out",
     MapPin => "map-pin",
-    Maximize => "maximize-2",
     MessageCircle => "message-circle",
     Mic => "mic",
-    Minimize => "minimize-2",
     Minus => "minus",
-    Monitor => "monitor",
-    Moon => "moon",
     PanelLeft => "panel-left",
     Paperclip => "paperclip",
     Pause => "pause",
     Pencil => "pencil",
-    Phone => "phone",
     Pin => "pin",
     PinOff => "pin-off",
     Play => "play",
     Plus => "plus",
-    QrCode => "qr-code",
     Refresh => "refresh-cw",
     Reply => "reply",
     Search => "search",
@@ -460,7 +430,6 @@ const ICONS: &[(Icon, &str, &[u8])] = icons! {
     Smile => "smile",
     SquarePen => "square-pen",
     Sticker => "sticker",
-    Sun => "sun",
     Trash => "trash-2",
     User => "user",
     Users => "users",
@@ -745,25 +714,6 @@ pub fn link(
             .hline(rect.x_range(), rect.bottom() - 1.0, Stroke::new(1.0, color));
     }
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
-}
-
-pub fn section_title(ui: &mut egui::Ui, palette: &Palette, label: &str) -> Response {
-    text(ui, label, bold(17.0), palette.text)
-}
-
-pub fn subtle(ui: &mut egui::Ui, palette: &Palette, label: &str) -> Response {
-    text(ui, label, regular(13.0), palette.secondary)
-}
-
-/// Mixes two colors; `t = 1` returns `b`.
-pub fn blend(a: Color32, b: Color32, t: f32) -> Color32 {
-    let mix = |x: u8, y: u8| (f32::from(x) + (f32::from(y) - f32::from(x)) * t).round() as u8;
-    Color32::from_rgba_unmultiplied(
-        mix(a.r(), b.r()),
-        mix(a.g(), b.g()),
-        mix(a.b(), b.b()),
-        mix(a.a(), b.a()),
-    )
 }
 
 /// Native macOS layout, also selectable in offline layout previews.

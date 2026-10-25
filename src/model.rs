@@ -500,8 +500,6 @@ pub enum Action {
     },
     MarkRead(ChatId),
     LoadOlder(ChatId),
-    /// Requests messages older than the local archive.
-    FetchOlder(ChatId),
     Download {
         chat: ChatId,
         message: String,
