@@ -1,0 +1,7 @@
+{
+  "type": "xcode",
+  "app": "ios",
+  "generate": "xcodegen generate --spec project.yml",
+  "project": "Whatsapp.xcodeproj",
+  "scheme": "Whatsapp"
+}

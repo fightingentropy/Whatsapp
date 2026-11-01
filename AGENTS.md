@@ -372,3 +372,7 @@ A release is not finished when the tag is pushed. Do these in order:
   compiled.
 - Never log message contents, phone numbers, keys, or QR payloads at a
   level that ships. The log file is meant to be attached to bug reports.
+
+## iPhone builds
+
+- Device builds run on the Mac mini: `mini-build ios` (from `~/Developer/mini-build`), run inside this repo. It syncs the repo to `~/Builds/whatsapp` on the mini, generates the Xcode project from `ios/project.yml`, builds the Rust core and a signed Release app there, and installs it on the paired iPhone. Don't build device apps on this Mac; the `xcodebuild` simulator commands in `ios/README.md` stay for the simulator and tests.
