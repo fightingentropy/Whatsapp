@@ -8,7 +8,7 @@ use crate::app::{App, Conversation, Presence};
 use crate::backend::LinkStatus;
 use crate::model::{
     Chat, Contact, Content, Delivery, Dialog, LinkPreview, Media, MentionRef, Message, Page,
-    Quoted, Reaction,
+    Quoted, Reaction, ViewOnce,
 };
 use crate::settings::ThemeChoice;
 
@@ -672,6 +672,37 @@ pub fn populate(app: &mut App) {
             },
         ),
         message(ada, "ada-deleted", false, older + 60 * 25, Content::Revoked),
+        message(
+            ada,
+            "ada-view-once",
+            false,
+            older + 60 * 26,
+            Content::ViewOnce {
+                what: ViewOnce::Photo,
+                opened: true,
+            },
+        ),
+        {
+            let mut row = message(
+                ada,
+                "me-view-once",
+                true,
+                older + 60 * 27,
+                Content::ViewOnce {
+                    what: ViewOnce::Video,
+                    opened: false,
+                },
+            );
+            row.quoted = Some(Quoted {
+                id: "ada-view-once".into(),
+                sender: ada.into(),
+                sender_name: Some("Ada Lovelace".into()),
+                summary: ViewOnce::Photo.label().into(),
+                mentions: Vec::new(),
+            });
+            row.status = Delivery::Delivered;
+            row
+        },
     ];
     let conversation = app.conversations.get_mut(ada).expect("sample chat");
     conversation.messages.splice(0..0, extra);
@@ -1346,6 +1377,11 @@ mod tests {
             ada.messages
                 .iter()
                 .any(|m| matches!(m.content, Content::Revoked))
+        );
+        assert!(
+            ada.messages
+                .iter()
+                .any(|m| matches!(m.content, Content::ViewOnce { opened: true, .. }))
         );
         assert!(ada.messages.iter().any(|m| m.quoted.is_some()));
     }

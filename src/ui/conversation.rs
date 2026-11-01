@@ -1828,6 +1828,7 @@ fn transcript_row(
         Content::Location { .. } => Some("[location]".to_owned()),
         Content::Contact { display_name, .. } => Some(format!("[contact: {display_name}]")),
         Content::Poll { question, .. } => Some(format!("[poll: {question}]")),
+        Content::ViewOnce { what, .. } => Some(format!("[{}]", what.label().to_lowercase())),
         _ => None,
     };
     let reactions = if message.reactions.is_empty() {
@@ -2369,7 +2370,7 @@ fn context_menu(ui: &mut egui::Ui, view: &View<'_>, message: &Message, actions: 
     }
     if !matches!(
         message.content,
-        Content::Revoked | Content::Unsupported { .. }
+        Content::Revoked | Content::ViewOnce { .. } | Content::Unsupported { .. }
     ) && widgets::menu_item(ui, &palette, Some(Icon::Forward), "Forward")
     {
         actions.push(Action::ShowDialog(Dialog::Forward {
@@ -2726,6 +2727,28 @@ fn content(
                         "This message was deleted",
                         theme::regular(13.5),
                         palette.secondary,
+                    );
+                },
+            );
+            None
+        }
+        Content::ViewOnce { what, opened } => {
+            // The phone's marks: a ring around a one, dashed once opened.
+            let (icon, label) = if *opened {
+                (Icon::CircleDashed, egui::RichText::new("Opened").italics())
+            } else {
+                (Icon::ViewOnce, egui::RichText::new(what.label()))
+            };
+            mirrored_row(
+                ui,
+                own,
+                |ui| {
+                    theme::icon(ui, icon, 14.0, palette.dim);
+                },
+                |ui| {
+                    ui.add(
+                        egui::Label::new(label.font(theme::regular(13.5)).color(palette.secondary))
+                            .selectable(false),
                     );
                 },
             );

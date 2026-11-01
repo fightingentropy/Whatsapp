@@ -243,6 +243,14 @@ pub enum Content {
     },
     /// "This message was deleted."
     Revoked,
+    /// A view-once message. WhatsApp shares it only with the phone, so this
+    /// keeps what it was and whether it has been opened, never the media.
+    #[serde(rename = "view_once")]
+    ViewOnce {
+        what: ViewOnce,
+        #[serde(default)]
+        opened: bool,
+    },
     /// Unsupported content with a user-facing description.
     Unsupported {
         what: String,
@@ -311,6 +319,8 @@ impl Content {
             Self::Contact { display_name, .. } => format!("Contact: {display_name}"),
             Self::Poll { question, .. } => format!("Poll: {question}"),
             Self::Revoked => "This message was deleted".to_owned(),
+            Self::ViewOnce { opened: true, .. } => "Opened".to_owned(),
+            Self::ViewOnce { what, .. } => what.label().to_owned(),
             Self::Unsupported { what } => format!("Unsupported message ({what})"),
         }
     }
@@ -334,6 +344,28 @@ impl Content {
             | Self::Document { media, .. }
             | Self::Sticker { media, .. } => Some(media),
             _ => None,
+        }
+    }
+}
+
+/// What a view-once message carried, when the protocol says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ViewOnce {
+    /// The phone withheld it from this device without saying what it was.
+    Message,
+    Photo,
+    Video,
+    Voice,
+}
+
+impl ViewOnce {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Message => "View once message",
+            Self::Photo => "View once photo",
+            Self::Video => "View once video",
+            Self::Voice => "View once voice message",
         }
     }
 }

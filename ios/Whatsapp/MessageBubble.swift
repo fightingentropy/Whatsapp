@@ -211,7 +211,7 @@ struct MessageBubble: View {
         }
         if !message.text.isEmpty { Button { UIPasteboard.general.string = MessageText.plain(message.text, mentions: mentions) } label: { Label("Copy text", systemImage: "doc.on.doc") } }
         Button(action: select) { Label("Select messages", systemImage: "checkmark.circle") }
-        if message.kind != "revoked" && message.content?.kind != "unsupported" {
+        if message.kind != "revoked" && message.content?.kind != "unsupported" && message.content?.kind != "view_once" {
             Button { forwardPresented = true } label: { Label("Forward", systemImage: "arrowshape.turn.up.right") }
         }
         if message.canEdit && store.canPost { Button { store.editing = message } label: { Label("Edit", systemImage: "pencil") } }

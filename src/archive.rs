@@ -584,6 +584,10 @@ impl Archive {
                      AND json_extract(excluded.content, '$.media.path') IS NULL
                      AND json_extract(messages.content, '$.media.path') IS NOT NULL
                     THEN json_set(excluded.content, '$.media.path', json_extract(messages.content, '$.media.path'))
+                    WHEN json_extract(excluded.content, '$.kind') = 'view_once'
+                     AND json_extract(messages.content, '$.kind') = 'view_once'
+                     AND json_extract(messages.content, '$.opened')
+                    THEN json_set(excluded.content, '$.opened', json('true'))
                     ELSE excluded.content END,
                 status = CASE WHEN excluded.status != 6 AND messages.status > excluded.status
                     THEN messages.status ELSE excluded.status END,

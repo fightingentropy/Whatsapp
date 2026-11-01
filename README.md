@@ -133,6 +133,10 @@ See [PERFORMANCE.md](PERFORMANCE.md) for measurements, remaining costs and valid
   list and individual receipts are saved locally; later membership changes
   do not change that list. If the original recipients are unknown, Whatsapp
   waits for the phone's aggregate status instead of guessing from one reader.
+  View-once photos, videos and voice messages show as "View once photo" and
+  the like, then "Opened" once your phone opens them (or, for your own, once the
+  recipient does). WhatsApp gives their media only to the phone, so they open
+  there and cannot be forwarded.
 - **WhatsApp formatting.** Bold, italic, strikethrough, code, lists, quotes,
   mentions, and link previews are supported. Clickable links preserve balanced
   parentheses and brackets in their URLs. Emoji use

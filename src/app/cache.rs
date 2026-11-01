@@ -178,7 +178,7 @@ fn message_heap_bytes(message: &Message) -> usize {
                 + options.capacity() * size_of::<String>()
                 + options.iter().map(String::capacity).sum::<usize>()
         }
-        Content::Revoked => 0,
+        Content::Revoked | Content::ViewOnce { .. } => 0,
         Content::Unsupported { what } => what.capacity(),
     };
     message.id.capacity()

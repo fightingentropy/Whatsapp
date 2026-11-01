@@ -52,12 +52,15 @@ use super::{Command, Event, LinkStatus, Waker};
 use crate::archive::Archive;
 use crate::model::{
     Chat, ChatId, ChatKind, Contact, Content, Delivery, Gif, GifError, LinkPreview, Media,
-    MentionRef, Message, Quoted, Reaction,
+    MentionRef, Message, Quoted, Reaction, ViewOnce,
 };
 use crate::paths::AppDirs;
 
 /// Delay after the last history chunk before sync is complete.
 const SYNC_QUIET: Duration = Duration::from_secs(20);
+
+/// Stand-in for an incoming message that could not be decrypted yet.
+const AWAITED: &str = "Waiting for this message. Open WhatsApp on your phone";
 /// Profile-picture cache lifetime.
 const AVATAR_FRESH: Duration = Duration::from_secs(24 * 60 * 60);
 /// Phone history-request timeout.
@@ -571,7 +574,7 @@ impl Worker {
     }
 
     fn backfill(&mut self) {
-        const VERSION: &str = "2";
+        const VERSION: &str = "3";
         if self.archive.meta("derived").ok().flatten().as_deref() == Some(VERSION) {
             return;
         }
@@ -589,7 +592,10 @@ impl Worker {
                 continue;
             };
             let base = message.get_base_message();
-            let Some(mut content) = classify(base) else {
+            if self.identify_view_once_quote(&chat, base) {
+                updated += 1;
+            }
+            let Some(mut content) = classify(&message) else {
                 continue;
             };
             let Ok(Some(existing)) = self.archive.message(&chat, &id) else {
@@ -600,6 +606,10 @@ impl Worker {
             }
             if let (Some(new), Some(old)) = (content.media_mut(), existing.content.media()) {
                 new.path = old.path.clone();
+            }
+            if let Content::ViewOnce { opened, .. } = &mut content {
+                *opened = matches!(existing.content, Content::ViewOnce { opened: true, .. })
+                    || (existing.from_me && existing.status == Delivery::Played);
             }
             let mentions = self.mentions_of(&mentioned_of(base));
             let thumbnail = thumbnail_of(base);
@@ -626,6 +636,31 @@ impl Worker {
             );
             self.emit_chats();
         }
+    }
+
+    /// Older builds filed a view-once stub as a message still on its way. A
+    /// reply that quotes it as view-once identifies it.
+    fn identify_view_once_quote(&mut self, chat: &ChatId, base: &wa::Message) -> bool {
+        let Some(context) = context_of(base) else {
+            return false;
+        };
+        let Some(content @ Content::ViewOnce { .. }) =
+            context.quoted_message.as_option().and_then(classify)
+        else {
+            return false;
+        };
+        let Some(id) = context.stanza_id.as_deref() else {
+            return false;
+        };
+        let Ok(Some(quoted)) = self.archive.message(chat, id) else {
+            return false;
+        };
+        if !matches!(&quoted.content, Content::Unsupported { what } if what == AWAITED) {
+            return false;
+        }
+        self.archive
+            .set_content(chat, id, &content, quoted.edited)
+            .unwrap_or(false)
     }
 
     async fn start_bot(&mut self) {
@@ -1203,7 +1238,10 @@ impl Worker {
                 }
             }
             E::UndecryptableMessage(undecryptable) => {
-                self.ingest_undecryptable(&undecryptable.info);
+                self.ingest_undecryptable(
+                    &undecryptable.info,
+                    undecryptable.unavailable_type == wa_events::UnavailableType::ViewOnce,
+                );
             }
             E::Receipt(receipt) => self.on_receipt(receipt),
             E::ChatPresence(presence) => {
@@ -1447,6 +1485,10 @@ impl Worker {
                     match self.archive.message(&chat, id) {
                         Ok(Some(message)) if !message.from_me => {
                             let _ = self.archive.mark_read_to(&chat, id);
+                            // The phone plays a view-once message by opening it.
+                            if matches!(receipt.r#type, ReceiptType::PlayedSelf) {
+                                self.open_view_once(message);
+                            }
                         }
                         Ok(None) if !receipt.source.chat.is_status_broadcast() => {
                             self.early.wait_read(&chat, id);
@@ -1481,7 +1523,12 @@ impl Worker {
                     .archive
                     .group_receipt(&chat, id, &recipient, status, at)
                 {
-                    Ok(true) => self.emit_message(&chat, id),
+                    Ok(true) => {
+                        self.emit_message(&chat, id);
+                        if let Ok(Some(message)) = self.archive.message(&chat, id) {
+                            self.open_view_once(message);
+                        }
+                    }
                     Ok(false) => {}
                     Err(error) => log::warn!("could not file a group receipt: {error}"),
                 }
@@ -1502,6 +1549,9 @@ impl Worker {
             }
             if let Ok(Some(message)) = self.archive.message(&chat, id) {
                 newest = newest.max(message.timestamp);
+                if message.from_me {
+                    self.open_view_once(message);
+                }
             }
         }
         log::debug!(
@@ -1518,6 +1568,28 @@ impl Worker {
             }
         }
         self.emit_chat(&chat);
+    }
+
+    /// Shows a played view-once message as opened: ours once every recipient
+    /// played it, another's when our phone reports playing it.
+    fn open_view_once(&mut self, mut message: Message) {
+        if message.from_me && message.status != Delivery::Played {
+            return;
+        }
+        let Content::ViewOnce { opened, .. } = &mut message.content else {
+            return;
+        };
+        if *opened {
+            return;
+        }
+        *opened = true;
+        match self
+            .archive
+            .set_content(&message.chat, &message.id, &message.content, message.edited)
+        {
+            Ok(_) => self.emit_message(&message.chat, &message.id),
+            Err(error) => log::warn!("could not mark a view-once message opened: {error}"),
+        }
     }
 
     /// Returns raw mention tokens and canonical ids.
@@ -1576,7 +1648,7 @@ impl Worker {
                 }
                 Some(Type::MESSAGE_EDIT) => {
                     if let Some(edited) = protocol.edited_message.as_option()
-                        && let Some(mut content) = classify(edited.get_base_message())
+                        && let Some(mut content) = classify(edited)
                     {
                         // Preserve downloaded media when updating a caption.
                         if let Ok(Some(existing)) = self.archive.message(&chat, &target)
@@ -1617,7 +1689,7 @@ impl Worker {
             self.file_reaction(reaction);
             return;
         }
-        let Some(content) = classify(base) else {
+        let Some(content) = classify(message) else {
             return;
         };
         let quoted = self.quoted_of(base);
@@ -1651,9 +1723,12 @@ impl Worker {
         self.store_message(row, Some(message.encode_to_vec()), push_name.as_deref());
     }
 
-    fn ingest_undecryptable(&mut self, info: &MessageInfo) {
+    /// Files a stand-in for a message this device cannot read. A view-once
+    /// message never reaches linked devices, ours included, so its stub is final.
+    fn ingest_undecryptable(&mut self, info: &MessageInfo, view_once: bool) {
         self.learn_source(&info.source);
-        if info.source.chat.is_status_broadcast() || info.source.is_from_me {
+        let from_me = info.source.is_from_me;
+        if info.source.chat.is_status_broadcast() || (from_me && !view_once) {
             return;
         }
         let chat = self.canonical(&info.source.chat);
@@ -1666,18 +1741,33 @@ impl Worker {
         {
             return;
         }
-        let push_name = (!info.push_name.is_empty()).then(|| info.push_name.clone());
+        let push_name = (!from_me && !info.push_name.is_empty()).then(|| info.push_name.clone());
         let row = Message {
             id: info.id.to_string(),
             chat,
-            sender: self.canonical(&info.source.sender),
-            sender_name: push_name.as_ref().map(ToString::to_string),
-            from_me: false,
-            timestamp: info.timestamp.timestamp(),
-            content: Content::Unsupported {
-                what: "Waiting for this message. Open WhatsApp on your phone".to_owned(),
+            sender: if from_me {
+                self.me()
+            } else {
+                self.canonical(&info.source.sender)
             },
-            status: Delivery::None,
+            sender_name: push_name.as_ref().map(ToString::to_string),
+            from_me,
+            timestamp: info.timestamp.timestamp(),
+            content: if view_once {
+                Content::ViewOnce {
+                    what: ViewOnce::Message,
+                    opened: false,
+                }
+            } else {
+                Content::Unsupported {
+                    what: AWAITED.to_owned(),
+                }
+            },
+            status: if from_me {
+                Delivery::Sent
+            } else {
+                Delivery::None
+            },
             delivered_at: None,
             read_at: None,
             quoted: None,
@@ -1804,7 +1894,7 @@ impl Worker {
             .map(|quoted| {
                 let base = quoted.get_base_message();
                 (
-                    classify(base)
+                    classify(quoted)
                         .map(|content| content.summary())
                         .unwrap_or_default(),
                     self.mentions_of(&mentioned_of(base)),
@@ -3077,7 +3167,7 @@ impl Worker {
         };
         if matches!(
             source.content,
-            Content::Revoked | Content::Unsupported { .. }
+            Content::Revoked | Content::ViewOnce { .. } | Content::Unsupported { .. }
         ) {
             self.emit(Event::Error("This message cannot be forwarded".to_owned()));
             return;
@@ -4864,7 +4954,24 @@ fn thumbnail_of(base: &wa::Message) -> Option<Vec<u8>> {
 }
 
 /// Converts a protocol message to visible content, or `None` for internal traffic.
-fn classify(base: &wa::Message) -> Option<Content> {
+fn classify(message: &wa::Message) -> Option<Content> {
+    let base = message.get_base_message();
+    // Only the phone may open view-once media, so its keys are never used here.
+    if message.is_view_once() {
+        let what = if base.image_message.is_set() {
+            ViewOnce::Photo
+        } else if base.video_message.is_set() || base.ptv_message.is_set() {
+            ViewOnce::Video
+        } else if base.audio_message.is_set() {
+            ViewOnce::Voice
+        } else {
+            ViewOnce::Message
+        };
+        return Some(Content::ViewOnce {
+            what,
+            opened: false,
+        });
+    }
     if let Some(text) = base.text_content() {
         let preview = base.extended_text_message.as_option().and_then(|extended| {
             let title = non_empty(&extended.title);
@@ -5739,7 +5846,7 @@ fn parse_conversation(conversation: wa::Conversation) -> ParsedChat {
         if base.reaction_message.is_set() {
             continue;
         }
-        let Some(content) = classify(base) else {
+        let Some(mut content) = classify(message) else {
             continue;
         };
         let sender = info
@@ -5749,6 +5856,10 @@ fn parse_conversation(conversation: wa::Conversation) -> ParsedChat {
             .filter(|sender| !sender.is_empty())
             .or_else(|| key.remote_jid.clone());
         use wa::web_message_info::Status;
+        // The phone files a view-once message as played once it was opened.
+        if let Content::ViewOnce { opened, .. } = &mut content {
+            *opened = matches!(info.status, Some(Status::PLAYED));
+        }
         let mut status = if from_me {
             match info.status {
                 Some(Status::READ) => Delivery::Read,
@@ -5793,7 +5904,7 @@ fn parse_conversation(conversation: wa::Conversation) -> ParsedChat {
                 summary: context
                     .quoted_message
                     .as_option()
-                    .and_then(|quoted| classify(quoted.get_base_message()))
+                    .and_then(classify)
                     .map(|content| content.summary())
                     .unwrap_or_default(),
             })
@@ -5962,6 +6073,56 @@ mod tests {
         }
         assert_eq!(thumbnail_of(&image), Some(vec![0xff, 0xd8]));
         assert_eq!(classify(&wa::Message::default()), None);
+    }
+
+    #[test]
+    fn view_once_media_is_classified_as_view_once_wherever_it_appears() {
+        let view_once = |what| {
+            Some(Content::ViewOnce {
+                what,
+                opened: false,
+            })
+        };
+        let flagged = wa::Message {
+            image_message: MessageField::some(wa::message::ImageMessage {
+                mimetype: Some("image/jpeg".into()),
+                view_once: Some(true),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(classify(&flagged), view_once(ViewOnce::Photo));
+        let wrapped = wa::Message {
+            view_once_message_v2: MessageField::some(wa::message::FutureProofMessage {
+                message: MessageField::some(wa::Message {
+                    video_message: MessageField::some(Default::default()),
+                    ..Default::default()
+                }),
+            }),
+            ..Default::default()
+        };
+        assert_eq!(classify(&wrapped), view_once(ViewOnce::Video));
+        let voice = wa::Message {
+            audio_message: MessageField::some(wa::message::AudioMessage {
+                ptt: Some(true),
+                view_once: Some(true),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(classify(&voice), view_once(ViewOnce::Voice));
+        // A reply carries the quoted view-once photo, never its media.
+        let (worker, _events, _inbox, _wa) = super::receipt_tests::worker();
+        let reply = wa::Message::text_with_context(
+            "Duh",
+            wa::ContextInfo {
+                stanza_id: Some("opened".into()),
+                quoted_message: MessageField::some(flagged),
+                ..Default::default()
+            },
+        );
+        let quoted = worker.quoted_of(reply.get_base_message()).expect("quote");
+        assert_eq!(quoted.summary, "View once photo");
     }
 
     #[test]
@@ -7510,5 +7671,190 @@ mod receipt_tests {
         };
         assert_eq!(status("B2"), Delivery::Delivered);
         assert_eq!(status("B1"), Delivery::Sent);
+    }
+
+    fn view_once_info(id: &str, from_me: bool) -> MessageInfo {
+        MessageInfo {
+            source: MessageSource {
+                chat: PEER.parse().unwrap(),
+                sender: if from_me { ME } else { PEER }.parse().unwrap(),
+                is_from_me: from_me,
+                ..Default::default()
+            },
+            id: id.into(),
+            ..Default::default()
+        }
+    }
+
+    fn content_of(worker: &Worker, id: &str) -> Option<Content> {
+        Some(worker.archive.message(PEER, id).unwrap()?.content)
+    }
+
+    #[test]
+    fn view_once_stubs_are_filed_and_opened_by_played_receipts() {
+        let (mut worker, _events, _inbox, _wa) = worker();
+        let unopened = Some(Content::ViewOnce {
+            what: ViewOnce::Message,
+            opened: false,
+        });
+        let opened = Some(Content::ViewOnce {
+            what: ViewOnce::Message,
+            opened: true,
+        });
+        worker.ingest_undecryptable(&view_once_info("theirs", false), true);
+        worker.ingest_undecryptable(&view_once_info("unread", false), true);
+        worker.ingest_undecryptable(&view_once_info("mine", true), true);
+        worker.ingest_undecryptable(&view_once_info("failed", false), false);
+        worker.ingest_undecryptable(&view_once_info("own failure", true), false);
+        assert_eq!(content_of(&worker, "theirs"), unopened);
+        assert_eq!(
+            content_of(&worker, "failed"),
+            Some(Content::Unsupported {
+                what: AWAITED.into()
+            })
+        );
+        assert_eq!(content_of(&worker, "own failure"), None);
+        let mine = worker.archive.message(PEER, "mine").unwrap().unwrap();
+        assert!(mine.from_me);
+        assert_eq!((mine.sender.as_str(), mine.status), (ME, Delivery::Sent));
+        assert_eq!(content_of(&worker, "mine"), unopened);
+
+        // Reading is not opening; our phone opening it plays it.
+        worker.on_receipt(&receipt(PEER, &["unread"], ReceiptType::ReadSelf));
+        worker.on_receipt(&receipt(PEER, &["theirs"], ReceiptType::PlayedSelf));
+        assert_eq!(content_of(&worker, "unread"), unopened);
+        assert_eq!(content_of(&worker, "theirs"), opened);
+        // Ours opens when the recipient plays it.
+        worker.on_receipt(&receipt(PEER, &["mine"], ReceiptType::Read));
+        assert_eq!(content_of(&worker, "mine"), unopened);
+        worker.on_receipt(&receipt(PEER, &["mine"], ReceiptType::Played));
+        assert_eq!(content_of(&worker, "mine"), opened);
+
+        // Filing the same message again keeps it opened.
+        let refiled = Message {
+            content: Content::ViewOnce {
+                what: ViewOnce::Photo,
+                opened: false,
+            },
+            ..incoming("theirs", 100)
+        };
+        worker.archive.insert_message(&refiled, None).unwrap();
+        assert_eq!(
+            content_of(&worker, "theirs"),
+            Some(Content::ViewOnce {
+                what: ViewOnce::Photo,
+                opened: true
+            })
+        );
+    }
+
+    #[test]
+    fn history_files_a_played_view_once_message_as_opened() {
+        use wa::web_message_info::Status;
+        let parsed = |status| {
+            parse_conversation(wa::Conversation {
+                id: PEER.into(),
+                messages: vec![wa::HistorySyncMsg {
+                    message: MessageField::some(wa::WebMessageInfo {
+                        key: MessageField::some(wa::MessageKey {
+                            id: Some("history".into()),
+                            from_me: Some(false),
+                            ..Default::default()
+                        }),
+                        message: MessageField::some(wa::Message {
+                            image_message: MessageField::some(wa::message::ImageMessage {
+                                view_once: Some(true),
+                                ..Default::default()
+                            }),
+                            ..Default::default()
+                        }),
+                        status: Some(status),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            })
+            .messages
+            .remove(0)
+            .content
+        };
+        for (status, opened) in [(Status::PLAYED, true), (Status::READ, false)] {
+            assert_eq!(
+                parsed(status),
+                Content::ViewOnce {
+                    what: ViewOnce::Photo,
+                    opened
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn backfill_hides_archived_view_once_media_and_names_quoted_stubs() {
+        let (mut worker, _events, _inbox, _wa) = worker();
+        worker.archive.ensure_chat(PEER, "R").unwrap();
+        let photo = wa::Message {
+            image_message: MessageField::some(wa::message::ImageMessage {
+                mimetype: Some("image/jpeg".into()),
+                view_once: Some(true),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let as_photo = Content::Image {
+            caption: None,
+            media: Media {
+                mime: "image/jpeg".into(),
+                size: 0,
+                width: None,
+                height: None,
+                path: None,
+                state: Default::default(),
+            },
+        };
+        // Older builds filed these as ordinary photos.
+        let sent = Message {
+            content: as_photo.clone(),
+            status: Delivery::Played,
+            ..own_message("sent", 100)
+        };
+        let received = Message {
+            content: as_photo,
+            ..incoming("received", 110)
+        };
+        let stub = Message {
+            content: Content::Unsupported {
+                what: AWAITED.into(),
+            },
+            ..incoming("stub", 120)
+        };
+        let reply = wa::Message::text_with_context(
+            "Duh they all do",
+            wa::ContextInfo {
+                stanza_id: Some("stub".into()),
+                quoted_message: MessageField::some(photo.clone()),
+                ..Default::default()
+            },
+        );
+        let raw = photo.encode_to_vec();
+        for (message, raw) in [
+            (&sent, Some(raw.as_slice())),
+            (&received, Some(raw.as_slice())),
+            (&stub, None),
+            (&own_message("reply", 130), Some(&reply.encode_to_vec()[..])),
+        ] {
+            worker.archive.insert_message(message, raw).unwrap();
+        }
+        worker.backfill();
+        let view_once = |opened| {
+            Some(Content::ViewOnce {
+                what: ViewOnce::Photo,
+                opened,
+            })
+        };
+        assert_eq!(content_of(&worker, "sent"), view_once(true));
+        assert_eq!(content_of(&worker, "received"), view_once(false));
+        assert_eq!(content_of(&worker, "stub"), view_once(false));
     }
 }
