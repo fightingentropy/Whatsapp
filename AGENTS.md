@@ -230,7 +230,10 @@ and archive. This is an explicit additional target; keep the Mac build intact.
 - History sync can bring a chat with a name and no messages at all; a
   history request for such a chat is anchored at the present with an
   empty message id (`worker::fetch_older`), and the app asks the phone
-  as soon as such a chat loads or opens, instead of never.
+  as soon as such a chat loads or opens, instead of never. A chat created
+  by `Command::EnsureChat` (started here) is stored with `chats.started_here`
+  and never asks; the phone does not answer for it. History that predates
+  its archived messages, or reports more on the phone, clears the mark.
 - `eframe`'s `glow_options` turn vsync off: a Wayland compositor stops
   sending frame callbacks to a window on a hidden workspace, a vsync wait
   there blocks the event loop and its ping replies, and Hyprland then

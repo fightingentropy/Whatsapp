@@ -1354,7 +1354,16 @@ impl App {
             self.mark_read(&chat.id);
         }
         match self.chats.iter_mut().find(|known| known.id == chat.id) {
-            Some(existing) => *existing = chat,
+            Some(existing) => {
+                // History sync found earlier messages on the phone after all.
+                if existing.started_here
+                    && !chat.started_here
+                    && let Some(conversation) = self.conversations.get_mut(&chat.id)
+                {
+                    conversation.phone_exhausted = false;
+                }
+                *existing = chat;
+            }
             None => self.chats.push(chat),
         }
         self.chats
@@ -1431,10 +1440,18 @@ impl App {
 
     /// Requests older phone history when available and outside the cooldown.
     pub fn fetch_older(&mut self, chat: &str) {
+        let started_here = self.chat(chat).is_some_and(|known| known.started_here);
         let Some(conversation) = self.conversations.get_mut(chat) else {
             return;
         };
         if conversation.fetching_phone || conversation.phone_exhausted {
+            return;
+        }
+        // Neither the archive nor history sync had this chat before it was
+        // started here, so the phone has nothing older. It does not answer
+        // such a request; asking would show a loading banner until timeout.
+        if started_here {
+            conversation.phone_exhausted = true;
             return;
         }
         // Back off after empty responses. Only a connected phone can answer.
@@ -1843,19 +1860,14 @@ impl App {
             Action::StartChat { id, name } => {
                 let id = self.chat_aliases.get(&id).cloned().unwrap_or(id);
                 if self.chat(&id).is_none() {
-                    self.chats.push(Chat::new(id.clone(), name.clone()));
+                    // The worker stores the same mark, so it survives restarts.
+                    let mut chat = Chat::new(id.clone(), name.clone());
+                    chat.started_here = true;
+                    self.chats.push(chat);
                     self.backend.send(Command::EnsureChat {
                         chat: id.clone(),
                         name,
                     });
-                    // Neither the archive nor history sync had this chat, so
-                    // there is no earlier history to ask the phone for. The
-                    // phone does not answer such a request; asking would only
-                    // show a loading banner until it timed out.
-                    self.conversations
-                        .entry(id.clone())
-                        .or_default()
-                        .phone_exhausted = true;
                 }
                 self.open_chat(id);
             }
@@ -3721,20 +3733,32 @@ mod tests {
             app.conversations[synced].fetching_phone,
             "a synced chat without messages still asks the phone"
         );
+        assert!(app.chat(fresh).unwrap().started_here);
         assert!(!app.conversations[fresh].fetching_phone);
 
-        // After the first send, a short chat asks for older history at once.
+        // After a restart the archive's mark, not session state, keeps the
+        // short chat from asking for history before its first message.
+        let mut restarted = App::headless(AppDirs::under(&root), Settings::default()).0;
+        restarted.link = LinkStatus::Connected;
+        let mut stored = Chat::new(fresh.into(), "Fresh".into());
+        stored.started_here = true;
+        restarted.chats.push(stored.clone());
         let mut sent = message(fresh, "first", 100);
         sent.from_me = true;
-        app.conversations
-            .get_mut(fresh)
-            .unwrap()
-            .merge(vec![sent], false);
-        app.load_older(fresh);
+        let conversation = restarted.conversations.entry(fresh.into()).or_default();
+        conversation.merge(vec![sent], false);
+        conversation.complete = true;
+        restarted.load_older(fresh);
         assert!(
-            !app.conversations[fresh].fetching_phone,
-            "no loading banner above the first message of a new chat"
+            !restarted.conversations[fresh].fetching_phone,
+            "no loading banner above the first message of a chat started here"
         );
+
+        // History sync can show the phone had earlier messages after all.
+        stored.started_here = false;
+        restarted.handle_chat_updated(stored);
+        restarted.load_older(fresh);
+        assert!(restarted.conversations[fresh].fetching_phone);
     }
 
     fn message(chat: &str, id: &str, timestamp: i64) -> Message {

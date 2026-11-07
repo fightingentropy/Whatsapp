@@ -49,6 +49,9 @@ pub struct Chat {
     pub participants: Vec<String>,
     /// Whether this is an announcement group where we cannot post.
     pub read_only: bool,
+    /// Started in this app and never brought by history sync, so the phone
+    /// has no earlier history for it.
+    pub started_here: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -78,6 +81,7 @@ impl Chat {
             last: None,
             participants: Vec::new(),
             read_only: false,
+            started_here: false,
         }
     }
 

@@ -126,7 +126,8 @@ See [PERFORMANCE.md](PERFORMANCE.md) for measurements, remaining costs and valid
   before sending receipts in direct chats. A hidden window does not read messages.
 - **Conversations.** See replies, reactions, edits, deleted messages, read
   receipts, sender names, and group pictures. Older messages load as you
-  scroll up, first from the local archive and then from your phone.
+  scroll up, first from the local archive and then from your phone. A chat
+  you start here has nothing older on your phone, so it never asks.
   Reaction badges have no outline; clicking your reaction still removes it.
   Group messages show two gray checks after every recipient has received
   them, and blue checks after every recipient has read them. The recipient

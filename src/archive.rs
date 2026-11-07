@@ -122,7 +122,8 @@ END;
 
 const CHAT_COLUMNS: &str =
     "c.id, c.name, c.kind, c.last_activity, c.unread, c.archived, c.pinned, c.muted_until,
-                    m.from_me, m.sender_name, m.content, m.status, m.sender, c.participants, c.read_only";
+                    m.from_me, m.sender_name, m.content, m.status, m.sender, c.participants, c.read_only,
+                    c.started_here";
 
 /// Adds columns introduced after the initial schema when missing.
 const MIGRATIONS: &[(&str, &str, &str)] = &[
@@ -135,6 +136,7 @@ const MIGRATIONS: &[(&str, &str, &str)] = &[
     ("messages", "read_at", "INTEGER"),
     ("chats", "read_through", "INTEGER"),
     ("chats", "pending_read", "INTEGER"),
+    ("chats", "started_here", "INTEGER NOT NULL DEFAULT 0"),
 ];
 const CHAT_JOIN: &str = "FROM chats c
              LEFT JOIN messages m ON m.chat = c.id AND m.rowid = (
@@ -173,6 +175,7 @@ fn chat_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Chat> {
         last,
         participants: serde_json::from_str(&participants).unwrap_or_default(),
         read_only: row.get(14)?,
+        started_here: row.get(15)?,
     })
 }
 
@@ -287,6 +290,25 @@ impl Archive {
         self.connection.execute(
             "INSERT OR IGNORE INTO chats (id, name, kind) VALUES (?1, ?2, ?3)",
             params![id, name, kind_name(ChatKind::from_id(id))],
+        )?;
+        Ok(())
+    }
+
+    /// Inserts a chat the user starts here, marking it as having no earlier
+    /// history on the phone. An existing chat keeps its row and is not marked.
+    pub fn start_chat(&self, id: &str, name: &str) -> Result<()> {
+        self.connection.execute(
+            "INSERT OR IGNORE INTO chats (id, name, kind, started_here) VALUES (?1, ?2, ?3, 1)",
+            params![id, name, kind_name(ChatKind::from_id(id))],
+        )?;
+        Ok(())
+    }
+
+    /// Clears the started-here mark once history sync brings the chat.
+    pub fn mark_synced(&self, id: &str) -> Result<()> {
+        self.connection.execute(
+            "UPDATE chats SET started_here = 0 WHERE id = ?1 AND started_here <> 0",
+            [id],
         )?;
         Ok(())
     }
@@ -1350,6 +1372,20 @@ mod tests {
             forwarded: false,
             thumbnail: None,
         }
+    }
+
+    #[test]
+    fn only_a_new_chat_started_here_is_marked_until_history_sync() {
+        let archive = Archive::in_memory().unwrap();
+        archive.ensure_chat("synced", "Synced").unwrap();
+        archive.start_chat("synced", "Synced").unwrap();
+        archive.start_chat("fresh", "Fresh").unwrap();
+        archive.ensure_chat("fresh", "Renamed").unwrap();
+        let marked = |id| archive.chat(id).unwrap().unwrap().started_here;
+        assert!(!marked("synced"), "an existing chat has phone history");
+        assert!(marked("fresh"));
+        archive.mark_synced("fresh").unwrap();
+        assert!(!marked("fresh"));
     }
 
     #[test]

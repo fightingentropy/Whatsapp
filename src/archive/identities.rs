@@ -38,11 +38,12 @@ impl Archive {
         )?;
         self.connection.execute(
             "INSERT INTO chats (id, name, kind, last_activity, unread, archived, pinned,
-                 muted_until, participants, read_only, read_through, pending_read)
+                 muted_until, participants, read_only, read_through, pending_read, started_here)
              SELECT ?2, name, kind, last_activity, unread, archived, pinned,
-                 muted_until, participants, read_only, read_through, pending_read
+                 muted_until, participants, read_only, read_through, pending_read, started_here
              FROM chats WHERE id = ?1
              ON CONFLICT(id) DO UPDATE SET
+                 started_here = MIN(started_here, excluded.started_here),
                  last_activity = MAX(last_activity, excluded.last_activity),
                  unread = MAX(unread, excluded.unread),
                  archived = MIN(archived, excluded.archived),
@@ -163,6 +164,21 @@ mod tests {
 
     const LID: &str = "123456@lid";
     const PN: &str = "15550002222@s.whatsapp.net";
+
+    #[test]
+    fn a_merged_chat_keeps_the_started_here_mark_only_from_both_sides() {
+        let archive = Archive::in_memory().unwrap();
+        archive.start_chat(LID, "~Peer").unwrap();
+        archive.put_lid("123456", "15550002222").unwrap();
+        assert!(archive.chat(PN).unwrap().unwrap().started_here);
+
+        let other_lid = "654321@lid";
+        let other_pn = "15550003333@s.whatsapp.net";
+        archive.ensure_chat(other_lid, "~Synced").unwrap();
+        archive.start_chat(other_pn, "Started").unwrap();
+        archive.put_lid("654321", "15550003333").unwrap();
+        assert!(!archive.chat(other_pn).unwrap().unwrap().started_here);
+    }
 
     #[test]
     fn late_mapping_unites_history_contacts_keys_downloads_and_search() {

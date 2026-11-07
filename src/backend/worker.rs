@@ -2095,6 +2095,25 @@ impl Worker {
                 self.remember_timer(&id, timer);
             }
             let existing = self.archive.chat(&id).ok().flatten();
+            if existing.as_ref().is_some_and(|chat| chat.started_here) {
+                // A chat started here has history on the phone only if this
+                // chunk predates every archived message or reports more there.
+                let oldest = self
+                    .archive
+                    .oldest(&id)
+                    .ok()
+                    .flatten()
+                    .map(|message| message.timestamp);
+                let earlier = chat
+                    .messages
+                    .iter()
+                    .any(|message| oldest.is_none_or(|oldest| message.timestamp < oldest));
+                if (earlier || chat.more_on_phone == Some(true))
+                    && let Err(error) = self.archive.mark_synced(&id)
+                {
+                    log::warn!("could not record a synced chat: {error}");
+                }
+            }
             if metadata || existing.is_none() {
                 let name = match chat.name.filter(|name| !name.is_empty()) {
                     Some(name) if ChatKind::from_id(&id) == ChatKind::Group => name,
@@ -2457,7 +2476,7 @@ impl Worker {
                 });
             }
             Command::EnsureChat { chat, name } => {
-                if let Err(error) = self.archive.ensure_chat(&chat, &name) {
+                if let Err(error) = self.archive.start_chat(&chat, &name) {
                     log::warn!("could not create the chat: {error}");
                 }
             }
@@ -7122,6 +7141,78 @@ mod receipt_tests {
         assert_eq!(status(&worker, "old"), Delivery::Sent);
         send(&mut worker, PEER, ReceiptType::Delivered);
         assert_eq!(status(&worker, "new"), Delivery::Read);
+    }
+
+    #[tokio::test]
+    async fn only_earlier_history_clears_the_started_here_mark() {
+        use wa::conversation::EndOfHistoryTransferType as End;
+        let (mut worker, _events, _inbox, _wa) = worker();
+        let other = "15550009999@s.whatsapp.net";
+        for chat in [PEER, other] {
+            worker
+                .handle_command(Command::EnsureChat {
+                    chat: chat.into(),
+                    name: "Started".into(),
+                })
+                .await;
+        }
+        let marked =
+            |worker: &Worker, chat| worker.archive.chat(chat).unwrap().unwrap().started_here;
+        assert!(marked(&worker, PEER));
+        worker.store_message(incoming("first", 100), None, None);
+        let chunk = |chat: &str, id: Option<&str>, end: Option<End>| ParsedHistory {
+            chats: vec![parse_conversation(wa::Conversation {
+                id: chat.into(),
+                end_of_history_transfer_type: end,
+                messages: id
+                    .map(|id| wa::HistorySyncMsg {
+                        message: MessageField::some(wa::WebMessageInfo {
+                            key: MessageField::some(wa::MessageKey {
+                                id: Some(id.into()),
+                                from_me: Some(true),
+                                ..Default::default()
+                            }),
+                            message: MessageField::some(wa::Message {
+                                conversation: Some("hello".into()),
+                                ..Default::default()
+                            }),
+                            message_timestamp: Some(if id == "earlier" { 50 } else { 100 }),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    })
+                    .into_iter()
+                    .collect(),
+                ..Default::default()
+            })],
+            push_names: Vec::new(),
+            lids: Vec::new(),
+            stickers: Vec::new(),
+        };
+        worker.apply_history(chunk(PEER, Some("first"), None), false);
+        worker.apply_history(
+            chunk(
+                PEER,
+                None,
+                Some(End::COMPLETE_AND_NO_MORE_MESSAGE_REMAIN_ON_PRIMARY),
+            ),
+            false,
+        );
+        assert!(
+            marked(&worker, PEER),
+            "a replay of what is already here proves nothing older"
+        );
+        worker.apply_history(chunk(PEER, Some("earlier"), None), false);
+        assert!(!marked(&worker, PEER));
+        worker.apply_history(
+            chunk(
+                other,
+                None,
+                Some(End::COMPLETE_BUT_MORE_MESSAGES_REMAIN_ON_PRIMARY),
+            ),
+            false,
+        );
+        assert!(!marked(&worker, other));
     }
 
     #[test]
