@@ -1848,6 +1848,14 @@ impl App {
                         chat: id.clone(),
                         name,
                     });
+                    // Neither the archive nor history sync had this chat, so
+                    // there is no earlier history to ask the phone for. The
+                    // phone does not answer such a request; asking would only
+                    // show a loading banner until it timed out.
+                    self.conversations
+                        .entry(id.clone())
+                        .or_default()
+                        .phone_exhausted = true;
                 }
                 self.open_chat(id);
             }
@@ -3676,6 +3684,57 @@ mod tests {
             commands.try_recv().unwrap(),
             Command::MarkPlayed { receipts: true, .. }
         ));
+    }
+
+    #[test]
+    fn a_chat_started_here_does_not_ask_the_phone_for_history() {
+        let root = std::env::temp_dir().join(format!("whatsapp-app-{}", std::process::id()));
+        let (mut app, events) = App::headless(AppDirs::under(&root), Settings::default());
+        let ctx = egui::Context::default();
+        app.link = LinkStatus::Connected;
+        let synced = "synced@s.whatsapp.net";
+        let fresh = "fresh@s.whatsapp.net";
+        app.chats.push(Chat::new(synced.into(), "Synced".into()));
+        for (action, chat) in [
+            (Action::OpenChat(synced.into()), synced),
+            (
+                Action::StartChat {
+                    id: fresh.into(),
+                    name: "Fresh".into(),
+                },
+                fresh,
+            ),
+        ] {
+            app.apply(action, &ctx);
+            events
+                .send(Event::Messages {
+                    chat: chat.into(),
+                    messages: Vec::new(),
+                    older: false,
+                    complete: true,
+                    requested: true,
+                })
+                .unwrap();
+            app.handle_events();
+        }
+        assert!(
+            app.conversations[synced].fetching_phone,
+            "a synced chat without messages still asks the phone"
+        );
+        assert!(!app.conversations[fresh].fetching_phone);
+
+        // After the first send, a short chat asks for older history at once.
+        let mut sent = message(fresh, "first", 100);
+        sent.from_me = true;
+        app.conversations
+            .get_mut(fresh)
+            .unwrap()
+            .merge(vec![sent], false);
+        app.load_older(fresh);
+        assert!(
+            !app.conversations[fresh].fetching_phone,
+            "no loading banner above the first message of a new chat"
+        );
     }
 
     fn message(chat: &str, id: &str, timestamp: i64) -> Message {
