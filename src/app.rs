@@ -1996,8 +1996,27 @@ impl App {
                 {
                     self.video.pause();
                 }
-                if let Err(error) = open::that_detached(&path) {
-                    self.toast_error(format!("Could not open {}: {error}", path.display()));
+                match crate::open_policy::open_target(&path) {
+                    crate::open_policy::OpenTarget::DefaultApp => {
+                        if let Err(error) = open::that_detached(&path) {
+                            self.toast_error(format!("Could not open {}: {error}", path.display()));
+                        }
+                    }
+                    // A received file keeps the extension its sender chose, so
+                    // a type that can run something is never launched from a
+                    // click in a chat.
+                    crate::open_policy::OpenTarget::Reveal => {
+                        match crate::open_policy::reveal(&path) {
+                            Ok(()) => self.toast(
+                                "Shown in Finder. Whatsapp only opens pictures, video, \
+                                 audio and common documents itself.",
+                            ),
+                            Err(error) => self.toast_error(format!(
+                                "Could not show {} in Finder: {error}",
+                                path.display()
+                            )),
+                        }
+                    }
                 }
             }
             Action::OpenUrl(url) => ctx.open_url(egui::OpenUrl::new_tab(url)),

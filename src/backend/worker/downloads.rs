@@ -109,10 +109,60 @@ impl PartialFile {
     }
 
     async fn commit(self, destination: &Path) -> Result<PathBuf, String> {
+        // Marked before the rename, so the file never appears under its final
+        // name without the mark.
+        quarantine(&self.0);
         tokio::fs::rename(&self.0, destination)
             .await
             .map_err(|e| e.to_string())?;
         Ok(destination.to_owned())
+    }
+}
+
+/// Marks a downloaded file as coming from the internet, the way browsers do.
+/// Its name and extension were chosen by the sender, and with this mark macOS
+/// checks the file and asks the user before it runs or opens anything risky.
+/// Best effort: the download still succeeds if the mark cannot be written.
+fn quarantine(path: &Path) {
+    use std::ffi::{CString, c_char, c_int, c_void};
+    use std::os::unix::ffi::OsStrExt;
+
+    unsafe extern "C" {
+        fn setxattr(
+            path: *const c_char,
+            name: *const c_char,
+            value: *const c_void,
+            size: usize,
+            position: u32,
+            options: c_int,
+        ) -> c_int;
+    }
+
+    let Ok(c_path) = CString::new(path.as_os_str().as_bytes()) else {
+        return;
+    };
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs());
+    // flags;time;agent;event id. 0081 is a download the user has not approved yet.
+    let value = format!("0081;{seconds:08x};Whatsapp;");
+    // SAFETY: the path and the attribute name are NUL-terminated C strings and
+    // `value` is a live buffer of `value.len()` bytes; all three outlive the call.
+    let result = unsafe {
+        setxattr(
+            c_path.as_ptr(),
+            c"com.apple.quarantine".as_ptr(),
+            value.as_ptr().cast(),
+            value.len(),
+            0,
+            0,
+        )
+    };
+    if result != 0 {
+        log::warn!(
+            "could not quarantine a downloaded file: {}",
+            std::io::Error::last_os_error()
+        );
     }
 }
 
@@ -187,5 +237,29 @@ mod tests {
         partial.commit(&path).await.unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), b"verified");
         assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
+    }
+
+    #[tokio::test]
+    async fn committed_downloads_are_quarantined() {
+        use std::io::Write;
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("invoice.terminal");
+        let (partial, mut file) = PartialFile::create(&path).await.unwrap();
+        file.write_all(b"from a sender").unwrap();
+        drop(file);
+        partial.commit(&path).await.unwrap();
+
+        let output = std::process::Command::new("/usr/bin/xattr")
+            .args(["-p", "com.apple.quarantine"])
+            .arg(&path)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "the quarantine mark is missing");
+        let value = String::from_utf8(output.stdout).unwrap();
+        let fields: Vec<&str> = value.trim().split(';').collect();
+        assert_eq!(fields.len(), 4, "{value}");
+        assert_eq!(fields[0], "0081");
+        assert!(u64::from_str_radix(fields[1], 16).unwrap() > 0);
+        assert_eq!(fields[2], "Whatsapp");
     }
 }

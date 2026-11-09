@@ -21,6 +21,7 @@ pub mod macos;
 pub mod markup;
 pub mod model;
 pub mod notify;
+pub mod open_policy;
 pub mod paths;
 pub mod qr;
 pub mod renderer;
