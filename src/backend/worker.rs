@@ -4821,6 +4821,11 @@ fn extension_for(mime: &str, file_name: Option<&str>) -> String {
     {
         return extension.to_ascii_lowercase();
     }
+    // Pictures, videos and audio arrive without a file name, so their
+    // extension comes from this table. A type whose subtype is not the
+    // extension its files normally carry is listed here: otherwise a QuickTime
+    // video would be saved as `.quicktime`, which no app is registered for and
+    // which `open_policy` only reveals in Finder.
     let mime = mime.split(';').next().unwrap_or(mime).trim();
     match mime {
         "image/jpeg" => "jpg",
@@ -4828,12 +4833,20 @@ fn extension_for(mime: &str, file_name: Option<&str>) -> String {
         "image/webp" => "webp",
         "image/gif" => "gif",
         "video/mp4" => "mp4",
-        "video/3gpp" => "3gp",
+        "video/3gpp" | "audio/3gpp" => "3gp",
+        "video/3gpp2" => "3g2",
+        "video/quicktime" => "mov",
+        "video/x-m4v" => "m4v",
+        "video/x-matroska" => "mkv",
+        "video/x-msvideo" => "avi",
         "audio/ogg" => "ogg",
         "audio/mpeg" => "mp3",
-        "audio/mp4" => "m4a",
-        "audio/aac" => "aac",
-        "audio/wav" => "wav",
+        "audio/mp4" | "audio/m4a" | "audio/x-m4a" => "m4a",
+        "audio/aac" | "audio/x-aac" => "aac",
+        "audio/wav" | "audio/x-wav" | "audio/wave" | "audio/vnd.wave" => "wav",
+        "audio/x-flac" => "flac",
+        "audio/x-aiff" => "aiff",
+        "audio/x-caf" => "caf",
         "application/pdf" => "pdf",
         "text/plain" => "txt",
         _ => mime.rsplit('/').next().unwrap_or("bin"),
@@ -6052,6 +6065,68 @@ mod tests {
         );
         assert_eq!(extension_for("audio/ogg; codecs=opus", None), "ogg");
         assert_eq!(extension_for("application/x-unknown", None), "x-unknown");
+    }
+
+    #[test]
+    fn media_without_a_file_name_is_saved_under_an_extension_that_opens() {
+        for (mime, extension) in [
+            ("video/quicktime", "mov"),
+            ("video/x-m4v", "m4v"),
+            ("video/x-matroska", "mkv"),
+            ("video/x-msvideo", "avi"),
+            ("video/3gpp2", "3g2"),
+            ("audio/3gpp", "3gp"),
+            ("audio/x-wav", "wav"),
+            ("audio/wave", "wav"),
+            ("audio/x-m4a", "m4a"),
+            ("audio/x-aac", "aac"),
+            ("audio/x-flac", "flac"),
+            ("audio/x-aiff", "aiff"),
+            ("audio/x-caf", "caf"),
+        ] {
+            assert_eq!(extension_for(mime, None), extension, "{mime}");
+        }
+
+        // A click on downloaded media opens it only when `open_policy` knows
+        // the extension. These are the types WhatsApp clients and this app
+        // send as inline pictures, video and audio.
+        let saved =
+            |mime: &str| media_path(Path::new("/cache"), "1@s.whatsapp.net", "ABC", mime, None);
+        for mime in [
+            "image/jpeg",
+            "image/png",
+            "image/webp",
+            "image/gif",
+            "image/heic",
+            "video/mp4",
+            "video/3gpp",
+            "video/quicktime",
+            "video/webm",
+            "video/x-matroska",
+            "audio/ogg; codecs=opus",
+            "audio/mpeg",
+            "audio/mp3",
+            "audio/mp4",
+            "audio/x-m4a",
+            "audio/aac",
+            "audio/amr",
+            "audio/wav",
+            "audio/x-wav",
+            "audio/flac",
+        ] {
+            let path = saved(mime);
+            assert!(
+                crate::open_policy::opens_in_viewer(&path),
+                "{mime} is saved as {}, which a click would not open",
+                path.display()
+            );
+        }
+
+        // SVG can carry script and opens in a browser, so it keeps a name
+        // that is only revealed in Finder.
+        assert!(!crate::open_policy::opens_in_viewer(&saved(
+            "image/svg+xml"
+        )));
     }
 
     #[test]
