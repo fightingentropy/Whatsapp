@@ -5328,9 +5328,12 @@ fn decode_upload_picture(bytes: &[u8], mobile: bool) -> Result<image::DynamicIma
     Ok(decoded)
 }
 
+/// JPEG bytes, thumbnail, width and height of a picture ready to upload.
+type UploadJpeg = (Vec<u8>, Option<Vec<u8>>, u32, u32);
+
 /// Re-encodes a picture as JPEG, which also drops EXIF and other metadata
 /// such as location. Returns the JPEG, its thumbnail and its dimensions.
-fn upload_jpeg(bytes: &[u8], mobile: bool) -> Result<(Vec<u8>, Option<Vec<u8>>, u32, u32), String> {
+fn upload_jpeg(bytes: &[u8], mobile: bool) -> Result<UploadJpeg, String> {
     let decoded = decode_upload_picture(bytes, mobile)?;
     Ok((
         encode_jpeg(&decoded, 88)?,
