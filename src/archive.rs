@@ -1338,9 +1338,13 @@ impl Archive {
 
     /// Clears all archived data during unlinking.
     pub fn clear(&self) -> Result<()> {
+        // One transaction, so a failure part-way keeps the old data whole
+        // instead of leaving a partial wipe.
+        let transaction = self.connection.unchecked_transaction()?;
         self.connection.execute_batch(
             "DELETE FROM group_receipts; DELETE FROM messages; DELETE FROM chats; DELETE FROM contacts; DELETE FROM meta; DELETE FROM lids; DELETE FROM chat_timers; DELETE FROM stickers;",
-        )
+        )?;
+        transaction.commit()
     }
 }
 
@@ -2284,6 +2288,28 @@ mod sticker_tests {
             .expect("stored");
         archive.clear().expect("clears");
         assert!(archive.phone_stickers().expect("lists").is_empty());
+    }
+
+    #[test]
+    fn a_failed_clear_leaves_the_archive_untouched() {
+        let archive = Archive::in_memory().expect("opens");
+        archive.put_lid("lid1", "491700000001").expect("stored");
+        archive
+            .upsert_phone_sticker("aa", b"one", 100, 0.5)
+            .expect("stored");
+        archive
+            .connection
+            .execute_batch(
+                "CREATE TRIGGER block_wipe BEFORE DELETE ON stickers BEGIN SELECT RAISE(ABORT, 'blocked'); END;",
+            )
+            .expect("trigger");
+        assert!(archive.clear().is_err());
+        assert_eq!(archive.phone_stickers().expect("lists").len(), 1);
+        let lids: i64 = archive
+            .connection
+            .query_row("SELECT COUNT(*) FROM lids", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(lids, 1);
     }
 
     #[test]
