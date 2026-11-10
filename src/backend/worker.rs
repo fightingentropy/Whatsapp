@@ -4009,7 +4009,7 @@ impl Worker {
                 let mut picture = None;
                 let mut failed = false;
                 'lookup: for jid in &candidates {
-                    for preview in [!full, false] {
+                    for &preview in picture_preview_modes(full) {
                         match client.contacts().get_profile_picture(jid, preview).await {
                             Ok(Some(found)) => {
                                 picture = Some(found);
@@ -5429,6 +5429,12 @@ async fn prepare_animation(
     prepared
 }
 
+/// Which `preview` flags to try for a profile picture lookup. A full-size
+/// lookup asks once; a thumbnail lookup falls back to the full picture.
+fn picture_preview_modes(full: bool) -> &'static [bool] {
+    if full { &[false] } else { &[true, false] }
+}
+
 /// Longest a plain HTTP fetch (avatars, GIF search and sending) may take.
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -6087,6 +6093,12 @@ fn parse_conversation(conversation: wa::Conversation) -> ParsedChat {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_full_size_picture_lookup_is_not_repeated() {
+        assert_eq!(picture_preview_modes(true), &[false]);
+        assert_eq!(picture_preview_modes(false), &[true, false]);
+    }
+
     #[test]
     fn a_stalled_http_server_times_out_instead_of_hanging() {
         // Accepts the connection and never answers.
