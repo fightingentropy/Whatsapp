@@ -4966,6 +4966,26 @@ fn first_link(text: &str) -> Option<String> {
         .map(|token| token.trim_end_matches(['.', ',', ')', ']']).to_owned())
 }
 
+/// The address a link preview opens: a bare host gets `https://`, and any
+/// other scheme than http or https is refused.
+fn preview_url(url: String) -> Option<String> {
+    let url = if url.contains("://") {
+        url
+    } else if url.contains(':')
+        && !url.split(':').nth(1).is_some_and(|rest| {
+            // `host:port` is a bare address; `mailto:x` and `javascript:x` are not.
+            rest.split('/')
+                .next()
+                .is_some_and(|port| !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()))
+        })
+    {
+        return None;
+    } else {
+        format!("https://{url}")
+    };
+    LinkPreview::is_web_url(&url).then_some(url)
+}
+
 /// Extracts the attachment or link-preview thumbnail.
 fn thumbnail_of(base: &wa::Message) -> Option<Vec<u8>> {
     let bytes = if let Some(image) = base.image_message.as_option() {
@@ -5017,11 +5037,7 @@ fn classify(message: &wa::Message) -> Option<Content> {
                 return None;
             }
             let url = non_empty(&extended.matched_text).or_else(|| first_link(text))?;
-            let url = if url.contains("://") {
-                url
-            } else {
-                format!("https://{url}")
-            };
+            let url = preview_url(url)?;
             Some(LinkPreview {
                 url,
                 title,
@@ -5314,10 +5330,7 @@ fn decode_upload_picture(bytes: &[u8], mobile: bool) -> Result<image::DynamicIma
 
 /// Re-encodes a picture as JPEG, which also drops EXIF and other metadata
 /// such as location. Returns the JPEG, its thumbnail and its dimensions.
-fn upload_jpeg(
-    bytes: &[u8],
-    mobile: bool,
-) -> Result<(Vec<u8>, Option<Vec<u8>>, u32, u32), String> {
+fn upload_jpeg(bytes: &[u8], mobile: bool) -> Result<(Vec<u8>, Option<Vec<u8>>, u32, u32), String> {
     let decoded = decode_upload_picture(bytes, mobile)?;
     Ok((
         encode_jpeg(&decoded, 88)?,
@@ -5419,11 +5432,10 @@ async fn prepare_media(
         "image/jpeg" | "image/png" | "image/webp" | "image/bmp" | "image/tiff"
     );
     if is_picture {
-        let (jpeg, thumbnail, width, height) = tokio::task::spawn_blocking(move || {
-            upload_jpeg(&bytes, cfg!(target_os = "ios"))
-        })
-        .await
-        .map_err(|error| error.to_string())??;
+        let (jpeg, thumbnail, width, height) =
+            tokio::task::spawn_blocking(move || upload_jpeg(&bytes, cfg!(target_os = "ios")))
+                .await
+                .map_err(|error| error.to_string())??;
         let upload = client
             .upload(jpeg.clone(), MediaType::Image, UploadOptions::default())
             .await
@@ -6021,6 +6033,31 @@ fn parse_conversation(conversation: wa::Conversation) -> ParsedChat {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn link_previews_only_open_web_addresses() {
+        assert_eq!(
+            preview_url("example.com/a".into()).as_deref(),
+            Some("https://example.com/a")
+        );
+        assert_eq!(
+            preview_url("localhost:8080/x".into()).as_deref(),
+            Some("https://localhost:8080/x")
+        );
+        assert_eq!(
+            preview_url("HTTP://example.com".into()).as_deref(),
+            Some("HTTP://example.com")
+        );
+        for bad in [
+            "file:///etc/hosts",
+            "smb://server/share",
+            "someapp://do?x=1",
+            "mailto:a@b.c",
+            "javascript:alert(1)",
+        ] {
+            assert_eq!(preview_url(bad.into()), None, "{bad}");
+        }
+    }
+
+    #[test]
     fn uploaded_jpegs_lose_their_metadata_but_keep_their_orientation() {
         let picture = image::RgbImage::from_pixel(8, 4, image::Rgb([90, 120, 200]));
         let mut plain = Vec::new();
@@ -6029,7 +6066,9 @@ mod tests {
             .expect("fixture");
         // APP1 with a big-endian TIFF header: orientation 6 (rotate 90) and a
         // marker string standing in for location data.
-        let mut exif = b"Exif\0\0MM\0\x2A\0\0\0\x08\0\x01\x01\x12\0\x03\0\0\0\x01\0\x06\0\0\0\0\0\0SECRET-GPS".to_vec();
+        let mut exif =
+            b"Exif\0\0MM\0\x2A\0\0\0\x08\0\x01\x01\x12\0\x03\0\0\0\x01\0\x06\0\0\0\0\0\0SECRET-GPS"
+                .to_vec();
         let length = (exif.len() + 2) as u16;
         let mut tagged = plain[..2].to_vec();
         tagged.extend_from_slice(&[0xFF, 0xE1]);

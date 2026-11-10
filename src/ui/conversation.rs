@@ -2948,7 +2948,8 @@ fn preview_card(
             Sense::click(),
         )
         .on_hover_cursor(egui::CursorIcon::PointingHand);
-    if response.clicked() {
+    // Archived previews from older versions are checked here too.
+    if response.clicked() && crate::model::LinkPreview::is_web_url(&preview.url) {
         actions.push(Action::OpenUrl(preview.url.clone()));
     }
 }

@@ -170,6 +170,15 @@ pub struct LinkPreview {
     pub description: Option<String>,
 }
 
+impl LinkPreview {
+    /// Whether the address is a web page. Link previews carry the sender's
+    /// text, so only http and https are ever opened from them.
+    pub fn is_web_url(url: &str) -> bool {
+        let lower = |len: usize| url.get(..len).map(str::to_ascii_lowercase);
+        lower(7).as_deref() == Some("http://") || lower(8).as_deref() == Some("https://")
+    }
+}
+
 impl Message {
     /// One-line summary used in chat rows and quotes.
     pub fn summary(&self) -> String {
