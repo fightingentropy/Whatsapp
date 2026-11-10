@@ -278,6 +278,8 @@ fn clip_length(samples: usize) -> Duration {
 
 /// Longest clip played back: 15 minutes of mono samples.
 const MAX_PLAYBACK_SAMPLES: usize = 15 * 60 * voice::RATE as usize;
+/// Interleaved samples kept per mono sample of budget (stereo).
+const MAX_INTERLEAVED_FACTOR: usize = 2;
 /// Largest audio file read into memory.
 const MAX_AUDIO_BYTES: u64 = 64 * 1024 * 1024;
 
@@ -285,6 +287,17 @@ const MAX_AUDIO_BYTES: u64 = 64 * 1024 * 1024;
 /// supported formats use rodio.
 fn decode_file(path: &Path) -> Result<Vec<f32>, String> {
     decode_file_limited(path, MAX_PLAYBACK_SAMPLES)
+}
+
+/// Most interleaved samples kept for a clip: the playback duration at the
+/// declared channels and rate, but never more than stereo's worth of the mono
+/// budget, so a crafted header cannot raise the memory bound.
+fn interleaved_limit(maximum_samples: usize, channels: u16, rate: u32) -> usize {
+    (maximum_samples
+        .saturating_mul(usize::from(channels))
+        .saturating_mul(rate as usize)
+        / voice::RATE as usize)
+        .min(maximum_samples.saturating_mul(MAX_INTERLEAVED_FACTOR))
 }
 
 fn decode_file_limited(path: &Path, maximum_samples: usize) -> Result<Vec<f32>, String> {
@@ -312,10 +325,7 @@ fn decode_file_limited(path: &Path, maximum_samples: usize) -> Result<Vec<f32>, 
         .map_err(|error| format!("Could not decode the audio: {error}"))?;
     let channels = decoder.channels().get();
     let rate = decoder.sample_rate().get();
-    let limit = maximum_samples
-        .saturating_mul(usize::from(channels))
-        .saturating_mul(rate as usize)
-        / voice::RATE as usize;
+    let limit = interleaved_limit(maximum_samples, channels, rate);
     let interleaved: Vec<f32> = decoder.take(limit.saturating_add(1)).collect();
     if interleaved.len() > limit {
         return Err("The audio is too long to play".to_owned());
@@ -480,6 +490,16 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn interleaved_limit_ignores_declared_channels_and_rate() {
+        let budget = MAX_PLAYBACK_SAMPLES;
+        assert_eq!(interleaved_limit(budget, 1, 48_000), budget);
+        assert_eq!(interleaved_limit(budget, 2, 48_000), budget * 2);
+        assert_eq!(interleaved_limit(budget, 8, 48_000), budget * 2);
+        assert_eq!(interleaved_limit(budget, 2, 192_000), budget * 2);
+        assert_eq!(interleaved_limit(budget, 255, u32::MAX), budget * 2);
+    }
 
     /// Plays a one-second test tone:
     /// `cargo test audio::tests::plays -- --ignored --nocapture`.
