@@ -192,8 +192,20 @@ fn signal_agent() -> Result<ureq::Agent, String> {
     let tls = TlsConfig::builder()
         .root_certs(RootCerts::new_with_certs(&[ca]))
         .build();
-    Ok(ureq::Agent::config_builder().tls_config(tls).build().into())
+    Ok(ureq::Agent::config_builder()
+        .tls_config(tls)
+        .timeout_connect(Some(SIGNAL_CONNECT_TIMEOUT))
+        .timeout_global(Some(SIGNAL_REQUEST_TIMEOUT))
+        .build()
+        .into())
 }
+
+/// Longest wait to connect to the sticker CDN.
+const SIGNAL_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// Longest a single sticker request may take, including its body.
+const SIGNAL_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// Most stickers fetched for one pack.
+const MAX_SIGNAL_STICKERS: usize = 200;
 
 fn fetch(agent: &ureq::Agent, url: &str) -> Result<Vec<u8>, String> {
     agent
@@ -220,28 +232,20 @@ pub fn import_signal_pack(url: &str, packs: &Path) -> Result<String, String> {
     if ids.is_empty() {
         return Err("This pack contains no stickers".to_owned());
     }
-    // Download several of the pack's files concurrently.
-    let mut blobs: Vec<Option<Vec<u8>>> = vec![None; ids.len()];
-    let lane = ids.len().div_ceil(6).max(1);
-    std::thread::scope(|scope| {
-        for (chunk, out) in ids.chunks(lane).zip(blobs.chunks_mut(lane)) {
-            let id = &id;
-            let key = &key;
-            let agent = &agent;
-            scope.spawn(move || {
-                for (sticker, slot) in chunk.iter().zip(out) {
-                    if let Ok(payload) = fetch(
-                        agent,
-                        &format!("https://cdn.signal.org/stickers/{id}/full/{sticker}"),
-                    ) && let Ok(bytes) = decrypt_blob(&payload, key)
-                    {
-                        *slot = Some(bytes);
-                    }
-                }
-            });
-        }
-    });
-    let files: Vec<Vec<u8>> = blobs.into_iter().flatten().filter_map(webp_bytes).collect();
+    if ids.len() > MAX_SIGNAL_STICKERS {
+        return Err(format!(
+            "This pack lists {} stickers; at most {MAX_SIGNAL_STICKERS} can be imported",
+            ids.len()
+        ));
+    }
+    let blobs = download_all(&ids, |sticker| {
+        let payload = fetch(
+            &agent,
+            &format!("https://cdn.signal.org/stickers/{id}/full/{sticker}"),
+        )?;
+        decrypt_blob(&payload, &key)
+    })?;
+    let files: Vec<Vec<u8>> = blobs.into_iter().filter_map(webp_bytes).collect();
     write_pack(packs, &title, files)
 }
 
@@ -267,6 +271,34 @@ fn read_bounded(entry: impl Read, declared: u64) -> Option<Vec<u8>> {
         .read_to_end(&mut bytes)
         .ok()?;
     (bytes.len() as u64 <= MAX_ENTRY_BYTES).then_some(bytes)
+}
+
+/// Fetches every sticker, several at a time. A pack with any missing sticker
+/// is refused rather than saved incomplete.
+fn download_all<F>(ids: &[u64], get: F) -> Result<Vec<Vec<u8>>, String>
+where
+    F: Fn(u64) -> Result<Vec<u8>, String> + Sync,
+{
+    let mut blobs: Vec<Option<Vec<u8>>> = vec![None; ids.len()];
+    let lane = ids.len().div_ceil(6).max(1);
+    std::thread::scope(|scope| {
+        for (chunk, out) in ids.chunks(lane).zip(blobs.chunks_mut(lane)) {
+            let get = &get;
+            scope.spawn(move || {
+                for (sticker, slot) in chunk.iter().zip(out) {
+                    *slot = get(*sticker).ok();
+                }
+            });
+        }
+    });
+    let failed = blobs.iter().filter(|blob| blob.is_none()).count();
+    if failed > 0 {
+        return Err(format!(
+            "{failed} of {} stickers could not be downloaded. Nothing was saved; try again",
+            ids.len()
+        ));
+    }
+    Ok(blobs.into_iter().flatten().collect())
 }
 
 /// Imports a .wastickers or zip archive. Uses `title.txt` or the filename as title.
@@ -530,6 +562,30 @@ mod tests {
         let (title, ids) = parse_manifest(&bytes).expect("parses");
         assert_eq!(title, "Ducks");
         assert_eq!(ids, vec![0, 1]);
+    }
+
+    #[test]
+    fn the_signal_client_has_timeouts() {
+        let agent = signal_agent().expect("agent");
+        let timeouts = agent.config().timeouts();
+        assert_eq!(timeouts.global, Some(SIGNAL_REQUEST_TIMEOUT));
+        assert_eq!(timeouts.connect, Some(SIGNAL_CONNECT_TIMEOUT));
+    }
+
+    #[test]
+    fn a_pack_with_a_failed_download_is_refused_with_the_count() {
+        let ids = [0u64, 1, 2, 3];
+        let ok = download_all(&ids, |id| Ok(vec![id as u8])).expect("all arrive");
+        assert_eq!(ok, vec![vec![0], vec![1], vec![2], vec![3]]);
+        let error = download_all(&ids, |id| {
+            if id % 2 == 1 {
+                Err("down".to_owned())
+            } else {
+                Ok(vec![])
+            }
+        })
+        .unwrap_err();
+        assert!(error.starts_with("2 of 4 stickers"), "{error}");
     }
 
     #[test]
