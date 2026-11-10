@@ -5301,7 +5301,29 @@ fn decode_upload_picture(bytes: &[u8], mobile: bool) -> Result<image::DynamicIma
         limits.max_alloc = Some(96 * 1024 * 1024);
         reader.limits(limits);
     }
-    reader.decode().map_err(|error| error.to_string())
+    // Honour the EXIF orientation, because re-encoding drops the tag.
+    let mut decoder = reader.into_decoder().map_err(|error| error.to_string())?;
+    let orientation = image::ImageDecoder::orientation(&mut decoder)
+        .unwrap_or(image::metadata::Orientation::NoTransforms);
+    let mut decoded =
+        image::DynamicImage::from_decoder(decoder).map_err(|error| error.to_string())?;
+    decoded.apply_orientation(orientation);
+    Ok(decoded)
+}
+
+/// Re-encodes a picture as JPEG, which also drops EXIF and other metadata
+/// such as location. Returns the JPEG, its thumbnail and its dimensions.
+fn upload_jpeg(
+    bytes: &[u8],
+    mobile: bool,
+) -> Result<(Vec<u8>, Option<Vec<u8>>, u32, u32), String> {
+    let decoded = decode_upload_picture(bytes, mobile)?;
+    Ok((
+        encode_jpeg(&decoded, 88)?,
+        thumbnail_jpeg(&decoded),
+        decoded.width(),
+        decoded.height(),
+    ))
 }
 
 /// What became of a GIF or WebP that may animate.
@@ -5396,16 +5418,8 @@ async fn prepare_media(
         "image/jpeg" | "image/png" | "image/webp" | "image/bmp" | "image/tiff"
     );
     if is_picture {
-        let is_jpeg = mime == "image/jpeg";
         let (jpeg, thumbnail, width, height) = tokio::task::spawn_blocking(move || {
-            let decoded = decode_upload_picture(&bytes, cfg!(target_os = "ios"))?;
-            let dimensions = (decoded.width(), decoded.height());
-            let jpeg = if is_jpeg {
-                bytes
-            } else {
-                encode_jpeg(&decoded, 88)?
-            };
-            Ok::<_, String>((jpeg, thumbnail_jpeg(&decoded), dimensions.0, dimensions.1))
+            upload_jpeg(&bytes, cfg!(target_os = "ios"))
         })
         .await
         .map_err(|error| error.to_string())??;
@@ -6005,6 +6019,29 @@ fn parse_conversation(conversation: wa::Conversation) -> ParsedChat {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn uploaded_jpegs_lose_their_metadata_but_keep_their_orientation() {
+        let picture = image::RgbImage::from_pixel(8, 4, image::Rgb([90, 120, 200]));
+        let mut plain = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new(&mut plain)
+            .encode_image(&picture)
+            .expect("fixture");
+        // APP1 with a big-endian TIFF header: orientation 6 (rotate 90) and a
+        // marker string standing in for location data.
+        let mut exif = b"Exif\0\0MM\0\x2A\0\0\0\x08\0\x01\x01\x12\0\x03\0\0\0\x01\0\x06\0\0\0\0\0\0SECRET-GPS".to_vec();
+        let length = (exif.len() + 2) as u16;
+        let mut tagged = plain[..2].to_vec();
+        tagged.extend_from_slice(&[0xFF, 0xE1]);
+        tagged.extend_from_slice(&length.to_be_bytes());
+        tagged.append(&mut exif);
+        tagged.extend_from_slice(&plain[2..]);
+        assert!(tagged.windows(10).any(|window| window == b"SECRET-GPS"));
+        let (jpeg, _, width, height) = upload_jpeg(&tagged, false).expect("encodes");
+        assert!(!jpeg.windows(10).any(|window| window == b"SECRET-GPS"));
+        assert!(!jpeg.windows(4).any(|window| window == b"Exif"));
+        assert_eq!((width, height), (4, 8), "rotated upright before encoding");
+    }
+
     #[test]
     fn phone_picture_limits_reject_extreme_dimensions_before_decoding_pixels() {
         let image = image::DynamicImage::new_rgb8(8193, 1);
