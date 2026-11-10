@@ -23,6 +23,9 @@ pub mod diagnostics;
 const MAX_WIDTH: u32 = 320;
 /// Maximum frames kept per animation.
 const MAX_FRAMES: usize = 150;
+/// Largest declared canvas edge accepted for GIF and WebP. Decoders allocate
+/// the whole canvas per frame, and a header can declare up to 16383 pixels.
+const MAX_CANVAS: u32 = 2048;
 /// Time an unseen animation remains decoded.
 const IDLE: Duration = Duration::from_secs(20);
 /// Maximum concurrent decoders.
@@ -330,11 +333,21 @@ fn decode_image(path: &Path, extension: &str, emit: &mut Sink<'_>) -> Option<()>
     if extension != "gif" {
         return decode_webp(path, emit);
     }
-    let file = std::fs::File::open(path).ok()?;
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut header = [0u8; 10];
+    std::io::Read::read_exact(&mut file, &mut header).ok()?;
+    let (width, height) = gif_canvas(&header)?;
+    if !canvas_allowed(width, height) {
+        return None;
+    }
+    std::io::Seek::seek(&mut file, std::io::SeekFrom::Start(0)).ok()?;
     let reader = std::io::BufReader::new(file);
-    let frames = image::codecs::gif::GifDecoder::new(reader)
-        .ok()?
-        .into_frames();
+    let mut decoder = image::codecs::gif::GifDecoder::new(reader).ok()?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_CANVAS);
+    limits.max_image_height = Some(MAX_CANVAS);
+    image::ImageDecoder::set_limits(&mut decoder, limits).ok()?;
+    let frames = decoder.into_frames();
     for frame in frames.take(MAX_FRAMES) {
         let frame = frame.ok()?;
         let (numerator, denominator) = frame.delay().numer_denom_ms();
@@ -349,6 +362,11 @@ fn decode_image(path: &Path, extension: &str, emit: &mut Sink<'_>) -> Option<()>
 /// unlike the `image` decoder, which did not apply frame disposal correctly.
 fn decode_webp(path: &Path, emit: &mut Sink<'_>) -> Option<()> {
     let bytes = std::fs::read(path).ok()?;
+    // libwebp allocates the declared canvas up front, so check the header first.
+    let (declared_width, declared_height) = webp_canvas(&bytes)?;
+    if !canvas_allowed(declared_width, declared_height) {
+        return None;
+    }
     let decoder = webp_animation::Decoder::new(&bytes).ok()?;
     let (width, height) = decoder.dimensions();
     let mut first = None;
@@ -371,6 +389,36 @@ fn decode_webp(path: &Path, emit: &mut Sink<'_>) -> Option<()> {
     }
     // Do not publish a still WebP as an animation even temporarily.
     (count > 1).then_some(())
+}
+
+fn canvas_allowed(width: u32, height: u32) -> bool {
+    width > 0 && height > 0 && width <= MAX_CANVAS && height <= MAX_CANVAS
+}
+
+/// Logical screen size from the first ten bytes of a GIF.
+fn gif_canvas(header: &[u8]) -> Option<(u32, u32)> {
+    if header.len() < 10 || !header.starts_with(b"GIF8") {
+        return None;
+    }
+    Some((
+        u32::from(u16::from_le_bytes([header[6], header[7]])),
+        u32::from(u16::from_le_bytes([header[8], header[9]])),
+    ))
+}
+
+/// Canvas size declared by an extended (VP8X) WebP header.
+fn webp_canvas(bytes: &[u8]) -> Option<(u32, u32)> {
+    if bytes.len() < 30 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WEBP" {
+        return None;
+    }
+    if &bytes[12..16] != b"VP8X" {
+        // Simple lossy and lossless files cannot be animated.
+        return None;
+    }
+    let edge = |at: usize| {
+        u32::from(bytes[at]) | u32::from(bytes[at + 1]) << 8 | u32::from(bytes[at + 2]) << 16
+    };
+    Some((edge(24) + 1, edge(27) + 1))
 }
 
 fn to_color_image(image: &image::RgbaImage) -> ColorImage {
@@ -944,6 +992,45 @@ mod tests {
         assert_eq!(decoded.frames[0].1, Duration::from_millis(100));
         assert_eq!(decoded.frames[0].0.size, [64, 48]);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_gif_declaring_an_oversized_canvas_is_refused() {
+        let dir = std::env::temp_dir().join(format!("whatsapp-bigcanvas-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let path = dir.join("big.gif");
+        {
+            let file = std::fs::File::create(&path).expect("file");
+            let mut encoder = image::codecs::gif::GifEncoder::new(file);
+            for shade in [40u8, 200u8] {
+                let frame = image::Frame::from_parts(
+                    image::RgbaImage::from_pixel(8, 8, image::Rgba([shade, 0, 0, 255])),
+                    0,
+                    0,
+                    image::Delay::from_numer_denom_ms(100, 1),
+                );
+                encoder.encode_frame(frame).expect("frame");
+            }
+        }
+        assert!(decode(&path).is_some(), "the unmodified file decodes");
+        let mut bytes = std::fs::read(&path).expect("read");
+        bytes[6..8].copy_from_slice(&4096u16.to_le_bytes());
+        bytes[8..10].copy_from_slice(&4096u16.to_le_bytes());
+        std::fs::write(&path, bytes).expect("write");
+        assert!(decode(&path).is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn webp_canvas_is_read_from_the_header() {
+        let mut header = Vec::new();
+        header.extend_from_slice(b"RIFF\x16\0\0\0WEBPVP8X\x0a\0\0\0");
+        header.extend_from_slice(&[0x02, 0, 0, 0]);
+        header.extend_from_slice(&[0xFF, 0x3F, 0]); // 16384 wide
+        header.extend_from_slice(&[0x0F, 0x00, 0]); // 16 high
+        assert_eq!(webp_canvas(&header), Some((16384, 16)));
+        assert!(!canvas_allowed(16384, 16));
+        assert!(canvas_allowed(512, 512));
     }
 
     #[test]
