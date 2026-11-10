@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use tokio::sync::Semaphore;
 use whatsapp_rust::Client;
+use whatsapp_rust::ErrorChainExt;
 use whatsapp_rust::download::Downloadable;
 
 const MAX_PENDING: usize = 256;
@@ -171,13 +172,47 @@ pub(super) async fn to_file(
     media: &dyn Downloadable,
     path: &Path,
 ) -> Result<PathBuf, String> {
-    let (partial, file) = PartialFile::create(path).await?;
+    to_file_classified(client, media, path)
+        .await
+        .map_err(|failure| failure.text)
+}
+
+/// A failed download: its message, and whether the server said the media
+/// reference has expired.
+pub(super) struct Failure {
+    pub(super) text: String,
+    pub(super) expired: bool,
+}
+
+/// Whether the CDN refused the media reference as gone or no longer allowed.
+/// This reads the typed HTTP status, never the error text, which can contain
+/// these digits for unrelated reasons (paths, ids, ports).
+fn is_expired(error: &anyhow::Error) -> bool {
+    matches!(
+        <dyn std::error::Error + Send + Sync + 'static>::http_status(error.as_ref()),
+        Some(403 | 404 | 410)
+    )
+}
+
+pub(super) async fn to_file_classified(
+    client: &Client,
+    media: &dyn Downloadable,
+    path: &Path,
+) -> Result<PathBuf, Failure> {
+    let plain = |text: String| Failure {
+        text,
+        expired: false,
+    };
+    let (partial, file) = PartialFile::create(path).await.map_err(plain)?;
     let file = client
         .download_to_writer(media, file)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|error| Failure {
+            expired: is_expired(&error),
+            text: error.to_string(),
+        })?;
     drop(file);
-    partial.commit(path).await
+    partial.commit(path).await.map_err(plain)
 }
 
 #[cfg(test)]
@@ -217,6 +252,22 @@ mod tests {
         assert!(downloads.slots.try_acquire().is_err());
         drop(permits);
         assert_eq!(downloads.slots.available_permits(), slots);
+    }
+
+    #[test]
+    fn expiry_comes_from_the_http_status_not_the_error_text() {
+        use whatsapp_rust::http::HttpStatusError;
+        let rejected =
+            |status: u16| anyhow::Error::new(HttpStatusError { status }).context("rejected");
+        for status in [403, 404, 410] {
+            assert!(is_expired(&rejected(status)), "{status}");
+        }
+        assert!(!is_expired(&rejected(401)));
+        assert!(!is_expired(&rejected(500)));
+        // Digits in a path or port are not a status.
+        let text =
+            anyhow::anyhow!("connect to media-404.example:4030 failed, file /cache/403-410.jpg");
+        assert!(!is_expired(&text));
     }
 
     #[tokio::test]

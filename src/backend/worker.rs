@@ -3677,11 +3677,10 @@ impl Worker {
                 .await
                 .expect("download budget stays open");
             let path = media_path(&dir, &chat, &id, &mime, file_name.as_deref());
-            let result = match downloads::to_file(&client, &*downloadable, &path).await {
+            let result = match downloads::to_file_classified(&client, &*downloadable, &path).await {
                 Ok(path) => Ok(path),
-                Err(error) => {
-                    let text = error.to_string();
-                    let expired = ["403", "404", "410"].iter().any(|code| text.contains(code));
+                Err(failure) => {
+                    let (text, expired) = (failure.text, failure.expired);
                     match (&jid, expired && !media_key.is_empty()) {
                         (Some(jid), true) => {
                             // Ask the phone to re-upload expired media, then retry once.
