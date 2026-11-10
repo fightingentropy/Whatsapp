@@ -4032,8 +4032,7 @@ impl Worker {
                 };
                 let url = picture.url;
                 let bytes = tokio::task::spawn_blocking(move || {
-                    ureq::get(&url)
-                        .call()
+                    http_get(&url)
                         .and_then(|mut response| response.body_mut().read_to_vec())
                         .map_err(|error| error.to_string())
                 })
@@ -4553,8 +4552,7 @@ impl Worker {
             let outcome = async {
                 let url = gif.mp4.clone();
                 let bytes = tokio::task::spawn_blocking(move || {
-                    ureq::get(&url)
-                        .call()
+                    http_get(&url)
                         .and_then(|mut response| response.body_mut().read_to_vec())
                         .map_err(|error| error.to_string())
                 })
@@ -5431,6 +5429,25 @@ async fn prepare_animation(
     prepared
 }
 
+/// Longest a plain HTTP fetch (avatars, GIF search and sending) may take.
+const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// A GET that gives up after `timeout`, so a stalled server cannot pin a thread.
+fn http_get_within(
+    url: &str,
+    timeout: Duration,
+) -> Result<ureq::http::Response<ureq::Body>, ureq::Error> {
+    ureq::get(url)
+        .config()
+        .timeout_global(Some(timeout))
+        .build()
+        .call()
+}
+
+fn http_get(url: &str) -> Result<ureq::http::Response<ureq::Body>, ureq::Error> {
+    http_get_within(url, HTTP_TIMEOUT)
+}
+
 /// Fetches a copied web image's original, bounded like any attachment source.
 /// Only HTTPS GIF and WebP responses are kept.
 fn fetch_animation(url: &str) -> Result<Vec<u8>, &'static str> {
@@ -5699,7 +5716,7 @@ fn search_gifs(query: &str, key: &str, dir: &Path) -> Result<Vec<Gif>, GifError>
             percent_encode(query.trim())
         )
     };
-    let body = match ureq::get(&url).call() {
+    let body = match http_get(&url) {
         Ok(mut response) => response
             .body_mut()
             .read_to_string()
@@ -5778,9 +5795,8 @@ fn search_gifs(query: &str, key: &str, dir: &Path) -> Result<Vec<Gif>, GifError>
             }
             let slot = &mut gif.still;
             scope.spawn(move || {
-                let fetched = ureq::get(&url)
-                    .call()
-                    .and_then(|mut response| response.body_mut().read_to_vec());
+                let fetched =
+                    http_get(&url).and_then(|mut response| response.body_mut().read_to_vec());
                 if let Ok(bytes) = fetched
                     && std::fs::write(&path, bytes).is_ok()
                 {
@@ -6071,6 +6087,18 @@ fn parse_conversation(conversation: wa::Conversation) -> ParsedChat {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_stalled_http_server_times_out_instead_of_hanging() {
+        // Accepts the connection and never answers.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        let started = std::time::Instant::now();
+        let result = http_get_within(&url, Duration::from_millis(300));
+        assert!(matches!(result, Err(ureq::Error::Timeout(_))), "{result:?}");
+        assert!(started.elapsed() < Duration::from_secs(10));
+        drop(listener);
+    }
+
     #[test]
     fn link_previews_only_open_web_addresses() {
         assert_eq!(
