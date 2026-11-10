@@ -1425,6 +1425,7 @@ impl Worker {
         }
         let _ = std::fs::remove_dir_all(self.dirs.avatar_cache_dir());
         let _ = std::fs::remove_dir_all(self.dirs.media_cache_dir());
+        let _ = std::fs::remove_dir_all(self.dirs.sticker_cache_dir());
         self.emit(Event::Chats(Vec::new()));
         self.set_status(LinkStatus::LoggedOut);
         // Recreate the store so the next connection starts linking.

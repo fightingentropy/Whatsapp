@@ -1339,7 +1339,7 @@ impl Archive {
     /// Clears all archived data during unlinking.
     pub fn clear(&self) -> Result<()> {
         self.connection.execute_batch(
-            "DELETE FROM group_receipts; DELETE FROM messages; DELETE FROM chats; DELETE FROM contacts; DELETE FROM meta; DELETE FROM lids; DELETE FROM chat_timers;",
+            "DELETE FROM group_receipts; DELETE FROM messages; DELETE FROM chats; DELETE FROM contacts; DELETE FROM meta; DELETE FROM lids; DELETE FROM chat_timers; DELETE FROM stickers;",
         )
     }
 }
@@ -2274,6 +2274,16 @@ mod sticker_tests {
             forwarded: false,
             thumbnail: None,
         }
+    }
+
+    #[test]
+    fn clearing_the_archive_forgets_phone_stickers() {
+        let archive = Archive::in_memory().expect("opens");
+        archive
+            .upsert_phone_sticker("aa", b"one", 100, 0.5)
+            .expect("stored");
+        archive.clear().expect("clears");
+        assert!(archive.phone_stickers().expect("lists").is_empty());
     }
 
     #[test]
