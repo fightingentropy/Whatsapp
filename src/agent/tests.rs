@@ -116,6 +116,18 @@ fn missing_profile_is_not_created() {
 }
 
 #[test]
+fn privacy_ids_resolve_to_the_phone_number_chat_and_sender() {
+    let f = Fixture::new();
+    let chat = "15550001@s.whatsapp.net";
+    f.archive.ensure_chat(chat, "Ada").unwrap();
+    f.insert(chat, "a", "hello");
+    f.archive.put_lid("author", "15550001").unwrap();
+    let read = f.call("read_messages", json!({"chat_id":"author@lid"}));
+    assert_eq!(read["messages"].as_array().unwrap().len(), 1);
+    assert_eq!(read["messages"][0]["sender_id"], chat);
+}
+
+#[test]
 fn reads_committed_wal_without_changing_unread_or_exposing_raw_data() {
     let f = Fixture::new();
     f.insert("alpha", "a", "first");
@@ -211,10 +223,11 @@ fn search_is_literal_and_filters_before_paging() {
 #[test]
 fn names_aliases_replies_and_links_are_structured() {
     let f = Fixture::new();
-    f.archive
-        .put_lid("author@lid", "author@s.whatsapp.net")
-        .unwrap();
-    f.archive.put_lid("alias@lid", "alpha").unwrap();
+    // The lids table holds bare user ids, as the app writes them.
+    let chat = "7@s.whatsapp.net";
+    f.archive.ensure_chat(chat, "Seven").unwrap();
+    f.archive.put_lid("author", "author").unwrap();
+    f.archive.put_lid("alias", "7").unwrap();
     f.archive
         .upsert_contact(&Contact {
             id: "author@s.whatsapp.net".into(),
@@ -223,7 +236,7 @@ fn names_aliases_replies_and_links_are_structured() {
         })
         .unwrap();
     let mut m = message(
-        "alpha",
+        chat,
         "reply",
         Content::Text {
             text: "Read https://example.com/a".into(),
@@ -246,7 +259,7 @@ fn names_aliases_replies_and_links_are_structured() {
         "get_message",
         json!({"chat_id":"alias@lid","message_id":"reply"}),
     );
-    assert_eq!(result["chat_id"], "alpha");
+    assert_eq!(result["chat_id"], chat);
     assert_eq!(result["sender_id"], "author@s.whatsapp.net");
     assert_eq!(result["sender_name"], "Known Author");
     assert_eq!(result["quoted"]["id"], "original");

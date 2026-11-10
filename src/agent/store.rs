@@ -16,7 +16,7 @@ use crate::{
 };
 
 const PAGE_BYTES: usize = 256 * 1024;
-const MESSAGE_SELECT: &str = "SELECT m.chat, m.id, coalesce(l.pn, m.sender),
+const MESSAGE_SELECT: &str = "SELECT m.chat, m.id, coalesce(l.pn || '@s.whatsapp.net', m.sender),
     CASE WHEN m.from_me THEN 'You' ELSE coalesce(nullif(n.full_name,''), nullif(m.sender_name,''), nullif(n.push_name,''), m.sender) END,
     m.from_me, m.timestamp,
     CASE WHEN length(CAST(m.content AS BLOB)) <= 1048576 THEN m.content END,
@@ -26,8 +26,8 @@ const MESSAGE_SELECT: &str = "SELECT m.chat, m.id, coalesce(l.pn, m.sender),
     m.edited, m.forwarded, coalesce(c.name, m.chat)
     FROM messages m
     LEFT JOIN chats c ON c.id = m.chat
-    LEFT JOIN lids l ON l.lid = m.sender
-    LEFT JOIN contacts n ON n.id = coalesce(l.pn, m.sender)";
+    LEFT JOIN lids l ON l.lid || '@lid' = m.sender
+    LEFT JOIN contacts n ON n.id = coalesce(l.pn || '@s.whatsapp.net', m.sender)";
 
 pub(super) struct Store {
     connection: Connection,
@@ -61,11 +61,17 @@ impl Store {
 
     fn canonical(&self, id: &str) -> Result<String> {
         identifier(id)?;
+        // The lids table holds bare user ids; chats and senders use full JIDs.
+        let Some(lid) = id.strip_suffix("@lid") else {
+            return Ok(id.to_owned());
+        };
         Ok(self
             .connection
-            .query_row("SELECT pn FROM lids WHERE lid = ?1", [id], |r| r.get(0))
+            .query_row("SELECT pn FROM lids WHERE lid = ?1", [lid], |r| {
+                r.get::<_, String>(0)
+            })
             .optional()?
-            .unwrap_or_else(|| id.to_owned()))
+            .map_or_else(|| id.to_owned(), |pn| format!("{pn}@s.whatsapp.net")))
     }
 
     fn require_chat(&self, id: &str) -> Result<String> {
