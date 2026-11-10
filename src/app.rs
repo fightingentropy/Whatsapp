@@ -1688,6 +1688,9 @@ impl App {
             self.toast_error("Open a chat first");
             return;
         }
+        // Attachments cannot carry a quote, so drop the reply strip rather than
+        // send an unquoted file under it.
+        self.reply_to = None;
         for path in paths {
             self.pending.push(Pending::File(path));
         }
@@ -2317,6 +2320,7 @@ impl App {
             } => {
                 // Stage the files so the user can add a caption.
                 if self.open_chat.is_some() {
+                    self.reply_to = None;
                     self.pending.push(Pending::Picture {
                         width,
                         height,
@@ -4109,6 +4113,16 @@ mod tests {
         app.search_hits.push(message("1@s.whatsapp.net", "m", 1));
         app.apply(Action::Search(String::new()), &ctx);
         assert!(app.search_hits.is_empty());
+    }
+
+    #[test]
+    fn staging_attachments_drops_the_reply_target() {
+        let mut app = app();
+        app.open_chat = Some("491700000001@s.whatsapp.net".into());
+        app.reply_to = Some("m1".into());
+        app.stage_files(vec![PathBuf::from("/tmp/a.txt")]);
+        assert!(app.reply_to.is_none());
+        assert_eq!(app.pending.len(), 1);
     }
 
     #[test]
