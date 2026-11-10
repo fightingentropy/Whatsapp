@@ -4966,19 +4966,25 @@ fn first_link(text: &str) -> Option<String> {
         .map(|token| token.trim_end_matches(['.', ',', ')', ']']).to_owned())
 }
 
+/// Whether `value` starts with `host:port`, as opposed to a scheme such as
+/// `mailto:` or `javascript:`. A colon after the first `/`, `?` or `#` belongs
+/// to the path and does not make a scheme.
+fn is_host_port(value: &str) -> bool {
+    let authority = value.split(['/', '?', '#']).next().unwrap_or_default();
+    match authority.split_once(':') {
+        Some((host, port)) => {
+            !host.is_empty() && !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit())
+        }
+        None => true,
+    }
+}
+
 /// The address a link preview opens: a bare host gets `https://`, and any
 /// other scheme than http or https is refused.
 fn preview_url(url: String) -> Option<String> {
     let url = if url.contains("://") {
         url
-    } else if url.contains(':')
-        && !url.split(':').nth(1).is_some_and(|rest| {
-            // `host:port` is a bare address; `mailto:x` and `javascript:x` are not.
-            rest.split('/')
-                .next()
-                .is_some_and(|port| !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()))
-        })
-    {
+    } else if url.contains(':') && !is_host_port(&url) {
         return None;
     } else {
         format!("https://{url}")
@@ -6048,6 +6054,14 @@ mod tests {
         assert_eq!(
             preview_url("HTTP://example.com".into()).as_deref(),
             Some("HTTP://example.com")
+        );
+        assert_eq!(
+            preview_url("en.wikipedia.org/wiki/Help:Contents".into()).as_deref(),
+            Some("https://en.wikipedia.org/wiki/Help:Contents")
+        );
+        assert_eq!(
+            preview_url("example.com/a?t=1:2".into()).as_deref(),
+            Some("https://example.com/a?t=1:2")
         );
         for bad in [
             "file:///etc/hosts",
