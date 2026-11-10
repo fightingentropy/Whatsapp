@@ -276,23 +276,50 @@ fn clip_length(samples: usize) -> Duration {
     Duration::from_secs_f64(samples as f64 / f64::from(voice::RATE))
 }
 
+/// Longest clip played back: 15 minutes of mono samples.
+const MAX_PLAYBACK_SAMPLES: usize = 15 * 60 * voice::RATE as usize;
+/// Largest audio file read into memory.
+const MAX_AUDIO_BYTES: u64 = 64 * 1024 * 1024;
+
 /// Decodes a file to mono 48 kHz samples. OGG/Opus uses `voice`; other
 /// supported formats use rodio.
 fn decode_file(path: &Path) -> Result<Vec<f32>, String> {
-    let bytes =
-        std::fs::read(path).map_err(|error| format!("Could not read the audio: {error}"))?;
-    if bytes.starts_with(b"OggS")
-        && let Ok(samples) = voice::decode(&bytes)
-    {
-        return Ok(samples);
-    }
+    decode_file_limited(path, MAX_PLAYBACK_SAMPLES)
+}
+
+fn decode_file_limited(path: &Path, maximum_samples: usize) -> Result<Vec<f32>, String> {
     let file =
         std::fs::File::open(path).map_err(|error| format!("Could not read the audio: {error}"))?;
-    let decoder = rodio::Decoder::new(std::io::BufReader::new(file))
+    let length = file
+        .metadata()
+        .map_err(|error| format!("Could not read the audio: {error}"))?
+        .len();
+    if length > MAX_AUDIO_BYTES {
+        return Err("The audio file is too large to play".to_owned());
+    }
+    let mut bytes = Vec::with_capacity(length as usize);
+    std::io::Read::read_to_end(&mut std::io::Read::take(&file, MAX_AUDIO_BYTES), &mut bytes)
+        .map_err(|error| format!("Could not read the audio: {error}"))?;
+    if bytes.starts_with(b"OggS") {
+        match voice::decode_limited(&bytes, maximum_samples) {
+            Ok(samples) => return Ok(samples),
+            // A clip over the limit must not fall through to another decoder.
+            Err(error) if error.contains("playback limit") => return Err(error),
+            Err(_) => {}
+        }
+    }
+    let decoder = rodio::Decoder::new(std::io::Cursor::new(bytes))
         .map_err(|error| format!("Could not decode the audio: {error}"))?;
     let channels = decoder.channels().get();
     let rate = decoder.sample_rate().get();
-    let interleaved: Vec<f32> = decoder.collect();
+    let limit = maximum_samples
+        .saturating_mul(usize::from(channels))
+        .saturating_mul(rate as usize)
+        / voice::RATE as usize;
+    let interleaved: Vec<f32> = decoder.take(limit.saturating_add(1)).collect();
+    if interleaved.len() > limit {
+        return Err("The audio is too long to play".to_owned());
+    }
     Ok(voice::mono_at_rate(&interleaved, channels, rate))
 }
 
@@ -439,6 +466,19 @@ fn record(stop: &AtomicBool, levels: &Mutex<Vec<f32>>, waker: &Waker) -> Result<
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn playback_refuses_a_clip_over_the_sample_limit() {
+        let path = std::env::temp_dir().join(format!("whatsapp-limit-{}.ogg", std::process::id()));
+        let tone: Vec<f32> = (0..voice::RATE as usize / 2)
+            .map(|n| (n as f32 * 0.05).sin() * 0.3)
+            .collect();
+        std::fs::write(&path, voice::encode(&tone).expect("encodes")).expect("written");
+        let complete = decode_file_limited(&path, usize::MAX).expect("decodes");
+        assert!(decode_file_limited(&path, complete.len()).is_ok());
+        assert!(decode_file_limited(&path, complete.len() - 1).is_err());
+        let _ = std::fs::remove_file(path);
+    }
+
     use super::*;
 
     /// Plays a one-second test tone:
