@@ -4855,11 +4855,18 @@ fn extension_for(mime: &str, file_name: Option<&str>) -> String {
     .to_owned()
 }
 
+/// Keeps a file-name part short: names come from the sender, and a path
+/// component over 255 bytes cannot be created.
+fn clipped(part: String, chars: usize) -> String {
+    part.chars().take(chars).collect()
+}
+
 fn media_path(dir: &Path, chat: &str, id: &str, mime: &str, file_name: Option<&str>) -> PathBuf {
-    let extension = extension_for(mime, file_name);
+    let extension = clipped(extension_for(mime, file_name), 8);
+    let id = clipped(sanitize(id), 80);
     let stem = match file_name.and_then(|name| Path::new(name).file_stem()?.to_str()) {
-        Some(name) => format!("{}-{}", sanitize(id), sanitize(name)),
-        None => format!("{}-{}", sanitize(chat), sanitize(id)),
+        Some(name) => format!("{id}-{}", clipped(sanitize(name), 80)),
+        None => format!("{}-{id}", clipped(sanitize(chat), 80)),
     };
     dir.join(format!("{stem}.{extension}"))
 }
@@ -6221,6 +6228,41 @@ mod tests {
         );
         assert_eq!(extension_for("audio/ogg; codecs=opus", None), "ogg");
         assert_eq!(extension_for("application/x-unknown", None), "x-unknown");
+    }
+
+    #[test]
+    fn media_paths_stay_within_the_file_name_limit() {
+        let dir = Path::new("/cache");
+        let long = format!("{}.pdf", "\u{e9}".repeat(300));
+        let name = |chat: &str, id: &str, mime: &str, file: Option<&str>| {
+            media_path(dir, chat, id, mime, file)
+                .file_name()
+                .unwrap()
+                .len()
+        };
+        assert!(name("1@s.whatsapp.net", "ABC", "application/pdf", Some(&long)) <= 255);
+        let ascii = format!("{}.pdf", "a".repeat(400));
+        assert!(name("1@s.whatsapp.net", "ABC", "application/pdf", Some(&ascii)) <= 255);
+        assert!(name(&"c".repeat(400), &"i".repeat(400), "image/jpeg", None) <= 255);
+        assert!(
+            name(
+                "1@s.whatsapp.net",
+                "ABC",
+                &format!("x/{}", "e".repeat(300)),
+                None
+            ) <= 255
+        );
+        assert_eq!(
+            media_path(
+                dir,
+                "1@s.whatsapp.net",
+                "ABC",
+                "application/pdf",
+                Some("tax return.pdf")
+            ),
+            PathBuf::from("/cache/ABC-tax_return.pdf"),
+            "ordinary names are unchanged"
+        );
     }
 
     #[test]
