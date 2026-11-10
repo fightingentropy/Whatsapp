@@ -4982,7 +4982,12 @@ fn is_host_port(value: &str) -> bool {
 /// The address a link preview opens: a bare host gets `https://`, and any
 /// other scheme than http or https is refused.
 fn preview_url(url: String) -> Option<String> {
-    let url = if url.contains("://") {
+    // Look for a scheme only before the first `/`, `?` or `#`; a `://` later
+    // on belongs to the path or query of a scheme-less link.
+    let has_scheme = url
+        .find("://")
+        .is_some_and(|at| !url[..at].contains(['/', '?', '#']));
+    let url = if has_scheme {
         url
     } else if url.contains(':') && !is_host_port(&url) {
         return None;
@@ -6063,8 +6068,18 @@ mod tests {
             preview_url("example.com/a?t=1:2".into()).as_deref(),
             Some("https://example.com/a?t=1:2")
         );
+        assert_eq!(
+            preview_url("example.com/redirect?u=http://x".into()).as_deref(),
+            Some("https://example.com/redirect?u=http://x")
+        );
+        assert_eq!(
+            preview_url("example.com#a://b".into()).as_deref(),
+            Some("https://example.com#a://b")
+        );
         for bad in [
             "file:///etc/hosts",
+            "data:text/html,a://b",
+            "mailto:a@b.c?u=http://x",
             "smb://server/share",
             "someapp://do?x=1",
             "mailto:a@b.c",
