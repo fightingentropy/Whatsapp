@@ -245,22 +245,54 @@ pub fn import_signal_pack(url: &str, packs: &Path) -> Result<String, String> {
     write_pack(packs, &title, files)
 }
 
+/// Largest single archive entry that is read into memory.
+const MAX_ENTRY_BYTES: u64 = 8 * 1024 * 1024;
+/// Most entries an archive may hold. Real packs have a few dozen files.
+const MAX_ENTRIES: usize = 512;
+/// Most picture bytes kept from one archive.
+const MAX_TOTAL_BYTES: usize = 64 * 1024 * 1024;
+/// Longest side of an animation that is decoded.
+const MAX_ANIMATION_SIDE: u32 = 1024;
+/// Most decoded animation pixels (about 256 MiB as RGBA) held at once.
+const MAX_ANIMATION_PIXELS: u64 = 64 * 1024 * 1024;
+
+/// Reads an entry only when it fits the size cap; larger entries are skipped.
+fn read_bounded(entry: impl Read, declared: u64) -> Option<Vec<u8>> {
+    if declared > MAX_ENTRY_BYTES {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    entry
+        .take(MAX_ENTRY_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    (bytes.len() as u64 <= MAX_ENTRY_BYTES).then_some(bytes)
+}
+
 /// Imports a .wastickers or zip archive. Uses `title.txt` or the filename as title.
 pub fn import_archive(path: &Path, packs: &Path) -> Result<String, String> {
     let file =
         std::fs::File::open(path).map_err(|error| format!("Could not open the file: {error}"))?;
     let mut archive = zip::ZipArchive::new(file)
         .map_err(|error| format!("This file is not a sticker archive: {error}"))?;
+    if archive.len() > MAX_ENTRIES {
+        return Err("This sticker archive holds too many files".to_owned());
+    }
     let mut title: Option<String> = None;
     let mut pictures: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut total = 0usize;
     for index in 0..archive.len() {
         let Ok(mut entry) = archive.by_index(index) else {
             continue;
         };
         let name = entry.name().to_lowercase();
-        let mut bytes = Vec::new();
-        if entry.read_to_end(&mut bytes).is_err() {
+        let declared = entry.size();
+        let Some(bytes) = read_bounded(&mut entry, declared) else {
             continue;
+        };
+        total += bytes.len();
+        if total > MAX_TOTAL_BYTES {
+            return Err("This sticker archive is too large".to_owned());
         }
         if name.ends_with("title.txt") {
             let text = String::from_utf8_lossy(&bytes).trim().to_owned();
@@ -339,28 +371,36 @@ fn webp_bytes(bytes: Vec<u8>) -> Option<Vec<u8>> {
 fn animation_frames(bytes: &[u8]) -> Option<Vec<(image::RgbaImage, u32)>> {
     use image::AnimationDecoder;
     let cursor = std::io::Cursor::new(bytes);
-    let frames = if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
+    use image::ImageDecoder;
+    let (dimensions, frames) = if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
         let decoder = image::codecs::png::PngDecoder::new(cursor).ok()?;
         if !decoder.is_apng().ok()? {
             return None;
         }
-        decoder.apng().ok()?.into_frames()
+        let dimensions = decoder.dimensions();
+        (dimensions, decoder.apng().ok()?.into_frames())
     } else if bytes.starts_with(b"GIF8") {
-        image::codecs::gif::GifDecoder::new(cursor)
-            .ok()?
-            .into_frames()
+        let decoder = image::codecs::gif::GifDecoder::new(cursor).ok()?;
+        (decoder.dimensions(), decoder.into_frames())
     } else {
         return None;
     };
-    let frames: Vec<(image::RgbaImage, u32)> = frames
-        .take(200)
-        .filter_map(|frame| frame.ok())
-        .map(|frame| {
-            let (numerator, denominator) = frame.delay().numer_denom_ms();
-            (frame.into_buffer(), numerator / denominator.max(1))
-        })
-        .collect();
-    (frames.len() > 1).then_some(frames)
+    // Refuse before decoding: every frame is held at the source size.
+    let (width, height) = dimensions;
+    if width.max(height) > MAX_ANIMATION_SIDE {
+        return None;
+    }
+    let mut pixels = 0u64;
+    let mut decoded: Vec<(image::RgbaImage, u32)> = Vec::new();
+    for frame in frames.take(200).filter_map(|frame| frame.ok()) {
+        pixels += u64::from(frame.buffer().width()) * u64::from(frame.buffer().height());
+        if pixels > MAX_ANIMATION_PIXELS {
+            return None;
+        }
+        let (numerator, denominator) = frame.delay().numer_denom_ms();
+        decoded.push((frame.into_buffer(), numerator / denominator.max(1)));
+    }
+    (decoded.len() > 1).then_some(decoded)
 }
 
 /// Encodes frames as a lossy animated WebP at sticker size.
@@ -529,6 +569,53 @@ mod tests {
         let again = import_archive(&archive_path, &packs).expect("imports");
         assert_eq!(again, "Happy Frogs 2");
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn an_oversized_archive_entry_is_skipped_instead_of_read() {
+        let root = std::env::temp_dir().join(format!("whatsapp-bigpack-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("dirs");
+        let archive_path = root.join("Small.wastickers");
+        let file = std::fs::File::create(&archive_path).expect("creates");
+        let mut writer = zip::ZipWriter::new(file);
+        let plain: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default();
+        writer.start_file("title.txt", plain).expect("entry");
+        let mut huge = b"Huge title".to_vec();
+        huge.resize(MAX_ENTRY_BYTES as usize + 1, b' ');
+        std::io::Write::write_all(&mut writer, &huge).expect("writes");
+        writer.start_file("01.png", plain).expect("entry");
+        std::io::Write::write_all(&mut writer, &tiny_png()).expect("writes");
+        writer.finish().expect("finishes");
+        let title = import_archive(&archive_path, &root.join("packs")).expect("imports");
+        assert_eq!(title, "Small", "the oversized title entry was not read");
+        assert!(
+            read_bounded(std::io::repeat(0), 0).is_none(),
+            "a lying size is caught"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn an_animation_with_a_huge_canvas_is_not_decoded() {
+        let mut gif = Vec::new();
+        {
+            let mut encoder = image::codecs::gif::GifEncoder::new(&mut gif);
+            for shade in [10u8, 200] {
+                let frame = image::Frame::from_parts(
+                    image::RgbaImage::from_pixel(
+                        MAX_ANIMATION_SIDE + 1,
+                        2,
+                        image::Rgba([shade, 0, 0, 255]),
+                    ),
+                    0,
+                    0,
+                    image::Delay::from_numer_denom_ms(100, 1),
+                );
+                encoder.encode_frame(frame).expect("frame");
+            }
+        }
+        assert!(animation_frames(&gif).is_none());
     }
 
     #[test]
