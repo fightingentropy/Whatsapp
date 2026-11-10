@@ -923,12 +923,13 @@ impl App {
         if needle.is_empty() {
             return Vec::new();
         }
+        let chat_ids: std::collections::HashSet<&str> =
+            self.chats.iter().map(|chat| chat.id.as_str()).collect();
         let mut contacts: Vec<&Contact> = self
             .contacts
             .values()
             .filter(|contact| crate::model::phone_of(&contact.id).is_some())
             .filter(|contact| self.me.as_deref() != Some(contact.id.as_str()))
-            .filter(|contact| !self.chats.iter().any(|chat| chat.id == contact.id))
             .filter(|contact| {
                 contact
                     .display_name()
@@ -939,6 +940,7 @@ impl App {
                         .next()
                         .is_some_and(|phone| phone.contains(&needle))
             })
+            .filter(|contact| !chat_ids.contains(contact.id.as_str()))
             .collect();
         contacts
             .sort_by_key(|contact| contact.display_name().unwrap_or(&contact.id).to_lowercase());
