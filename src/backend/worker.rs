@@ -4336,7 +4336,7 @@ impl Worker {
                         let encoded = tokio::task::spawn_blocking(move || {
                             let image = still
                                 .ok_or_else(|| "Clipboard image data is invalid".to_owned())?;
-                            encode_jpeg(&image::DynamicImage::ImageRgba8(image), 88)
+                            encode_jpeg(&image::DynamicImage::ImageRgba8(image), 88, None)
                         })
                         .await
                         .map_err(|error| error.to_string())??;
@@ -5249,9 +5249,20 @@ struct Prepared {
     file_name: Option<String>,
 }
 
-fn encode_jpeg(image: &image::DynamicImage, quality: u8) -> Result<Vec<u8>, String> {
+/// Encodes JPEG bytes, tagging them with `icc` (an RGB colour profile carried
+/// over from the source) so wide-gamut pictures keep their colours.
+fn encode_jpeg(
+    image: &image::DynamicImage,
+    quality: u8,
+    icc: Option<&[u8]>,
+) -> Result<Vec<u8>, String> {
+    use image::ImageEncoder as _;
     let mut bytes = Vec::new();
     let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, quality);
+    if let Some(profile) = icc {
+        // An encoder that cannot embed it still produces a usable picture.
+        let _ = encoder.set_icc_profile(profile.to_vec());
+    }
     encoder
         .encode_image(&image.to_rgb8())
         .map_err(|error| error.to_string())?;
@@ -5259,9 +5270,9 @@ fn encode_jpeg(image: &image::DynamicImage, quality: u8) -> Result<Vec<u8>, Stri
 }
 
 /// Builds the pre-download attachment thumbnail.
-fn thumbnail_jpeg(image: &image::DynamicImage) -> Option<Vec<u8>> {
+fn thumbnail_jpeg(image: &image::DynamicImage, icc: Option<&[u8]>) -> Option<Vec<u8>> {
     let small = image.thumbnail(THUMBNAIL_SIDE, THUMBNAIL_SIDE);
-    encode_jpeg(&small, 60).ok()
+    encode_jpeg(&small, 60, icc).ok()
 }
 
 /// Uploads a recording and builds a push-to-talk message with waveform.
@@ -5318,7 +5329,10 @@ fn whatsapp_audio_mime(mime: &str) -> Option<&'static str> {
     }
 }
 
-fn decode_upload_picture(bytes: &[u8], mobile: bool) -> Result<image::DynamicImage, String> {
+/// A decoded upload picture and its embedded RGB colour profile, if any.
+type UploadPicture = (image::DynamicImage, Option<Vec<u8>>);
+
+fn decode_upload_picture(bytes: &[u8], mobile: bool) -> Result<UploadPicture, String> {
     let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
         .with_guessed_format()
         .map_err(|error| error.to_string())?;
@@ -5333,10 +5347,15 @@ fn decode_upload_picture(bytes: &[u8], mobile: bool) -> Result<image::DynamicIma
     let mut decoder = reader.into_decoder().map_err(|error| error.to_string())?;
     let orientation = image::ImageDecoder::orientation(&mut decoder)
         .unwrap_or(image::metadata::Orientation::NoTransforms);
+    // Only an RGB profile describes the RGB pixels that get re-encoded.
+    let icc = image::ImageDecoder::icc_profile(&mut decoder)
+        .ok()
+        .flatten()
+        .filter(|profile| profile.get(16..20) == Some(b"RGB ".as_slice()));
     let mut decoded =
         image::DynamicImage::from_decoder(decoder).map_err(|error| error.to_string())?;
     decoded.apply_orientation(orientation);
-    Ok(decoded)
+    Ok((decoded, icc))
 }
 
 /// JPEG bytes, thumbnail, width and height of a picture ready to upload.
@@ -5345,10 +5364,10 @@ type UploadJpeg = (Vec<u8>, Option<Vec<u8>>, u32, u32);
 /// Re-encodes a picture as JPEG, which also drops EXIF and other metadata
 /// such as location. Returns the JPEG, its thumbnail and its dimensions.
 fn upload_jpeg(bytes: &[u8], mobile: bool) -> Result<UploadJpeg, String> {
-    let decoded = decode_upload_picture(bytes, mobile)?;
+    let (decoded, icc) = decode_upload_picture(bytes, mobile)?;
     Ok((
-        encode_jpeg(&decoded, 88)?,
-        thumbnail_jpeg(&decoded),
+        encode_jpeg(&decoded, 88, icc.as_deref())?,
+        thumbnail_jpeg(&decoded, icc.as_deref()),
         decoded.width(),
         decoded.height(),
     ))
@@ -6115,6 +6134,34 @@ mod tests {
     }
 
     #[test]
+    fn uploaded_jpegs_keep_their_rgb_colour_profile() {
+        use image::ImageEncoder as _;
+        let picture = image::RgbImage::from_pixel(8, 4, image::Rgb([90, 120, 200]));
+        // A minimal stand-in profile: 128 bytes with the "RGB " colour space.
+        let mut profile = vec![0u8; 128];
+        profile[16..20].copy_from_slice(b"RGB ");
+        profile[36..40].copy_from_slice(b"acsp");
+        profile[100..110].copy_from_slice(b"MARK-P3-XY");
+        let mut tagged = Vec::new();
+        let mut encoder = image::codecs::jpeg::JpegEncoder::new(&mut tagged);
+        encoder.set_icc_profile(profile.clone()).expect("profile");
+        encoder.encode_image(&picture).expect("fixture");
+        let (jpeg, thumbnail, _, _) = upload_jpeg(&tagged, false).expect("encodes");
+        let carries = |bytes: &[u8]| bytes.windows(10).any(|window| window == b"MARK-P3-XY");
+        assert!(carries(&jpeg), "full picture keeps its profile");
+        assert!(carries(&thumbnail.expect("thumbnail")));
+        // A profile for another colour space is not carried over.
+        let mut cmyk = profile;
+        cmyk[16..20].copy_from_slice(b"CMYK");
+        let mut other = Vec::new();
+        let mut encoder = image::codecs::jpeg::JpegEncoder::new(&mut other);
+        encoder.set_icc_profile(cmyk).expect("profile");
+        encoder.encode_image(&picture).expect("fixture");
+        let (jpeg, _, _, _) = upload_jpeg(&other, false).expect("encodes");
+        assert!(!carries(&jpeg));
+    }
+
+    #[test]
     fn phone_picture_limits_reject_extreme_dimensions_before_decoding_pixels() {
         let image = image::DynamicImage::new_rgb8(8193, 1);
         let mut bytes = std::io::Cursor::new(Vec::new());
@@ -6441,9 +6488,9 @@ mod tests {
             200,
             image::Rgba([200, 30, 30, 255]),
         ));
-        let jpeg = encode_jpeg(&image, 80).expect("encodes");
+        let jpeg = encode_jpeg(&image, 80, None).expect("encodes");
         assert_eq!(&jpeg[..2], &[0xff, 0xd8]);
-        let thumbnail = thumbnail_jpeg(&image).expect("thumbnail");
+        let thumbnail = thumbnail_jpeg(&image, None).expect("thumbnail");
         let small = image::load_from_memory(&thumbnail).expect("decodes");
         assert!(small.width() <= THUMBNAIL_SIDE && small.height() <= THUMBNAIL_SIDE);
     }
