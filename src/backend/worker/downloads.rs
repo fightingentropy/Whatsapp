@@ -172,9 +172,13 @@ pub(super) async fn to_file(
     media: &dyn Downloadable,
     path: &Path,
 ) -> Result<PathBuf, String> {
-    to_file_classified(client, media, path)
-        .await
-        .map_err(|failure| failure.text)
+    user_text(to_file_classified(client, media, path).await)
+}
+
+/// Maps a classified failure to the text shown in the bubble, so every
+/// caller gets the fixed notice for expired media.
+fn user_text(result: Result<PathBuf, Failure>) -> Result<PathBuf, String> {
+    result.map_err(Failure::into_text)
 }
 
 /// A failed download: its message, and whether the server said the media
@@ -296,6 +300,21 @@ mod tests {
             expired: true,
         };
         assert_eq!(gone.into_text(), EXPIRED_NOTICE);
+    }
+
+    #[test]
+    fn plain_download_results_show_the_notice_for_expired_media() {
+        let gone = Failure {
+            text: "rejected".to_owned(),
+            expired: true,
+        };
+        assert_eq!(user_text(Err(gone)), Err(EXPIRED_NOTICE.to_owned()));
+        let local = Failure {
+            text: "disk full".to_owned(),
+            expired: false,
+        };
+        assert_eq!(user_text(Err(local)), Err("disk full".to_owned()));
+        assert_eq!(user_text(Ok(PathBuf::from("a"))), Ok(PathBuf::from("a")));
     }
 
     #[tokio::test]
