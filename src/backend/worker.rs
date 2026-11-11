@@ -3704,8 +3704,9 @@ impl Worker {
             let result = match downloads::to_file_classified(&client, &*downloadable, &path).await {
                 Ok(path) => Ok(path),
                 Err(failure) => {
-                    let (text, expired) = (failure.text, failure.expired);
-                    match (&jid, expired && !media_key.is_empty()) {
+                    let reuploadable = failure.expired && !media_key.is_empty();
+                    let text = failure.into_text();
+                    match (&jid, reuploadable) {
                         (Some(jid), true) => {
                             // Ask the phone to re-upload expired media, then retry once.
                             let request = MediaReuploadRequest {
@@ -3724,12 +3725,10 @@ impl Worker {
                                         None => Err(text),
                                     }
                                 }
-                                Ok(_) => {
-                                    Err("No longer available on WhatsApp's servers".to_owned())
-                                }
+                                Ok(_) => Err(downloads::EXPIRED_NOTICE.to_owned()),
                                 Err(error) => {
                                     log::info!("media re-upload was not granted: {error}");
-                                    Err("No longer available on WhatsApp's servers".to_owned())
+                                    Err(downloads::EXPIRED_NOTICE.to_owned())
                                 }
                             }
                         }

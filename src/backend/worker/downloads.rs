@@ -184,6 +184,20 @@ pub(super) struct Failure {
     pub(super) expired: bool,
 }
 
+/// Shown in the bubble when the media is gone from WhatsApp's servers.
+pub(super) const EXPIRED_NOTICE: &str = "No longer available on WhatsApp's servers";
+
+impl Failure {
+    /// The text to show: the fixed notice for expired media, else the raw error.
+    pub(super) fn into_text(self) -> String {
+        if self.expired {
+            EXPIRED_NOTICE.to_owned()
+        } else {
+            self.text
+        }
+    }
+}
+
 /// Whether the CDN refused the media reference as gone or no longer allowed.
 /// This reads the typed HTTP status, never the error text, which can contain
 /// these digits for unrelated reasons (paths, ids, ports).
@@ -268,6 +282,20 @@ mod tests {
         let text =
             anyhow::anyhow!("connect to media-404.example:4030 failed, file /cache/403-410.jpg");
         assert!(!is_expired(&text));
+    }
+
+    #[test]
+    fn only_expired_failures_get_the_notice() {
+        let local = Failure {
+            text: "cannot write /cache/403-404/410.jpg".to_owned(),
+            expired: false,
+        };
+        assert_eq!(local.into_text(), "cannot write /cache/403-404/410.jpg");
+        let gone = Failure {
+            text: "rejected".to_owned(),
+            expired: true,
+        };
+        assert_eq!(gone.into_text(), EXPIRED_NOTICE);
     }
 
     #[tokio::test]

@@ -1389,14 +1389,10 @@ impl App {
                 media.state = MediaState::Idle;
             }
             Err(error) => {
-                // Show expired-file failures in the bubble, not as a toast.
-                let notice = if error.contains("403") || error.contains("404") {
-                    "No longer available on WhatsApp's servers".to_owned()
-                } else {
-                    error
-                };
-                log::warn!("download failed: {notice}");
-                media.state = MediaState::Failed(notice);
+                // The worker already turned expired-media failures into the
+                // notice; the text is never classified here.
+                log::warn!("download failed: {error}");
+                media.state = MediaState::Failed(error);
             }
         }
     }
