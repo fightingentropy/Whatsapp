@@ -220,6 +220,7 @@ pub async fn run(
         group_info_retry: Vec::new(),
         presence_subscribed: HashSet::new(),
         pending_older: HashMap::new(),
+        local_revokes: HashSet::new(),
         older_warned: HashSet::new(),
         pending_avatars: HashMap::new(),
         sticker_pace: Default::default(),
@@ -314,6 +315,10 @@ struct Worker {
     presence_subscribed: HashSet<String>,
     /// Pending phone-history request time and boundary by chat.
     pending_older: HashMap<ChatId, (Instant, super::PageKey)>,
+    /// Messages this device optimistically marked deleted and has not heard
+    /// back about; a remote revoke clears the entry so a failed local send
+    /// cannot undo a genuine deletion.
+    local_revokes: HashSet<(ChatId, String)>,
     /// Chats already notified about a phone-history timeout.
     older_warned: HashSet<ChatId>,
     /// Deferred profile-picture requests and retry counts.
@@ -1639,6 +1644,7 @@ impl Worker {
             use wa::message::protocol_message::Type;
             match protocol.r#type {
                 Some(Type::REVOKE) => {
+                    self.local_revokes.remove(&(chat.clone(), target.clone()));
                     if let Ok(true) =
                         self.archive
                             .set_content(&chat, &target, &Content::Revoked, false)
@@ -2976,10 +2982,13 @@ impl Worker {
                 error,
             } => {
                 // Only undo our own optimistic change, never a newer one.
-                let unchanged = matches!(
-                    self.archive.message(&chat, &id),
-                    Ok(Some(current)) if current.content == applied
-                );
+                let ours = applied != Content::Revoked
+                    || self.local_revokes.remove(&(chat.clone(), id.clone()));
+                let unchanged = ours
+                    && matches!(
+                        self.archive.message(&chat, &id),
+                        Ok(Some(current)) if current.content == applied
+                    );
                 if unchanged
                     && self
                         .archive
@@ -4210,6 +4219,7 @@ impl Worker {
             .set_content(&chat, &id, &Content::Revoked, false)
         {
             restore = previous.map(Box::new);
+            self.local_revokes.insert((chat.clone(), id.clone()));
             self.emit_message(&chat, &id);
             self.emit_chat(&chat);
         }
@@ -6719,6 +6729,7 @@ mod receipt_tests {
             group_info_retry: Vec::new(),
             presence_subscribed: HashSet::new(),
             pending_older: HashMap::new(),
+            local_revokes: HashSet::new(),
             older_warned: HashSet::new(),
             pending_avatars: HashMap::new(),
             sticker_pace: Default::default(),
@@ -6998,6 +7009,7 @@ mod receipt_tests {
             .archive
             .set_content(PEER, "m1", &Content::Revoked, false)
             .unwrap();
+        worker.local_revokes.insert((PEER.into(), "m1".into()));
         worker
             .handle_command(Command::RestoreMessage {
                 chat: PEER.into(),
@@ -7033,6 +7045,54 @@ mod receipt_tests {
         assert_eq!(
             worker.archive.message(PEER, "m1").unwrap().unwrap().content,
             Content::text("newer")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_delete_does_not_undo_a_remote_revoke() {
+        let (mut worker, _events, _inbox, _wa) = worker();
+        worker.archive.ensure_chat(PEER, "Peer").unwrap();
+        let original = own_message("m1", 10);
+        worker.archive.insert_message(&original, None).unwrap();
+        worker
+            .archive
+            .set_content(PEER, "m1", &Content::Revoked, false)
+            .unwrap();
+        worker.local_revokes.insert((PEER.into(), "m1".into()));
+        // Another device's genuine revoke arrives while ours is in flight.
+        worker.ingest(
+            &Arc::new(wa::Message {
+                protocol_message: MessageField::some(wa::message::ProtocolMessage {
+                    r#type: Some(wa::message::protocol_message::Type::REVOKE),
+                    key: MessageField::some(wa::MessageKey {
+                        id: Some("m1".into()),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            &MessageInfo {
+                source: MessageSource {
+                    chat: PEER.parse().unwrap(),
+                    sender: PEER.parse().unwrap(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        worker
+            .handle_command(Command::RestoreMessage {
+                chat: PEER.into(),
+                id: "m1".into(),
+                previous: Box::new(original),
+                applied: Content::Revoked,
+                error: "offline".into(),
+            })
+            .await;
+        assert_eq!(
+            worker.archive.message(PEER, "m1").unwrap().unwrap().content,
+            Content::Revoked
         );
     }
 
