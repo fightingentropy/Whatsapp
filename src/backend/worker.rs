@@ -2375,6 +2375,7 @@ impl Worker {
             | Command::SetArchived(chat, _)
             | Command::SetPinned(chat, _)
             | Command::Sent { chat, .. }
+            | Command::RestoreMessage { chat, .. }
             | Command::Downloaded { chat, .. }
             | Command::GroupRecipients { chat, .. }
             | Command::PrepareSend { chat, .. }
@@ -2966,6 +2967,29 @@ impl Worker {
             }
             Command::GroupInfoFailed { chat, permanent } => {
                 self.handle_failed_group(chat, permanent);
+            }
+            Command::RestoreMessage {
+                chat,
+                id,
+                previous,
+                applied,
+                error,
+            } => {
+                // Only undo our own optimistic change, never a newer one.
+                let unchanged = matches!(
+                    self.archive.message(&chat, &id),
+                    Ok(Some(current)) if current.content == applied
+                );
+                if unchanged
+                    && self
+                        .archive
+                        .restore_content(&chat, &id, &previous)
+                        .unwrap_or(false)
+                {
+                    self.emit_message(&chat, &id);
+                    self.emit_chat(&chat);
+                }
+                self.emit(Event::Error(error));
             }
             Command::Sent { chat, id, error } => {
                 if id.is_empty() {
@@ -4142,10 +4166,13 @@ impl Worker {
         };
         let content = Content::text(text.clone());
         let mention_rows = self.mentions_of(&mentions);
+        let previous = self.archive.message(&chat, &id).ok().flatten();
+        let mut restore = None;
         if let Ok(true) = self
             .archive
             .set_edited_text(&chat, &id, &content, &mention_rows)
         {
+            restore = previous.map(Box::new);
             self.emit_message(&chat, &id);
             self.emit_chat(&chat);
         }
@@ -4153,10 +4180,20 @@ impl Worker {
         let commands = self.commands.clone();
         tokio::spawn(async move {
             if let Err(error) = client.edit_message(jid, id.clone(), message).await {
-                let _ = commands.send(Command::Sent {
-                    chat,
-                    id: String::new(),
-                    error: Some(format!("Could not send the edit: {error}")),
+                let error = format!("Could not send the edit: {error}");
+                let _ = commands.send(match restore {
+                    Some(previous) => Command::RestoreMessage {
+                        chat,
+                        id,
+                        previous,
+                        applied: content,
+                        error,
+                    },
+                    None => Command::Sent {
+                        chat,
+                        id: String::new(),
+                        error: Some(error),
+                    },
                 });
             }
         });
@@ -4167,22 +4204,36 @@ impl Worker {
             self.emit(Event::Error("Not connected to WhatsApp".to_owned()));
             return;
         };
+        let previous = self.archive.message(&chat, &id).ok().flatten();
+        let mut restore = None;
         if let Ok(true) = self
             .archive
             .set_content(&chat, &id, &Content::Revoked, false)
         {
+            restore = previous.map(Box::new);
             self.emit_message(&chat, &id);
             self.emit_chat(&chat);
         }
         let commands = self.commands.clone();
         tokio::spawn(async move {
-            if let Err(error) = client.revoke_message(jid, id, RevokeType::Sender).await {
-                let _ = commands.send(Command::Sent {
-                    chat,
-                    id: String::new(),
-                    error: Some(format!(
-                        "Could not delete the message for everyone: {error}"
-                    )),
+            if let Err(error) = client
+                .revoke_message(jid, id.clone(), RevokeType::Sender)
+                .await
+            {
+                let error = format!("Could not delete the message for everyone: {error}");
+                let _ = commands.send(match restore {
+                    Some(previous) => Command::RestoreMessage {
+                        chat,
+                        id,
+                        previous,
+                        applied: Content::Revoked,
+                        error,
+                    },
+                    None => Command::Sent {
+                        chat,
+                        id: String::new(),
+                        error: Some(error),
+                    },
                 });
             }
         });
@@ -6935,6 +6986,55 @@ mod receipt_tests {
         assert_eq!(worker.status, LinkStatus::Connected);
         assert_eq!(worker.bot_generation, 0);
         assert!(inbox.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn a_failed_delete_or_edit_restores_the_message() {
+        let (mut worker, events, _inbox, _wa) = worker();
+        worker.archive.ensure_chat(PEER, "Peer").unwrap();
+        let original = own_message("m1", 10);
+        worker.archive.insert_message(&original, None).unwrap();
+        // The optimistic local delete, then the failed send.
+        worker
+            .archive
+            .set_content(PEER, "m1", &Content::Revoked, false)
+            .unwrap();
+        worker
+            .handle_command(Command::RestoreMessage {
+                chat: PEER.into(),
+                id: "m1".into(),
+                previous: Box::new(original.clone()),
+                applied: Content::Revoked,
+                error: "Could not delete the message for everyone: offline".into(),
+            })
+            .await;
+        let back = worker.archive.message(PEER, "m1").unwrap().unwrap();
+        assert_eq!(back.content, original.content);
+        assert_eq!(back.edited, original.edited);
+        assert!(
+            events
+                .try_iter()
+                .any(|event| matches!(event, Event::Error(text) if text.contains("offline")))
+        );
+
+        // A newer change is left alone.
+        worker
+            .archive
+            .set_content(PEER, "m1", &Content::text("newer"), true)
+            .unwrap();
+        worker
+            .handle_command(Command::RestoreMessage {
+                chat: PEER.into(),
+                id: "m1".into(),
+                previous: Box::new(original.clone()),
+                applied: Content::Revoked,
+                error: "x".into(),
+            })
+            .await;
+        assert_eq!(
+            worker.archive.message(PEER, "m1").unwrap().unwrap().content,
+            Content::text("newer")
+        );
     }
 
     #[tokio::test]

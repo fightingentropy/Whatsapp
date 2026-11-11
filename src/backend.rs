@@ -325,6 +325,15 @@ pub enum Command {
         generation: u64,
     },
     Shutdown,
+    /// Internal: an edit or delete-for-everyone failed to send, so the message
+    /// goes back to what it was, unless it has changed since.
+    RestoreMessage {
+        chat: ChatId,
+        id: String,
+        previous: Box<crate::model::Message>,
+        applied: crate::model::Content,
+        error: String,
+    },
     /// Internal send result.
     Sent {
         chat: ChatId,

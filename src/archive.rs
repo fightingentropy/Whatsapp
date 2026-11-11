@@ -1243,6 +1243,22 @@ impl Archive {
         Ok(changed > 0)
     }
 
+    /// Puts back the content, mentions and edited flag a message had before
+    /// a local edit or delete that could not be sent.
+    pub fn restore_content(&self, chat: &str, id: &str, previous: &Message) -> Result<bool> {
+        let changed = self.connection.execute(
+            "UPDATE messages SET content = ?3, mentions = ?4, edited = ?5 WHERE chat = ?1 AND id = ?2",
+            params![
+                chat,
+                id,
+                serde_json::to_string(&previous.content).unwrap_or_default(),
+                serde_json::to_string(&previous.mentions).unwrap_or_default(),
+                previous.edited,
+            ],
+        )?;
+        Ok(changed > 0)
+    }
+
     /// Upserts a reaction, or removes it when the emoji is empty.
     pub fn set_reaction(
         &self,
