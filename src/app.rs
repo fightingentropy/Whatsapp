@@ -2041,7 +2041,10 @@ impl App {
                 self.toast("Copied");
             }
             Action::Reply(id) => {
-                self.reply_to = Some(id);
+                // Attachments cannot carry a quote; ignore Reply while any are staged.
+                if self.pending.is_empty() {
+                    self.reply_to = Some(id);
+                }
                 self.focus_composer = true;
             }
             Action::CancelReply => self.reply_to = None,
@@ -4123,6 +4126,16 @@ mod tests {
         app.stage_files(vec![PathBuf::from("/tmp/a.txt")]);
         assert!(app.reply_to.is_none());
         assert_eq!(app.pending.len(), 1);
+    }
+
+    #[test]
+    fn replying_is_ignored_while_attachments_are_staged() {
+        let mut app = app();
+        let ctx = egui::Context::default();
+        app.open_chat = Some("491700000001@s.whatsapp.net".into());
+        app.stage_files(vec![PathBuf::from("/tmp/a.txt")]);
+        app.apply(Action::Reply("m1".into()), &ctx);
+        assert!(app.reply_to.is_none());
     }
 
     #[test]
