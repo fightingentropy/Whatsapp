@@ -268,6 +268,26 @@ fn names_aliases_replies_and_links_are_structured() {
 }
 
 #[test]
+fn message_select_looks_up_lids_by_index() {
+    let f = Fixture::new();
+    let connection = rusqlite::Connection::open(f.dirs.archive_db()).unwrap();
+    let mut statement = connection
+        .prepare(&format!("EXPLAIN QUERY PLAN {}", store::MESSAGE_SELECT))
+        .unwrap();
+    let plan: Vec<String> = statement
+        .query_map([], |r| r.get::<_, String>(3))
+        .unwrap()
+        .map(|d| d.unwrap())
+        .collect();
+    assert!(
+        plan.iter()
+            .any(|d| d.contains("l USING") && d.contains("INDEX")),
+        "lids must be searched by index, not scanned: {plan:?}"
+    );
+    assert!(!plan.iter().any(|d| d.starts_with("SCAN l")), "{plan:?}");
+}
+
+#[test]
 fn input_bounds_and_unknown_fields_fail_closed() {
     let f = Fixture::new();
     for (tool, args) in [

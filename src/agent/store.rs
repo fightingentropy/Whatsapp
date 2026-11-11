@@ -16,7 +16,9 @@ use crate::{
 };
 
 const PAGE_BYTES: usize = 256 * 1024;
-const MESSAGE_SELECT: &str = "SELECT m.chat, m.id, coalesce(l.pn || '@s.whatsapp.net', m.sender),
+// The lids join compares the bare lid column with the sender minus its suffix so the
+// primary-key index on lids.lid is used for every message row.
+pub(super) const MESSAGE_SELECT: &str = "SELECT m.chat, m.id, coalesce(l.pn || '@s.whatsapp.net', m.sender),
     CASE WHEN m.from_me THEN 'You' ELSE coalesce(nullif(n.full_name,''), nullif(m.sender_name,''), nullif(n.push_name,''), m.sender) END,
     m.from_me, m.timestamp,
     CASE WHEN length(CAST(m.content AS BLOB)) <= 1048576 THEN m.content END,
@@ -26,7 +28,8 @@ const MESSAGE_SELECT: &str = "SELECT m.chat, m.id, coalesce(l.pn || '@s.whatsapp
     m.edited, m.forwarded, coalesce(c.name, m.chat)
     FROM messages m
     LEFT JOIN chats c ON c.id = m.chat
-    LEFT JOIN lids l ON l.lid || '@lid' = m.sender
+    LEFT JOIN lids l ON substr(m.sender, -4) = '@lid'
+        AND l.lid = substr(m.sender, 1, length(m.sender) - 4)
     LEFT JOIN contacts n ON n.id = coalesce(l.pn || '@s.whatsapp.net', m.sender)";
 
 pub(super) struct Store {
