@@ -32,6 +32,9 @@ const IDLE: Duration = Duration::from_secs(20);
 const MAX_DECODERS: usize = 2;
 /// Decoded pixel budget, independent of frame dimensions. GPU playback keeps
 /// one texture per animation instead of uploading the entire clip at once.
+/// Clips drawn within `DECODE_IDLE` are never evicted, and a new clip starts
+/// only below the budget, so residency stays under the budget plus
+/// `MAX_DECODERS` growing clips (about 128 + 2 x 58.6 MiB at 320 pixels).
 const MAX_RESIDENT_BYTES: usize = 128 * 1024 * 1024;
 
 static DECODING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -106,8 +109,14 @@ pub fn frame(ctx: &egui::Context, path: &Path) -> Frame {
         playing.last_drawn = now;
     }
     receive(&mut entries, now);
-    prune(&mut entries, now, MAX_RESIDENT_BYTES);
+    let resident = prune(&mut entries, now, MAX_RESIDENT_BYTES);
     if !entries.contains_key(path) {
+        // On-screen clips already fill the budget: wait for one to age out
+        // rather than evicting a visible clip and decoding it again.
+        if resident >= MAX_RESIDENT_BYTES {
+            ctx.request_repaint_after(DECODE_IDLE);
+            return Frame::Pending;
+        }
         // compare/exchange is required because multiple contexts can request
         // previews; a load followed by an increment could overbook the slots.
         if DECODING
@@ -260,7 +269,10 @@ fn receive(entries: &mut HashMap<PathBuf, Playing>, now: Instant) {
     }
 }
 
-fn prune(entries: &mut HashMap<PathBuf, Playing>, now: Instant, budget: usize) {
+/// Retires idle clips and evicts by bytes; returns the bytes still resident.
+/// Clips drawn within `DECODE_IDLE` are on screen and never evicted, so the
+/// budget is soft while they exceed it.
+fn prune(entries: &mut HashMap<PathBuf, Playing>, now: Instant, budget: usize) -> usize {
     entries.retain(|_, playing| {
         now.saturating_duration_since(playing.last_drawn)
             < if playing.complete { IDLE } else { DECODE_IDLE }
@@ -269,6 +281,7 @@ fn prune(entries: &mut HashMap<PathBuf, Playing>, now: Instant, budget: usize) {
     while resident > budget {
         let victim = entries
             .iter()
+            .filter(|(_, playing)| now.saturating_duration_since(playing.last_drawn) >= DECODE_IDLE)
             .min_by_key(|(_, playing)| playing.last_drawn)
             .map(|(path, playing)| (path.clone(), playing.bytes));
         let Some((path, bytes)) = victim else { break };
@@ -276,6 +289,7 @@ fn prune(entries: &mut HashMap<PathBuf, Playing>, now: Instant, budget: usize) {
         entries.remove(&path);
         resident -= bytes;
     }
+    resident
 }
 
 /// Drain bounded queues and retire invisible decoders, including while headless.
@@ -856,9 +870,50 @@ mod tests {
         install(&ctx, Path::new("old"), clip(16), true);
         install(&ctx, Path::new("new"), clip(8), true);
         let mut entries = cache.0.lock().unwrap();
+        // Only a clip that has left the screen can be evicted for bytes.
+        entries.get_mut(Path::new("old")).unwrap().last_drawn = now - DECODE_IDLE;
         prune(&mut entries, now, 8 * 8 * 4 * 2);
         assert_eq!(entries.len(), 1);
         assert!(entries.contains_key(Path::new("new")));
+    }
+
+    #[test]
+    fn on_screen_clips_survive_the_byte_budget() {
+        let ctx = egui::Context::default();
+        for name in ["a", "b", "c"] {
+            install(&ctx, Path::new(name), clip(16), true);
+        }
+        let cache = cache(&ctx);
+        let mut entries = cache.0.lock().unwrap();
+        let now = Instant::now();
+        assert_eq!(prune(&mut entries, now, 1), 3 * 2 * 16 * 16 * 4);
+        assert_eq!(entries.len(), 3, "every clip drawn just now stays");
+        entries.get_mut(Path::new("b")).unwrap().last_drawn = now - DECODE_IDLE;
+        assert_eq!(prune(&mut entries, now, 1), 2 * 2 * 16 * 16 * 4);
+        assert_eq!(entries.len(), 2);
+        assert!(!entries.contains_key(Path::new("b")));
+    }
+
+    #[test]
+    fn a_new_clip_waits_while_over_budget() {
+        let ctx = egui::Context::default();
+        install(&ctx, Path::new("visible"), clip(8), true);
+        cache(&ctx)
+            .0
+            .lock()
+            .unwrap()
+            .get_mut(Path::new("visible"))
+            .unwrap()
+            .bytes = MAX_RESIDENT_BYTES;
+        assert!(matches!(
+            frame(&ctx, Path::new("fresh.gif")),
+            Frame::Pending
+        ));
+        let entries = cache(&ctx);
+        let entries = entries.0.lock().unwrap();
+        assert!(!entries.contains_key(Path::new("fresh.gif")));
+        // A started decode is always inserted, so none was started here.
+        assert!(entries.contains_key(Path::new("visible")));
     }
 
     #[test]
