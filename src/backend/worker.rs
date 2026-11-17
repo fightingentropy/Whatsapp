@@ -2689,7 +2689,8 @@ impl Worker {
                 let commands = self.commands.clone();
                 let packs = self.packs_dir();
                 tokio::task::spawn_blocking(move || {
-                    let result = super::sticker_import::import_signal_pack(&url, &packs);
+                    let result =
+                        import_guarded(|| super::sticker_import::import_signal_pack(&url, &packs));
                     let _ = commands.send(Command::StickerPackImported { result });
                 });
             }
@@ -2697,7 +2698,8 @@ impl Worker {
                 let commands = self.commands.clone();
                 let packs = self.packs_dir();
                 tokio::task::spawn_blocking(move || {
-                    let result = super::sticker_import::import_archive(&path, &packs);
+                    let result =
+                        import_guarded(|| super::sticker_import::import_archive(&path, &packs));
                     let _ = commands.send(Command::StickerPackImported { result });
                 });
             }
@@ -2711,7 +2713,9 @@ impl Worker {
                         .add_filter("Sticker packs", &["wastickers", "zip"])
                         .pick_file()
                     {
-                        Some(path) => super::sticker_import::import_archive(&path, &packs),
+                        Some(path) => {
+                            import_guarded(|| super::sticker_import::import_archive(&path, &packs))
+                        }
                         // Ignore file-picker cancellation.
                         None => Err(String::new()),
                     };
@@ -4919,6 +4923,13 @@ async fn publish_in_order(
 
 /// How long a send waits for the previous send to the same chat.
 const SEND_PATIENCE: Duration = Duration::from_secs(30);
+
+/// Runs a sticker pack import so that a panic over a malformed pack still
+/// reports a result; the interface waits for one before it stops its spinner.
+fn import_guarded(import: impl FnOnce() -> Result<String, String>) -> Result<String, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(import))
+        .unwrap_or_else(|_| Err("the pack could not be read".to_owned()))
+}
 
 /// Waits for the send queued before this one in the chat. A finished, failed
 /// or dropped predecessor releases it; a stuck one stops holding the chat
@@ -7580,6 +7591,13 @@ mod receipt_tests {
                 .await
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn a_panicking_sticker_import_still_reports_a_failure() {
+        assert_eq!(import_guarded(|| Ok("Pack".into())), Ok("Pack".into()));
+        let failed = import_guarded(|| panic!("synthetic decoder panic"));
+        assert_eq!(failed, Err("the pack could not be read".into()));
     }
 
     #[tokio::test]
