@@ -9,6 +9,10 @@ pub mod backend;
 pub mod background;
 #[path = "../../../src/model.rs"]
 pub mod model;
+// The shared worker's tests check which downloads open in a viewer.
+#[cfg(test)]
+#[path = "../../../src/open_policy.rs"]
+pub mod open_policy;
 #[path = "../../../src/paths.rs"]
 pub mod paths;
 #[path = "../../../src/updates.rs"]
