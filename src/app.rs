@@ -1824,6 +1824,11 @@ impl App {
             self.toast_error("Open a chat first");
             return;
         }
+        // Refuse rather than cancel, so the half-edited text is kept.
+        if self.editing.is_some() {
+            self.toast_error("Finish editing before adding attachments");
+            return;
+        }
         // Attachments cannot carry a quote, so drop the reply strip rather than
         // send an unquoted file under it.
         self.reply_to = None;
@@ -2180,6 +2185,8 @@ impl App {
                 self.dialog = None;
                 self.forward_search.clear();
             }
+            // An edit cannot carry attachments; ignore Edit while any are staged.
+            Action::Edit(_) if !self.pending.is_empty() => self.focus_composer = true,
             Action::Edit(id) => {
                 let text = self
                     .open_chat
@@ -2444,7 +2451,9 @@ impl App {
                 source,
             } => {
                 // Stage the files so the user can add a caption.
-                if self.open_chat.is_some() {
+                if self.open_chat.is_some() && self.editing.is_some() {
+                    self.toast_error("Finish editing before adding attachments");
+                } else if self.open_chat.is_some() {
                     self.reply_to = None;
                     self.pending.push(Pending::Picture {
                         width,
@@ -4580,6 +4589,46 @@ mod tests {
         app.handle_link(LinkStatus::LoggedOut);
         assert!(app.pending.is_empty());
         assert_eq!(app.toasts.len(), 1, "only the unlink notice");
+    }
+
+    #[test]
+    fn editing_and_staged_attachments_exclude_each_other() {
+        let mut app = app();
+        let ctx = egui::Context::default();
+        let chat = "491700000001@s.whatsapp.net";
+        app.open_chat = Some(chat.into());
+        let mut own = message(chat, "m1", 1);
+        own.from_me = true;
+        let mut conversation = Conversation::default();
+        conversation.merge(vec![own], false);
+        app.conversations.insert(chat.into(), conversation);
+
+        app.stage_files(vec![PathBuf::from("/tmp/a.txt")]);
+        app.apply(Action::Edit("m1".into()), &ctx);
+        assert!(app.editing.is_none());
+        assert!(app.composer.is_empty());
+
+        app.pending.clear();
+        app.apply(Action::Edit("m1".into()), &ctx);
+        assert_eq!(app.editing.as_deref(), Some("m1"));
+        app.stage_files(vec![PathBuf::from("/tmp/a.txt")]);
+        app.apply(
+            Action::PasteImage {
+                width: 1,
+                height: 1,
+                rgba: vec![0; 4],
+                source: None,
+            },
+            &ctx,
+        );
+        assert!(app.pending.is_empty());
+        assert_eq!(app.editing.as_deref(), Some("m1"));
+        assert_eq!(app.composer, "m1");
+        assert!(
+            app.toasts
+                .iter()
+                .any(|toast| toast.message == "Finish editing before adding attachments")
+        );
     }
 
     #[test]

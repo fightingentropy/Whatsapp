@@ -1024,7 +1024,8 @@ fn composer(app: &mut App, ui: &mut egui::Ui, chat: &Chat) {
                 && (!app.composer.trim().is_empty() || !app.pending.is_empty())
             {
                 let text = std::mem::take(&mut app.composer);
-                if app.pending.is_empty() {
+                // An edit never becomes an attachment caption.
+                if app.pending.is_empty() || app.editing.is_some() {
                     app.actions.push(Action::SendText {
                         chat: chat.id.clone(),
                         text,
