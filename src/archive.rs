@@ -119,6 +119,7 @@ CREATE INDEX IF NOT EXISTS messages_lid_sender ON messages (sender) WHERE sender
 CREATE INDEX IF NOT EXISTS group_receipts_by_recipient ON group_receipts (recipient);
 CREATE INDEX IF NOT EXISTS messages_stickers ON messages (from_me, timestamp, chat, id)
     WHERE CASE WHEN json_valid(content) THEN json_extract(content, '$.kind') END = 'sticker';
+CREATE INDEX IF NOT EXISTS messages_outgoing_status ON messages (chat, status, timestamp) WHERE from_me = 1;
 CREATE TRIGGER IF NOT EXISTS delete_group_receipts AFTER DELETE ON messages BEGIN
     DELETE FROM group_receipts WHERE chat = OLD.chat AND id = OLD.id;
 END;
@@ -143,6 +144,10 @@ const MISSING_STICKERS: &str = "SELECT chat, id, from_me, timestamp FROM message
        AND (?2 IS NULL OR (from_me, timestamp, chat, id) < (?2, ?3, ?4, ?5))
      ORDER BY from_me DESC, timestamp DESC, chat DESC, id DESC
      LIMIT ?1";
+
+/// Outgoing rows a read or played receipt advances. `from_me = 1` selects the
+/// `messages_outgoing_status` partial index, which seeks to the open statuses.
+const ADVANCED_STATUSES: &str = "SELECT id FROM messages WHERE chat = ?1 AND from_me = 1 AND timestamp <= ?2 AND status > 0 AND status < ?3";
 
 const CHAT_COLUMNS: &str =
     "c.id, c.name, c.kind, c.last_activity, c.unread, c.archived, c.pinned, c.muted_until,
@@ -1190,9 +1195,7 @@ impl Archive {
         at: i64,
     ) -> Result<Vec<String>> {
         let rank = status_rank(status);
-        let mut statement = self.connection.prepare(
-            "SELECT id FROM messages WHERE chat = ?1 AND from_me = 1 AND timestamp <= ?2 AND status > 0 AND status < ?3",
-        )?;
+        let mut statement = self.connection.prepare(ADVANCED_STATUSES)?;
         let ids: Vec<String> = statement
             .query_map(params![chat, up_to, rank], |row| row.get(0))?
             .collect::<Result<_>>()?;
@@ -1987,6 +1990,54 @@ mod tests {
             ]
         );
         assert_eq!(messages[0].read_at, Some(400));
+    }
+
+    #[test]
+    fn advance_statuses_seeks_open_outgoing_rows() {
+        let archive = Archive::in_memory().unwrap();
+        let plan = query_plan(&archive, ADVANCED_STATUSES);
+        assert!(plan.contains("messages_outgoing_status"), "{plan}");
+        let chat = "1@s.whatsapp.net";
+        archive.ensure_chat(chat, "A").unwrap();
+        for (id, timestamp, status) in [
+            ("read", 100, Delivery::Read),
+            ("delivered", 200, Delivery::Delivered),
+            ("sent", 300, Delivery::Sent),
+            ("later", 500, Delivery::Sent),
+        ] {
+            archive
+                .insert_message(&message(chat, id, timestamp, true), Some(b"raw"))
+                .unwrap();
+            archive.set_status(chat, id, status, timestamp).unwrap();
+        }
+        for (id, timestamp) in [("theirs", 150), ("newer", 250)] {
+            archive
+                .insert_message(&message(chat, id, timestamp, false), None)
+                .unwrap();
+        }
+        let mut changed = archive
+            .advance_statuses(chat, 400, Delivery::Read, 450)
+            .unwrap();
+        changed.sort();
+        assert_eq!(changed, ["delivered", "sent"]);
+        let row = |id| archive.message(chat, id).unwrap().unwrap();
+        assert_eq!(
+            (row("read").status, row("read").read_at),
+            (Delivery::Read, Some(100))
+        );
+        for id in ["delivered", "sent"] {
+            assert_eq!(
+                (row(id).status, row(id).read_at),
+                (Delivery::Read, Some(450))
+            );
+        }
+        assert_eq!(
+            (row("later").status, row("later").read_at),
+            (Delivery::Sent, None)
+        );
+        for id in ["theirs", "newer"] {
+            assert_eq!(row(id).status, Delivery::None);
+        }
     }
 
     #[test]
