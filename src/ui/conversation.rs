@@ -1153,17 +1153,18 @@ fn messages(app: &mut App, ui: &mut egui::Ui, chat: &Chat) {
     let typing = app.typing_in(&chat.id);
     let mut avatars = HashMap::new();
     if chat.is_group() || app.settings.show_sender_pictures {
-        let mut senders: HashSet<String> = conversation
+        // Borrow the ids: only one String per distinct sender is allocated.
+        let mut senders: HashSet<&str> = conversation
             .messages
             .iter()
             .filter(|message| !message.from_me)
-            .map(|message| message.sender.clone())
+            .map(|message| message.sender.as_str())
             .collect();
         // A typing participant may not have a visible message.
-        senders.extend(typing.iter().map(|(id, _)| id.clone()));
+        senders.extend(typing.iter().map(|(id, _)| id.as_str()));
         for sender in senders {
-            let picture = app.avatar(&sender);
-            avatars.insert(sender, picture);
+            let picture = app.avatar(sender);
+            avatars.insert(sender.to_owned(), picture);
         }
     }
     let layout_pending = std::cell::Cell::new(false);
