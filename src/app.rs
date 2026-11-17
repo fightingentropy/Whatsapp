@@ -1037,7 +1037,20 @@ impl App {
                     self.me_name = name;
                     self.me_about = about;
                 }
-                Event::Chats(chats) => {
+                Event::Chats(mut chats) => {
+                    // A snapshot read before EnsureChat ran lacks a chat just
+                    // started here; the archive never drops one except by merging.
+                    let started: Vec<Chat> = self
+                        .chats
+                        .iter()
+                        .filter(|known| {
+                            known.started_here
+                                && !self.chat_aliases.contains_key(&known.id)
+                                && !chats.iter().any(|chat| chat.id == known.id)
+                        })
+                        .cloned()
+                        .collect();
+                    chats.extend(started);
                     // Rows read only chat names; an unchanged snapshot keeps
                     // every settled row height.
                     let known: HashMap<&str, &str> = self
@@ -1060,8 +1073,7 @@ impl App {
                     self.chats = chats;
                     if let Some(open) = self.open_chat.clone() {
                         if self.chat(&open).is_none() {
-                            self.chat_search.close();
-                            self.open_chat = None;
+                            self.close_open_chat();
                         } else {
                             // Show archived messages immediately, including offline.
                             self.ensure_loaded(&open);
@@ -1388,8 +1400,8 @@ impl App {
                 }
             }
             LinkStatus::LoggedOut => {
-                self.stop_video();
-                self.chat_search.close();
+                // Also ends typing state, which would otherwise keep a 1 Hz repaint.
+                self.close_open_chat();
                 self.image_preview = None;
                 self.notifications.clear_all();
                 self.chats.clear();
@@ -1397,7 +1409,6 @@ impl App {
                 self.contacts.clear();
                 self.chat_aliases.clear();
                 self.avatars.clear();
-                self.open_chat = None;
                 self.toast_error("This device was unlinked from your phone");
             }
             LinkStatus::Failed(message) => self.toast_error(message.clone()),
@@ -1614,6 +1625,27 @@ impl App {
             self.settings.last_chat = Some(id);
             self.mark_settings_dirty();
         }
+    }
+
+    /// Closes the open chat, keeping its draft and ending typing state.
+    fn close_open_chat(&mut self) {
+        self.stop_video();
+        self.chat_search.close();
+        if let Some(chat) = self.open_chat.take() {
+            self.stop_composing(&chat);
+            let draft = std::mem::take(&mut self.composer);
+            if self.editing.take().is_none() && !draft.trim().is_empty() {
+                self.drafts.insert(chat.clone(), draft);
+                self.draft_mentions
+                    .insert(chat, std::mem::take(&mut self.composer_mentions));
+            } else {
+                self.composer_mentions.clear();
+            }
+        }
+        self.reply_to = None;
+        self.emoji_start = None;
+        self.mention_start = None;
+        self.scroll_anchor = None;
     }
 
     /// Returns keyboard focus to the open conversation when no search or
@@ -1970,25 +2002,7 @@ impl App {
                     });
                 }
             }
-            Action::CloseChat => {
-                self.stop_video();
-                self.chat_search.close();
-                if let Some(chat) = self.open_chat.take() {
-                    self.stop_composing(&chat);
-                    let draft = std::mem::take(&mut self.composer);
-                    if self.editing.take().is_none() && !draft.trim().is_empty() {
-                        self.drafts.insert(chat.clone(), draft);
-                        self.draft_mentions
-                            .insert(chat, std::mem::take(&mut self.composer_mentions));
-                    } else {
-                        self.composer_mentions.clear();
-                    }
-                }
-                self.reply_to = None;
-                self.emoji_start = None;
-                self.mention_start = None;
-                self.scroll_anchor = None;
-            }
+            Action::CloseChat => self.close_open_chat(),
             Action::SendText {
                 chat,
                 text,
@@ -4063,6 +4077,51 @@ mod tests {
         app.scroll_anchor = Some("oldest".into());
         app.apply(Action::CloseChat, &ctx);
         assert!(app.scroll_anchor.is_none());
+    }
+
+    #[test]
+    fn a_chat_list_without_the_open_chat_closes_it_like_the_user_would() {
+        let root = std::env::temp_dir().join(format!("whatsapp-app-{}", std::process::id()));
+        let (mut app, events) = App::headless(AppDirs::under(&root), Settings::default());
+        let ctx = egui::Context::default();
+        let other = Chat::new("other@s.whatsapp.net".into(), "Other".into());
+        let listed = Chat::new("listed@s.whatsapp.net".into(), "Listed".into());
+        app.chats.push(other.clone());
+        app.chats.push(listed.clone());
+
+        // A snapshot read before EnsureChat ran keeps the new chat open.
+        let fresh = "fresh@s.whatsapp.net";
+        app.apply(
+            Action::StartChat {
+                id: fresh.into(),
+                name: "Fresh".into(),
+            },
+            &ctx,
+        );
+        events
+            .send(Event::Chats(vec![other.clone(), listed.clone()]))
+            .unwrap();
+        app.handle_events();
+        assert_eq!(app.open_chat.as_deref(), Some(fresh));
+        assert!(app.chat(fresh).is_some_and(|chat| chat.started_here));
+
+        // A chat that really left the list closes with its draft kept.
+        app.apply(Action::OpenChat(listed.id.clone()), &ctx);
+        app.composer = "draft fixture".into();
+        app.composing = true;
+        app.reply_to = Some("quoted".into());
+        events.send(Event::Chats(vec![other])).unwrap();
+        app.handle_events();
+        assert!(app.open_chat.is_none());
+        assert_eq!(app.drafts[&listed.id], "draft fixture");
+        assert!(!app.composing, "typing state ends with the chat");
+        assert!(app.reply_to.is_none());
+
+        app.open_chat = Some(fresh.into());
+        app.composing = true;
+        app.handle_link(LinkStatus::LoggedOut);
+        assert!(app.open_chat.is_none());
+        assert!(!app.composing, "unlinking leaves no typing repaint behind");
     }
 
     fn message(chat: &str, id: &str, timestamp: i64) -> Message {
