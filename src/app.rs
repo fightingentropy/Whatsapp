@@ -83,6 +83,10 @@ pub struct Conversation {
     /// Rows kept across an identity merge may not adjoin the next first
     /// page; that page replaces all but busy rows instead of joining them.
     pub replace_on_first_page: bool,
+    /// A row kept before that replacing page (a reply or edit target, an
+    /// active download). The archive rows between it and the page are being
+    /// loaded, chunk by chunk, so no gap stays behind it.
+    pub fill_gap_to: Option<String>,
 }
 
 impl Conversation {
@@ -1159,10 +1163,10 @@ impl App {
                     if older && !messages.is_empty() {
                         conversation.phone_delivered = true;
                     }
-                    if requested
+                    let replaced = requested
                         && !older
-                        && std::mem::take(&mut conversation.replace_on_first_page)
-                    {
+                        && std::mem::take(&mut conversation.replace_on_first_page);
+                    if replaced {
                         // The composer's reply or edit target stays loaded.
                         let open = self.open_chat.as_deref() == Some(chat.as_str());
                         let targets = [&self.reply_to, &self.editing];
@@ -1172,6 +1176,19 @@ impl App {
                                 open && targets.iter().any(|t| t.as_deref() == Some(&message.id))
                             },
                         );
+                    }
+                    let page_start = messages.first().map(|m| (m.timestamp, m.id.clone()));
+                    if replaced {
+                        // A kept row older than the page starts a gap fill.
+                        conversation.fill_gap_to = conversation
+                            .messages
+                            .first()
+                            .filter(|kept| {
+                                page_start
+                                    .as_ref()
+                                    .is_some_and(|start| kept.timestamp < start.0)
+                            })
+                            .map(|kept| kept.id.clone());
                     }
                     let loaded = conversation.messages.len();
                     conversation.merge(messages, older);
@@ -1184,6 +1201,27 @@ impl App {
                         conversation.complete = complete;
                     } else if was_empty {
                         conversation.complete = complete;
+                    }
+                    // Load the archive rows between a kept row and the page that
+                    // replaced the window. Each chunk adjoins the loaded rows and
+                    // must add some, so this ends at the kept row.
+                    if (replaced || (older && requested))
+                        && let Some(target) = conversation.fill_gap_to.clone()
+                    {
+                        let reached = conversation
+                            .message(&target)
+                            .zip(page_start.as_ref())
+                            .is_none_or(|(kept, start)| kept.timestamp >= start.0);
+                        if reached || !(replaced || grew) {
+                            conversation.fill_gap_to = None;
+                        } else if let Some(before) = page_start.clone() {
+                            conversation.loading_older = true;
+                            self.backend.send(Command::LoadUntil {
+                                chat: chat.clone(),
+                                id: target,
+                                before,
+                            });
+                        }
                     }
                     // Request phone history when sync created a chat without messages.
                     let bare = !older && complete && conversation.messages.is_empty();
@@ -1227,6 +1265,7 @@ impl App {
                             conversation.requested = false;
                         } else {
                             conversation.loading_older = false;
+                            conversation.fill_gap_to = None;
                         }
                     }
                     self.toast_error(error);

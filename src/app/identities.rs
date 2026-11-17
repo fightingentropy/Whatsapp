@@ -70,6 +70,7 @@ impl App {
             conversation.loading_initial = false;
             conversation.phone_exhausted = false;
             conversation.replace_on_first_page = true;
+            conversation.fill_gap_to = None;
         }
         if self.chat_search.chat.as_deref() == Some(from.as_str()) {
             self.chat_search.chat = Some(into.clone());
@@ -277,5 +278,93 @@ mod tests {
         assert!(conversation.message("quoted").is_some());
         assert_eq!(conversation.messages.len(), 62);
         assert!(conversation.message("100").is_some());
+    }
+
+    #[test]
+    fn rows_between_a_kept_reply_target_and_the_replacing_page_are_loaded() {
+        let dirs = AppDirs::under(&std::env::temp_dir().join("whatsapp-identity-fill"));
+        let (mut app, events) = App::headless(dirs, Settings::default());
+        app.backend.record_demo_commands();
+        let from = "654322@lid";
+        let into = "15550004444@s.whatsapp.net";
+        app.chats = vec![Chat::new(into.into(), "~Peer".into())];
+        app.open_chat = Some(into.into());
+        let rows = |range: std::ops::Range<i64>| {
+            range
+                .map(|n| Message {
+                    chat: into.into(),
+                    id: n.to_string(),
+                    sender: into.into(),
+                    sender_name: None,
+                    from_me: false,
+                    timestamp: n,
+                    content: Content::text("synthetic message"),
+                    status: Delivery::None,
+                    delivered_at: None,
+                    read_at: None,
+                    quoted: None,
+                    reactions: Vec::new(),
+                    edited: false,
+                    mentions: Vec::new(),
+                    forwarded: false,
+                    thumbnail: None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let page = |messages: Vec<Message>, older: bool| Event::Messages {
+            chat: into.into(),
+            messages,
+            older,
+            complete: false,
+            requested: true,
+        };
+        let load_untils = |app: &App| {
+            app.backend
+                .take_demo_commands()
+                .into_iter()
+                .filter_map(|command| match command {
+                    Command::LoadUntil { id, before, .. } => Some((id, before)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        app.conversations
+            .entry(into.into())
+            .or_default()
+            .merge(rows(30..40), false);
+        app.reply_to = Some("30".into());
+        events
+            .send(Event::ChatMerged {
+                from: from.into(),
+                into: into.into(),
+            })
+            .unwrap();
+        events.send(page(rows(100..160), false)).unwrap();
+        app.handle_events();
+
+        // Only the reply target survives, with a gap up to the new page.
+        assert_eq!(app.conversations[into].messages.len(), 61);
+        assert_eq!(
+            load_untils(&app),
+            [("30".to_owned(), (100, "100".to_owned()))]
+        );
+        assert!(app.conversations[into].loading_older);
+
+        // A chunk that stops short of the target asks for the next one.
+        events.send(page(rows(60..100), true)).unwrap();
+        app.handle_events();
+        assert_eq!(
+            load_untils(&app),
+            [("30".to_owned(), (60, "60".to_owned()))]
+        );
+
+        // The chunk that reaches the target ends the fill.
+        events.send(page(rows(30..60), true)).unwrap();
+        app.handle_events();
+        assert!(load_untils(&app).is_empty());
+        let conversation = &app.conversations[into];
+        assert!(conversation.fill_gap_to.is_none());
+        assert!(!conversation.loading_older);
+        assert_eq!(conversation.messages.len(), 130);
     }
 }
