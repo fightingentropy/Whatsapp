@@ -798,6 +798,11 @@ impl Worker {
             .drain()
             .map(|(chat, id)| (if chat == from { into.clone() } else { chat }, id))
             .collect();
+        self.local_revokes = self
+            .local_revokes
+            .drain()
+            .map(|(chat, id)| (if chat == from { into.clone() } else { chat }, id))
+            .collect();
         self.sticker_cursor = None;
         self.downloads.rekey(&from, &into);
         self.sticker_download_failed = self
@@ -1432,6 +1437,8 @@ impl Worker {
         self.read_syncs.clear();
         self.pending_older.clear();
         self.pending_avatars.clear();
+        self.local_revokes.clear();
+        self.older_warned.clear();
         self.me_pn = None;
         self.me_lid = None;
         self.me_name = None;
@@ -7184,6 +7191,37 @@ mod receipt_tests {
             worker.archive.message(PEER, "m1").unwrap().unwrap().content,
             Content::Revoked
         );
+    }
+
+    #[tokio::test]
+    async fn a_failed_delete_is_restored_after_its_chat_identity_merges() {
+        let (mut worker, _events, _inbox, _wa) = worker();
+        worker.archive.ensure_chat(PEER_LID, "Unknown").unwrap();
+        let original = Message {
+            chat: PEER_LID.into(),
+            ..own_message("m1", 10)
+        };
+        worker.archive.insert_message(&original, None).unwrap();
+        worker
+            .archive
+            .set_content(PEER_LID, "m1", &Content::Revoked, false)
+            .unwrap();
+        worker.local_revokes.insert((PEER_LID.into(), "m1".into()));
+        worker.learn_lid("167650256810092", "4917663430455");
+        worker
+            .handle_command(Command::RestoreMessage {
+                chat: PEER_LID.into(),
+                id: "m1".into(),
+                previous: Box::new(original.clone()),
+                applied: Content::Revoked,
+                error: "offline".into(),
+            })
+            .await;
+        assert_eq!(
+            worker.archive.message(PEER, "m1").unwrap().unwrap().content,
+            original.content
+        );
+        assert!(worker.local_revokes.is_empty());
     }
 
     #[tokio::test]
