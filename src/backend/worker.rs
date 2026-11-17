@@ -4337,6 +4337,8 @@ impl Worker {
         mentions: Vec<String>,
         request: Option<String>,
     ) {
+        // Files prepare in parallel but publish in the order chosen.
+        let mut previous = None;
         for (index, path) in paths.into_iter().enumerate() {
             let Some(client) = self.client.clone() else {
                 if let Some(request) = request {
@@ -4364,7 +4366,11 @@ impl Worker {
             } else {
                 Vec::new()
             };
+            let (done, next) = oneshot::channel();
+            let wait = previous.replace(next);
             tokio::spawn(async move {
+                // The upload reservation ends with this block, before waiting
+                // for earlier files, so a one-job budget cannot deadlock.
                 let outcome = async {
                     let size = tokio::fs::metadata(&path)
                         .await
@@ -4403,31 +4409,39 @@ impl Worker {
                     file_outbound(&client, &chat, &me, &dir, prepared, caption, mentions).await
                 }
                 .await;
-                if let Some(request) = request {
-                    let result = outcome.map(|(row, raw)| (Box::new(row), raw));
-                    let _ = commands.send(Command::AttachmentPrepared {
-                        chat,
-                        request,
-                        result,
+                publish_in_order(wait, done, move || {
+                    // Stamped on publish, so times follow the chosen order.
+                    let outcome = outcome.map(|(mut row, raw)| {
+                        row.timestamp = crate::util::now();
+                        (row, raw)
                     });
-                    return;
-                }
-                match outcome {
-                    Ok((row, raw)) => {
-                        let _ = commands.send(Command::Outbound {
+                    if let Some(request) = request {
+                        let result = outcome.map(|(row, raw)| (Box::new(row), raw));
+                        let _ = commands.send(Command::AttachmentPrepared {
                             chat,
-                            row: Box::new(row),
-                            raw,
+                            request,
+                            result,
                         });
+                        return;
                     }
-                    Err(error) => {
-                        let _ = commands.send(Command::Sent {
-                            chat,
-                            id: String::new(),
-                            error: Some(format!("Could not send the file: {error}")),
-                        });
+                    match outcome {
+                        Ok((row, raw)) => {
+                            let _ = commands.send(Command::Outbound {
+                                chat,
+                                row: Box::new(row),
+                                raw,
+                            });
+                        }
+                        Err(error) => {
+                            let _ = commands.send(Command::Sent {
+                                chat,
+                                id: String::new(),
+                                error: Some(format!("Could not send the file: {error}")),
+                            });
+                        }
                     }
-                }
+                })
+                .await;
             });
         }
     }
@@ -4800,6 +4814,20 @@ impl Worker {
 }
 
 // --- free helpers ----------------------------------------------------------
+
+/// Runs `publish` after the previous file in a batch has published, failed or
+/// been dropped, then releases the next file.
+async fn publish_in_order(
+    wait: Option<oneshot::Receiver<()>>,
+    done: oneshot::Sender<()>,
+    publish: impl FnOnce(),
+) {
+    if let Some(wait) = wait {
+        let _ = wait.await;
+    }
+    publish();
+    drop(done);
+}
 
 /// How long a send waits for the previous send to the same chat.
 const SEND_PATIENCE: Duration = Duration::from_secs(30);
@@ -7093,6 +7121,51 @@ mod receipt_tests {
                 assert_eq!(worker.pairing_phone.as_deref(), Some("synthetic-phone"));
             }
         }
+    }
+
+    #[tokio::test]
+    async fn files_publish_in_the_chosen_order_whatever_finishes_first() {
+        #[derive(Clone, Copy, PartialEq)]
+        enum Middle {
+            Sent,
+            Failed,
+            Dropped,
+        }
+        async fn batch(middle: Middle) -> Vec<usize> {
+            let published = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let mut previous = None;
+            let mut tasks = Vec::new();
+            for index in 0..3usize {
+                let (done, next) = oneshot::channel();
+                let wait = previous.replace(next);
+                let published = published.clone();
+                let middle = if index == 1 { middle } else { Middle::Sent };
+                tasks.push(tokio::spawn(async move {
+                    // Later files finish preparing first.
+                    tokio::time::sleep(Duration::from_millis(30 - 10 * index as u64)).await;
+                    if middle == Middle::Dropped {
+                        // A task that ends without publishing still releases.
+                        return;
+                    }
+                    publish_in_order(wait, done, move || {
+                        if middle == Middle::Sent {
+                            published.lock().unwrap().push(index);
+                        }
+                    })
+                    .await;
+                }));
+            }
+            for task in tasks {
+                task.await.unwrap();
+            }
+            Arc::try_unwrap(published).unwrap().into_inner().unwrap()
+        }
+        assert_eq!(batch(Middle::Sent).await, [0, 1, 2]);
+        // A failed file reports in its turn and the next one still follows.
+        assert_eq!(batch(Middle::Failed).await, [0, 2]);
+        let mut released = batch(Middle::Dropped).await;
+        released.sort_unstable();
+        assert_eq!(released, [0, 2]);
     }
 
     #[tokio::test]
