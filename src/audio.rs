@@ -52,10 +52,22 @@ impl Status {
 
 type Decoded = Arc<Mutex<Option<Result<Vec<f32>, String>>>>;
 
+type Output = (rodio::MixerDeviceSink, rodio::Player);
+
+/// Opens the default output device with a player attached to its mixer.
+fn open_output() -> Result<Output, String> {
+    let device = rodio::DeviceSinkBuilder::open_default_sink()
+        .map_err(|error| format!("No sound output: {error}"))?;
+    let sink = rodio::Player::connect_new(device.mixer());
+    Ok((device, sink))
+}
+
 /// Plays one clip at a time through the default output device.
 pub struct Player {
     waker: Waker,
-    output: Option<(rodio::MixerDeviceSink, rodio::Player)>,
+    output: Option<Output>,
+    /// Opens the output device; replaced in tests so no device is touched.
+    open_output: fn() -> Result<Output, String>,
     loaded: Option<Loaded>,
     decoding: Option<Decoding>,
     /// Generated waveforms for clips that did not include one.
@@ -83,6 +95,7 @@ impl Player {
         Self {
             waker,
             output: None,
+            open_output,
             loaded: None,
             decoding: None,
             bars: HashMap::new(),
@@ -125,13 +138,15 @@ impl Player {
         self.decoding = None;
     }
 
-    /// Whether audio is currently playing.
+    /// Whether audio is currently playing. A clip without an output device
+    /// is never playing.
     pub fn is_playing(&self) -> bool {
         self.decoding.is_some()
-            || self
-                .loaded
-                .as_ref()
-                .is_some_and(|loaded| !loaded.paused && !loaded.done)
+            || (self.output.is_some()
+                && self
+                    .loaded
+                    .as_ref()
+                    .is_some_and(|loaded| !loaded.paused && !loaded.done))
     }
 
     pub fn status(&self, message: &str) -> Status {
@@ -201,7 +216,9 @@ impl Player {
                 samples: Arc::new(samples),
                 base: Duration::ZERO,
                 paused: false,
-                done: false,
+                // Nothing is queued until `restart` opens the device, so a
+                // failed open leaves an idle clip that the next toggle retries.
+                done: true,
             });
             self.restart(start)?;
         }
@@ -252,10 +269,7 @@ impl Player {
         let offset =
             ((fraction.clamp(0.0, 1.0) * samples.len() as f32) as usize).min(samples.len());
         if self.output.is_none() {
-            let device = rodio::DeviceSinkBuilder::open_default_sink()
-                .map_err(|error| format!("No sound output: {error}"))?;
-            let sink = rodio::Player::connect_new(device.mixer());
-            self.output = Some((device, sink));
+            self.output = Some((self.open_output)()?);
         }
         let (_, sink) = self.output.as_ref().expect("just opened");
         sink.clear();
@@ -499,6 +513,31 @@ mod tests {
         assert_eq!(interleaved_limit(budget, 8, 48_000), budget * 2);
         assert_eq!(interleaved_limit(budget, 2, 192_000), budget * 2);
         assert_eq!(interleaved_limit(budget, 255, u32::MAX), budget * 2);
+    }
+
+    #[test]
+    fn a_missing_output_device_leaves_an_idle_clip_that_retries() {
+        let mut player = Player::new(Waker::default());
+        player.open_output = || Err("No sound output: test".to_owned());
+        player.decoding = Some(Decoding {
+            message: "m".into(),
+            start: 0.0,
+            slot: Arc::new(Mutex::new(Some(Ok(vec![0.0; 4_800])))),
+        });
+        assert!(player.poll().is_err());
+        assert!(!player.is_playing());
+        let status = player.status("m");
+        assert_eq!(status.state, State::Idle);
+        assert_eq!(status.total, Duration::from_millis(100));
+        assert!(player.bars("m").is_some());
+        // The retry reopens the device rather than decoding the path again.
+        assert_eq!(
+            player.toggle("m", Path::new("/nonexistent")),
+            Err("No sound output: test".to_owned())
+        );
+        assert!(player.decoding.is_none());
+        assert!(!player.is_playing());
+        assert_eq!(player.status("m").state, State::Idle);
     }
 
     /// Plays a one-second test tone:
