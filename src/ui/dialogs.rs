@@ -619,7 +619,9 @@ fn chat_info(app: &mut App, ui: &mut egui::Ui, id: &str) {
     app.contact_edit = editing;
     ui.add_space(8.0);
     if chat.is_group() && !chat.participants.is_empty() {
-        let members = app.participant_list(&chat);
+        // Resolved once per name change, not every frame.
+        let names = app.member_names(&chat);
+        let members = &names.list;
         theme::text(
             ui,
             format!("Members ({})", members.len()),
@@ -833,4 +835,122 @@ fn danger_button(ui: &mut egui::Ui, app: &mut App, label: &str) -> bool {
     response
         .on_hover_cursor(egui::CursorIcon::PointingHand)
         .clicked()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Chat, Contact};
+    use crate::paths::AppDirs;
+    use crate::settings::Settings;
+
+    fn app(tag: &str) -> (App, egui::Context) {
+        let root = std::env::temp_dir().join(format!(
+            "whatsapp-dialogs-{tag}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let (mut app, _events) = App::headless(AppDirs::under(&root), Settings::default());
+        app.me = Some("9@s.whatsapp.net".into());
+        let ctx = egui::Context::default();
+        app.attach(&ctx);
+        (app, ctx)
+    }
+
+    fn frame(app: &mut App, ctx: &egui::Context, events: Vec<egui::Event>) -> egui::FullOutput {
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    vec2(1180.0, 780.0),
+                )),
+                events,
+                ..Default::default()
+            },
+            |ui| show(app, ui.ctx()),
+        );
+        output.textures_delta.clear();
+        output
+    }
+
+    fn text_at(output: &egui::FullOutput, label: &str) -> Option<egui::Pos2> {
+        output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::Shape::Text(text) if text.galley.job.text == label => {
+                    Some(text.pos + text.galley.size() / 2.0)
+                }
+                _ => None,
+            })
+    }
+
+    fn click(app: &mut App, ctx: &egui::Context, pos: egui::Pos2) {
+        for pressed in [true, false] {
+            frame(
+                app,
+                ctx,
+                vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+        }
+    }
+
+    fn contact(id: &str, name: &str) -> Contact {
+        Contact {
+            id: id.into(),
+            full_name: Some(name.into()),
+            push_name: None,
+        }
+    }
+
+    #[test]
+    fn group_info_lists_cached_members_and_opens_one() {
+        let (mut app, ctx) = app("members");
+        for (id, name) in [("1@s.whatsapp.net", "Ada"), ("2@s.whatsapp.net", "Bob")] {
+            app.contacts.insert(id.into(), contact(id, name));
+        }
+        let mut group = Chat::new("g@g.us".into(), "Team".into());
+        group.participants = vec![
+            "9@s.whatsapp.net".into(),
+            "2@s.whatsapp.net".into(),
+            "1@s.whatsapp.net".into(),
+        ];
+        app.chats.push(group);
+        app.dialog = Some(Dialog::ChatInfo("g@g.us".into()));
+
+        frame(&mut app, &ctx, vec![]);
+        let output = frame(&mut app, &ctx, vec![]);
+        assert!(text_at(&output, "Members (3)").is_some());
+        let ada = text_at(&output, "Ada").expect("member row is drawn");
+        let bob = text_at(&output, "Bob").expect("member row is drawn");
+        assert!(ada.y < bob.y, "members are sorted by name");
+
+        // A rename made outside events must be announced to the name cache.
+        app.contacts.insert(
+            "1@s.whatsapp.net".into(),
+            contact("1@s.whatsapp.net", "Ida"),
+        );
+        assert!(text_at(&frame(&mut app, &ctx, vec![]), "Ada").is_some());
+        app.invalidate_names();
+        let output = frame(&mut app, &ctx, vec![]);
+        assert!(text_at(&output, "Ada").is_none());
+        assert!(text_at(&output, "Ida").is_some());
+        let bob = text_at(&output, "Bob").expect("member row is drawn");
+
+        click(&mut app, &ctx, bob);
+        assert_eq!(
+            app.actions,
+            vec![Action::ShowDialog(Dialog::ChatInfo(
+                "2@s.whatsapp.net".into()
+            ))]
+        );
+    }
 }
