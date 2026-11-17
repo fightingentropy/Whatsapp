@@ -6375,7 +6375,9 @@ fn parse_conversation(conversation: wa::Conversation) -> ParsedChat {
                 Some(Status::PLAYED) => Delivery::Played,
                 Some(Status::DELIVERY_ACK) => Delivery::Delivered,
                 Some(Status::SERVER_ACK) => Delivery::Sent,
-                Some(Status::PENDING) => Delivery::Pending,
+                // The phone is still sending it. Pending here means a send of
+                // our own, which a restart fails and offers to retry.
+                Some(Status::PENDING) => Delivery::Sent,
                 Some(Status::ERROR) => Delivery::Failed,
                 _ => Delivery::Sent,
             }
@@ -9296,6 +9298,37 @@ mod receipt_tests {
                 }
             );
         }
+    }
+
+    #[test]
+    fn history_never_files_the_phones_unsent_message_as_a_pending_send_of_ours() {
+        use wa::web_message_info::Status;
+        let status = parse_conversation(wa::Conversation {
+            id: PEER.into(),
+            messages: vec![wa::HistorySyncMsg {
+                message: MessageField::some(wa::WebMessageInfo {
+                    key: MessageField::some(wa::MessageKey {
+                        id: Some("queued-on-phone".into()),
+                        from_me: Some(true),
+                        ..Default::default()
+                    }),
+                    message: MessageField::some(wa::Message {
+                        conversation: Some("synthetic".into()),
+                        ..Default::default()
+                    }),
+                    status: Some(Status::PENDING),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        })
+        .messages
+        .remove(0)
+        .status;
+        // The startup sweep fails Pending rows and offers Retry; the phone's
+        // own queued message must not be resent from here.
+        assert_eq!(status, Delivery::Sent);
     }
 
     #[test]
