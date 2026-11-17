@@ -80,6 +80,9 @@ pub struct Conversation {
     pub phone_misses: u32,
     /// Whether messages arrived after the latest phone request.
     pub phone_delivered: bool,
+    /// Rows kept across an identity merge may not adjoin the next first
+    /// page; that page replaces all but busy rows instead of joining them.
+    pub replace_on_first_page: bool,
 }
 
 impl Conversation {
@@ -1074,7 +1077,23 @@ impl App {
                     if older && !messages.is_empty() {
                         conversation.phone_delivered = true;
                     }
+                    if requested
+                        && !older
+                        && std::mem::take(&mut conversation.replace_on_first_page)
+                    {
+                        // The composer's reply or edit target stays loaded.
+                        let open = self.open_chat.as_deref() == Some(chat.as_str());
+                        let targets = [&self.reply_to, &self.editing];
+                        conversation.drop_rows_before(
+                            messages.first().map(|m| m.timestamp),
+                            |message| {
+                                open && targets.iter().any(|t| t.as_deref() == Some(&message.id))
+                            },
+                        );
+                    }
+                    let loaded = conversation.messages.len();
                     conversation.merge(messages, older);
+                    let grew = conversation.messages.len() > loaded;
                     if requested && !older {
                         conversation.loading_initial = false;
                         conversation.complete = complete;
@@ -1093,11 +1112,15 @@ impl App {
                         if bare {
                             self.fetch_older(&chat);
                         }
-                        // After the first page, load toward a pending search anchor once.
-                        if !older
+                        // After the first page, load toward a pending search anchor.
+                        // A target further back than one chunk arrives over
+                        // several contiguous chunks; each must add rows, so the
+                        // chain ends at the target or the archive's start.
+                        if (!older || (requested && grew))
                             && let Some(anchor) = self.scroll_anchor.clone()
                             && let Some(conversation) = self.conversations.get_mut(&chat)
                             && conversation.message(&anchor).is_none()
+                            && !(older && conversation.complete)
                             && !conversation.loading_older
                             && let Some(oldest) = conversation.messages.first()
                         {
@@ -3791,6 +3814,65 @@ mod tests {
         restarted.handle_chat_updated(stored);
         restarted.load_older(fresh);
         assert!(restarted.conversations[fresh].fetching_phone);
+    }
+
+    #[test]
+    fn a_distant_jump_target_keeps_loading_contiguous_chunks_until_it_arrives() {
+        let root = std::env::temp_dir().join(format!("whatsapp-app-{}", std::process::id()));
+        let (mut app, events) = App::headless(AppDirs::under(&root), Settings::default());
+        app.backend.record_demo_commands();
+        let chat = "jump@s.whatsapp.net";
+        let rows = |range: std::ops::Range<i64>| {
+            range
+                .map(|n| message(chat, &n.to_string(), n))
+                .collect::<Vec<_>>()
+        };
+        app.chats.push(Chat::new(chat.into(), "Jump".into()));
+        app.open_chat = Some(chat.into());
+        let conversation = app.conversations.entry(chat.into()).or_default();
+        conversation.requested = true;
+        conversation.merge(rows(500..560), false);
+        conversation.loading_older = true;
+        app.scroll_anchor = Some("0".into());
+        let older = |messages: Vec<Message>| Event::Messages {
+            chat: chat.into(),
+            messages,
+            older: true,
+            complete: false,
+            requested: true,
+        };
+        let load_untils = |app: &App| {
+            app.backend
+                .take_demo_commands()
+                .into_iter()
+                .filter_map(|command| match command {
+                    Command::LoadUntil { id, before, .. } => Some((id, before)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+
+        // A chunk that stops short of the target asks for the next one.
+        events.send(older(rows(300..500))).unwrap();
+        app.handle_events();
+        assert_eq!(
+            load_untils(&app),
+            [("0".to_owned(), (300, "300".to_owned()))]
+        );
+        assert!(app.conversations[chat].loading_older);
+
+        // Once the target is loaded, the chain stops.
+        events.send(older(rows(0..300))).unwrap();
+        app.handle_events();
+        assert!(load_untils(&app).is_empty());
+        assert!(!app.conversations[chat].loading_older);
+
+        // An empty chunk (target not archived) never repeats the request.
+        app.scroll_anchor = Some("missing".into());
+        app.conversations.get_mut(chat).unwrap().loading_older = true;
+        events.send(older(Vec::new())).unwrap();
+        app.handle_events();
+        assert!(load_untils(&app).is_empty());
     }
 
     fn message(chat: &str, id: &str, timestamp: i64) -> Message {

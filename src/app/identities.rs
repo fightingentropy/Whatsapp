@@ -69,6 +69,7 @@ impl App {
             conversation.requested = false;
             conversation.loading_initial = false;
             conversation.phone_exhausted = false;
+            conversation.replace_on_first_page = true;
         }
         if self.chat_search.chat.as_deref() == Some(from.as_str()) {
             self.chat_search.chat = Some(into.clone());
@@ -212,5 +213,69 @@ mod tests {
         app.open_chat(from.into());
         assert_eq!(app.open_chat.as_deref(), Some(into));
         assert_eq!(app.composer, "unsent current draft\nunsent other draft");
+    }
+
+    #[test]
+    fn first_page_after_a_merge_replaces_rows_that_may_not_adjoin_it() {
+        let dirs = AppDirs::under(&std::env::temp_dir().join("whatsapp-identity-gap"));
+        let (mut app, events) = App::headless(dirs, Settings::default());
+        let from = "654321@lid";
+        let into = "15550003333@s.whatsapp.net";
+        app.chats = vec![Chat::new(into.into(), "~Peer".into())];
+        app.open_chat = Some(into.into());
+        let message = |id: &str, timestamp: i64, status: Delivery| Message {
+            chat: into.into(),
+            id: id.into(),
+            sender: into.into(),
+            sender_name: None,
+            from_me: status == Delivery::Pending,
+            timestamp,
+            content: Content::text("synthetic message"),
+            status,
+            delivered_at: None,
+            read_at: None,
+            quoted: None,
+            reactions: Vec::new(),
+            edited: false,
+            mentions: Vec::new(),
+            forwarded: false,
+            thumbnail: None,
+        };
+        app.conversations.entry(into.into()).or_default().merge(
+            vec![
+                message("stale", 10, Delivery::None),
+                message("sending", 20, Delivery::Pending),
+                message("quoted", 30, Delivery::None),
+            ],
+            false,
+        );
+        app.reply_to = Some("quoted".into());
+        events
+            .send(Event::ChatMerged {
+                from: from.into(),
+                into: into.into(),
+            })
+            .unwrap();
+        app.handle_events();
+        assert!(app.conversations[into].replace_on_first_page);
+        events
+            .send(Event::Messages {
+                chat: into.into(),
+                messages: (100..160)
+                    .map(|n| message(&n.to_string(), n, Delivery::None))
+                    .collect(),
+                older: false,
+                complete: false,
+                requested: true,
+            })
+            .unwrap();
+        app.handle_events();
+        let conversation = &app.conversations[into];
+        assert!(!conversation.replace_on_first_page);
+        assert!(conversation.message("stale").is_none());
+        assert!(conversation.message("sending").is_some());
+        assert!(conversation.message("quoted").is_some());
+        assert_eq!(conversation.messages.len(), 62);
+        assert!(conversation.message("100").is_some());
     }
 }

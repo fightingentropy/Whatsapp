@@ -94,20 +94,41 @@ impl App {
     }
 }
 
+/// Whether a message has a send or download in progress.
+fn message_busy(message: &Message) -> bool {
+    message.status.in_flight()
+        || message
+            .content
+            .media()
+            .is_some_and(|media| matches!(media.state, MediaState::Downloading))
+}
+
 impl Conversation {
     fn busy(&mut self) -> bool {
         if self.loading_initial || self.loading_older || self.fetching_phone {
             return true;
         }
-        *self.cached_busy.get_or_insert_with(|| {
-            self.messages.iter().any(|message| {
-                message.status.in_flight()
-                    || message
-                        .content
-                        .media()
-                        .is_some_and(|media| matches!(media.state, MediaState::Downloading))
-            })
-        })
+        *self
+            .cached_busy
+            .get_or_insert_with(|| self.messages.iter().any(message_busy))
+    }
+
+    /// Drops loaded rows older than `cutoff` (all of them without one), except
+    /// busy rows and those `keep` names, so a fresh first page cannot join a
+    /// window across a gap.
+    pub(super) fn drop_rows_before(
+        &mut self,
+        cutoff: Option<i64>,
+        keep: impl Fn(&Message) -> bool,
+    ) {
+        self.messages.retain(|message| {
+            cutoff.is_some_and(|cutoff| message.timestamp >= cutoff)
+                || message_busy(message)
+                || keep(message)
+        });
+        self.row_heights.clear();
+        self.cached_bytes = None;
+        self.cached_busy = None;
     }
 
     fn estimated_bytes(&mut self) -> usize {

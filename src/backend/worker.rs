@@ -7330,6 +7330,38 @@ mod receipt_tests {
         assert!(!result.1 && !result.2);
     }
 
+    #[test]
+    fn a_distant_load_until_returns_the_chunk_next_to_the_loaded_window() {
+        let (mut worker, events, _inbox, _wa) = worker();
+        worker.archive.ensure_chat(PEER, "Fixture").unwrap();
+        for n in 0..5000 {
+            worker
+                .archive
+                .insert_message(&own_message(&format!("{n:05}"), n), None)
+                .unwrap();
+        }
+        worker.load_until(PEER.into(), "00000".into(), (4900, "04900".into()));
+        let pages: Vec<_> = events
+            .try_iter()
+            .filter_map(|event| match event {
+                Event::Messages {
+                    messages,
+                    older,
+                    requested,
+                    complete,
+                    ..
+                } => Some((messages, older, requested, complete)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(pages.len(), 1);
+        let (messages, older, requested, complete) = &pages[0];
+        assert!(*older && *requested && !*complete);
+        assert_eq!(messages.len(), 2000);
+        assert_eq!(messages.first().unwrap().id, "02900");
+        assert_eq!(messages.last().unwrap().id, "04899");
+    }
+
     #[tokio::test]
     async fn qr_exhaustion_restarts_only_the_expired_qr_session() {
         for disconnected in [true, false] {

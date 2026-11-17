@@ -924,7 +924,9 @@ impl Archive {
         Ok(messages)
     }
 
-    /// Returns messages from `from` through `before`, ascending and limited.
+    /// Returns the newest `limit` messages at or after `from` and before
+    /// `before`, ascending. A limited result stays contiguous with `before`,
+    /// so a window joined onto it has no unloaded gap.
     pub fn messages_range(
         &self,
         chat: &str,
@@ -937,7 +939,7 @@ impl Archive {
              FROM messages
              WHERE chat = ?1 AND timestamp >= ?2 AND (timestamp < ?3 OR (timestamp = ?3 AND rowid <
                  (SELECT rowid FROM messages WHERE chat = ?1 AND id = ?4)))
-             ORDER BY timestamp ASC, rowid ASC
+             ORDER BY timestamp DESC, rowid DESC
              LIMIT ?5",
         )?;
         let rows = statement.query_map(
@@ -969,7 +971,9 @@ impl Archive {
                 })
             },
         )?;
-        rows.collect()
+        let mut messages: Vec<Message> = rows.collect::<Result<_>>()?;
+        messages.reverse();
+        Ok(messages)
     }
 
     /// Returns downloaded chat stickers for the picker, newest first.
@@ -2444,6 +2448,14 @@ mod tests {
         assert_eq!(
             range.iter().map(|m| m.timestamp).collect::<Vec<_>>(),
             vec![102, 103, 104]
+        );
+        let limited = archive
+            .messages_range(chat, 100, (105, "m5"), 3)
+            .expect("range");
+        assert_eq!(
+            limited.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            ["m2", "m3", "m4"],
+            "a limited range keeps the rows next to its upper bound"
         );
         assert!(archive.delete_message(chat, "m3").expect("delete"));
         assert!(!archive.delete_message(chat, "m3").expect("delete"));
