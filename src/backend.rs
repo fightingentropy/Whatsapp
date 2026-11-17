@@ -416,6 +416,8 @@ pub enum Command {
         chat: ChatId,
         name: Option<String>,
         participants: Vec<String>,
+        /// Every id the group's admins are known by.
+        admins: Vec<String>,
         read_only: bool,
     },
     /// Internal pairing-code result.

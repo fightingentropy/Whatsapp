@@ -241,6 +241,7 @@ pub async fn run(
         send_tails: HashMap::new(),
         pending_older: HashMap::new(),
         local_revokes: HashSet::new(),
+        admin_revokes: HashMap::new(),
         older_warned: HashSet::new(),
         pending_avatars: HashMap::new(),
         sticker_pace: Default::default(),
@@ -346,6 +347,9 @@ struct Worker {
     /// back about; a remote revoke clears the entry so a failed local send
     /// cannot undo a genuine deletion.
     local_revokes: HashSet<(ChatId, String)>,
+    /// Group admins' deletes of other people's messages, as (message, sender),
+    /// held until fresh group metadata confirms the sender is an admin.
+    admin_revokes: HashMap<ChatId, Vec<(String, String)>>,
     /// Chats already notified about a phone-history timeout.
     older_warned: HashSet<ChatId>,
     /// Deferred profile-picture requests and retry counts.
@@ -1090,12 +1094,56 @@ impl Worker {
         }
     }
 
+    /// Marks a message deleted for everyone on someone else's say-so.
+    fn apply_revoke(&mut self, chat: &str, target: &str) {
+        self.local_revokes
+            .remove(&(chat.to_owned(), target.to_owned()));
+        if let Ok(true) = self
+            .archive
+            .set_content(chat, target, &Content::Revoked, false)
+        {
+            self.emit_message(chat, target);
+            self.emit_chat(chat);
+        }
+    }
+
+    /// Holds a delete that claims a group admin's authority over someone
+    /// else's message, and asks for the group's current admins. The claim is
+    /// the sender's own marker, and the archive is the only copy.
+    fn hold_admin_revoke(&mut self, chat: &str, target: String, sender: &str) {
+        let held = self.admin_revokes.entry(chat.to_owned()).or_default();
+        if held.len() >= ADMIN_REVOKES_HELD {
+            held.remove(0);
+        }
+        held.push((target, sender.to_owned()));
+        self.request_group_info(chat, true);
+    }
+
+    /// Applies the held deletes whose sender the fresh metadata names as an
+    /// admin, and drops the rest.
+    fn settle_admin_revokes(&mut self, chat: &str, admins: &[String]) {
+        let Some(held) = self.admin_revokes.remove(chat) else {
+            return;
+        };
+        let admins: HashSet<String> = admins.iter().map(|id| self.canonical_str(id)).collect();
+        for (target, sender) in held {
+            // A mapping learned meanwhile may have renamed the sender.
+            if admins.contains(&self.canonical_str(&sender)) {
+                self.apply_revoke(chat, &target);
+            } else {
+                log::debug!("ignored a delete from a sender who is not a group admin");
+            }
+        }
+    }
+
     /// Schedules metadata retry with backoff, or stops on permanent failure.
     /// A permanently failed group stays marked as asked, so only a forced
     /// request (a group update) asks about it again.
     fn handle_failed_group(&mut self, chat: String, permanent: bool) {
         if permanent {
             self.group_info_tries.remove(&chat);
+            // Nobody can be confirmed as an admin of a group we cannot read.
+            self.admin_revokes.remove(&chat);
         } else {
             self.group_info_requested.remove(&chat);
             let tries = self.group_info_tries.entry(chat.clone()).or_insert(0);
@@ -1139,6 +1187,7 @@ impl Worker {
                         jid.to_non_ad_string()
                     };
                     let mut participants = Vec::new();
+                    let mut admins = Vec::new();
                     let mut admin = false;
                     for participant in &metadata.participants {
                         let id = participant
@@ -1155,6 +1204,12 @@ impl Worker {
                         if mine && participant.is_admin() {
                             admin = true;
                         }
+                        if participant.is_admin() {
+                            // An admin may write under any of these ids.
+                            admins.push(id.clone());
+                            admins.push(canonical(&participant.jid));
+                            admins.extend(participant.lid.as_ref().map(Jid::to_non_ad_string));
+                        }
                         participants.push(id);
                     }
                     let _ = commands.send(Command::GroupInfo {
@@ -1164,6 +1219,7 @@ impl Worker {
                             .clone()
                             .filter(|name| !name.trim().is_empty()),
                         participants,
+                        admins,
                         read_only: metadata.is_announcement && !admin,
                     });
                 }
@@ -1498,6 +1554,7 @@ impl Worker {
         self.pending_older.clear();
         self.pending_avatars.clear();
         self.local_revokes.clear();
+        self.admin_revokes.clear();
         self.send_tails.clear();
         self.older_warned.clear();
         self.me_pn = None;
@@ -1741,21 +1798,16 @@ impl Worker {
                     admin_revoke: info.edit == EditAttribute::AdminRevoke,
                 };
                 if !change.may_modify(&existing, &author) {
-                    log::debug!("ignored a protocol change from a non-author");
+                    if change.claims_admin_delete(&existing) {
+                        self.hold_admin_revoke(&chat, target, &sender);
+                    } else {
+                        log::debug!("ignored a protocol change from a non-author");
+                    }
                     return;
                 }
             }
             match protocol.r#type {
-                Some(Type::REVOKE) => {
-                    self.local_revokes.remove(&(chat.clone(), target.clone()));
-                    if let Ok(true) =
-                        self.archive
-                            .set_content(&chat, &target, &Content::Revoked, false)
-                    {
-                        self.emit_message(&chat, &target);
-                        self.emit_chat(&chat);
-                    }
-                }
+                Some(Type::REVOKE) => self.apply_revoke(&chat, &target),
                 Some(Type::MESSAGE_EDIT) => {
                     if let Some(edited) = protocol.edited_message.as_option()
                         && let Some(mut content) = classify(edited)
@@ -3251,6 +3303,7 @@ impl Worker {
                 chat,
                 name,
                 participants,
+                admins,
                 read_only,
             } => {
                 self.group_info_tries.remove(&chat);
@@ -3258,6 +3311,7 @@ impl Worker {
                     self.archive
                         .set_group_info(&chat, name.as_deref(), &participants, read_only);
                 self.emit_chat(&chat);
+                self.settle_admin_revokes(&chat, &admins);
             }
         }
     }
@@ -5081,20 +5135,31 @@ struct ProtocolChange<'a> {
 }
 
 impl ProtocolChange<'_> {
-    /// Only the author edits. The author, any of our own devices (which may
-    /// act as a group admin) or a group admin deletes. `author` is the row's
-    /// canonical sender; our own rows are matched by `from_me`, since our
-    /// own id may be a phone number or a privacy id.
+    /// Only the author edits. The author or any of our own devices (which
+    /// may act as a group admin) deletes. `author` is the row's canonical
+    /// sender; our own rows are matched by `from_me`, since our own id may be
+    /// a phone number or a privacy id. Another admin's delete is not decided
+    /// here: see `claims_admin_delete`.
     fn may_modify(&self, existing: &Message, author: &str) -> bool {
         let by_author = existing.from_me == self.from_me && (self.from_me || author == self.sender);
         if !self.revoke {
             return by_author && !matches!(existing.content, Content::Revoked);
         }
-        by_author
-            || self.from_me
-            || (self.admin_revoke && ChatKind::from_id(&existing.chat) == ChatKind::Group)
+        by_author || self.from_me
+    }
+
+    /// Whether this is a delete that claims a group admin's authority. The
+    /// claim has to be checked against the group's admins before it applies.
+    fn claims_admin_delete(&self, existing: &Message) -> bool {
+        self.revoke
+            && self.admin_revoke
+            && ChatKind::from_id(&existing.chat) == ChatKind::Group
+            && !matches!(existing.content, Content::Revoked)
     }
 }
+
+/// Held admin deletes per group; the oldest gives way.
+const ADMIN_REVOKES_HELD: usize = 256;
 
 fn forwarded_row(
     mut source: Message,
@@ -7212,6 +7277,7 @@ mod receipt_tests {
             send_tails: HashMap::new(),
             pending_older: HashMap::new(),
             local_revokes: HashSet::new(),
+            admin_revokes: HashMap::new(),
             older_warned: HashSet::new(),
             pending_avatars: HashMap::new(),
             sticker_pace: Default::default(),
@@ -8307,9 +8373,19 @@ mod receipt_tests {
             EditAttribute::SenderRevoke,
             revoke("d"),
         );
-        for id in ["b", "c", "d"] {
+        for id in ["c", "d"] {
             assert_eq!(content(&worker, group, id).0, Content::Revoked);
         }
+        // Another member's claim to be an admin waits for the group's admins.
+        assert_eq!(content(&worker, group, "b"), (Content::text("hi"), false));
+        assert_eq!(
+            worker.admin_revokes[group],
+            [("b".to_owned(), PEER.to_owned())]
+        );
+        assert_eq!(
+            worker.group_info_queue.front().map(String::as_str),
+            Some(group)
+        );
         // A deleted message cannot be edited back.
         receive_protocol(
             &mut worker,
@@ -8320,6 +8396,78 @@ mod receipt_tests {
             edit("d", text("back")),
         );
         assert_eq!(content(&worker, group, "d").0, Content::Revoked);
+    }
+
+    #[tokio::test]
+    async fn an_admin_delete_applies_only_once_the_group_names_the_sender_an_admin() {
+        const AUTHOR: &str = "4915550002222@s.whatsapp.net";
+        const MEMBER: &str = "4915550003333@s.whatsapp.net";
+        let (mut worker, _events, _inbox, _wa) = worker();
+        let group = "123-456@g.us";
+        worker.archive.ensure_chat(group, "Group").unwrap();
+        for id in ["by-admin", "by-member", "by-lid-admin"] {
+            let row = Message {
+                chat: group.into(),
+                sender: AUTHOR.into(),
+                ..incoming(id, 30)
+            };
+            worker.archive.insert_message(&row, None).unwrap();
+        }
+        let deleted = |worker: &Worker, id: &str| {
+            worker.archive.message(group, id).unwrap().unwrap().content == Content::Revoked
+        };
+        let claim = |worker: &mut Worker, sender: &str, id: &str| {
+            receive_protocol(
+                worker,
+                group,
+                sender,
+                false,
+                EditAttribute::AdminRevoke,
+                revoke(id),
+            );
+        };
+        claim(&mut worker, PEER, "by-admin");
+        claim(&mut worker, MEMBER, "by-member");
+        // An admin writing under a privacy id whose phone number is not known yet.
+        claim(&mut worker, PEER_LID, "by-lid-admin");
+        assert!(!deleted(&worker, "by-admin"), "held until confirmed");
+        assert_eq!(
+            worker
+                .group_info_queue
+                .iter()
+                .filter(|id| *id == group)
+                .count(),
+            1,
+            "one question for the burst"
+        );
+
+        // The mapping arrives before the metadata; the admin list names the
+        // phone number only.
+        worker.learn_lid("167650256810092", "4917663430455");
+        worker
+            .handle_command(Command::GroupInfo {
+                chat: group.into(),
+                name: None,
+                participants: vec![PEER.into(), MEMBER.into(), AUTHOR.into()],
+                admins: vec![PEER.into()],
+                read_only: false,
+            })
+            .await;
+        assert!(deleted(&worker, "by-admin"));
+        assert!(deleted(&worker, "by-lid-admin"));
+        assert!(!deleted(&worker, "by-member"), "an ordinary member's claim");
+        assert!(worker.admin_revokes.is_empty());
+
+        // A group that can no longer be read confirms nobody.
+        claim(&mut worker, MEMBER, "by-member");
+        worker
+            .handle_command(Command::GroupInfoFailed {
+                chat: group.into(),
+                permanent: true,
+            })
+            .await;
+        assert!(worker.admin_revokes.is_empty());
+        assert!(!deleted(&worker, "by-member"));
     }
 
     #[test]
