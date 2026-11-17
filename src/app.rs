@@ -2714,20 +2714,27 @@ impl App {
     }
 
     pub fn toast(&mut self, message: impl Into<String>) {
-        self.toasts.push(Toast {
-            message: message.into(),
-            kind: ToastKind::Info,
-            created: Instant::now(),
-        });
-        self.toasts.truncate(4);
+        self.push_toast(message.into(), ToastKind::Info);
     }
 
     pub fn toast_error(&mut self, message: impl Into<String>) {
         let message = message.into();
         log::warn!("{message}");
+        self.push_toast(message, ToastKind::Error);
+    }
+
+    /// Keeps the newest four toasts, oldest first as `ui::toasts` draws them.
+    fn push_toast(&mut self, message: String, kind: ToastKind) {
+        const LIMIT: usize = 4;
+        // A repeated message moves to the newest slot instead of stacking.
+        self.toasts
+            .retain(|toast| !(toast.kind == kind && toast.message == message));
+        if self.toasts.len() >= LIMIT {
+            self.toasts.drain(..self.toasts.len() + 1 - LIMIT);
+        }
         self.toasts.push(Toast {
             message,
-            kind: ToastKind::Error,
+            kind,
             created: Instant::now(),
         });
     }
@@ -4581,6 +4588,28 @@ mod tests {
         app.handle_events();
         assert!(!app.new_contact_pending);
         assert!(!app.sticker_import_pending);
+    }
+
+    #[test]
+    fn toasts_keep_the_newest_four_and_fold_repeats() {
+        let mut app = app();
+        for n in 1..=6 {
+            if n % 2 == 0 {
+                app.toast_error(format!("error {n}"));
+            } else {
+                app.toast(format!("info {n}"));
+            }
+        }
+        let shown: Vec<_> = app.toasts.iter().map(|t| t.message.as_str()).collect();
+        assert_eq!(shown, ["info 3", "error 4", "info 5", "error 6"]);
+
+        app.toasts.clear();
+        for _ in 0..3 {
+            app.toast_error("Not connected to WhatsApp");
+        }
+        app.toast("Copied");
+        let shown: Vec<_> = app.toasts.iter().map(|t| t.message.as_str()).collect();
+        assert_eq!(shown, ["Not connected to WhatsApp", "Copied"]);
     }
 
     #[test]
