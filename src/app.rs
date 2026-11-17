@@ -1029,13 +1029,29 @@ impl App {
             match event {
                 Event::Link(status) => self.handle_link(status),
                 Event::Me { id, name, about } => {
-                    self.invalidate_message_layouts();
+                    // Sent on every reconnect; only a new id or name changes rows.
+                    if self.me.as_deref() != Some(id.as_str()) || self.me_name != name {
+                        self.invalidate_message_layouts();
+                    }
                     self.me = Some(id);
                     self.me_name = name;
                     self.me_about = about;
                 }
                 Event::Chats(chats) => {
-                    self.invalidate_message_layouts();
+                    // Rows read only chat names; an unchanged snapshot keeps
+                    // every settled row height.
+                    let known: HashMap<&str, &str> = self
+                        .chats
+                        .iter()
+                        .map(|chat| (chat.id.as_str(), chat.name.as_str()))
+                        .collect();
+                    if chats.len() != known.len()
+                        || chats
+                            .iter()
+                            .any(|chat| known.get(chat.id.as_str()) != Some(&chat.name.as_str()))
+                    {
+                        self.invalidate_message_layouts();
+                    }
                     for chat in &chats {
                         if chat.unread == 0 {
                             self.notifications.clear(&chat.id);
@@ -1184,7 +1200,12 @@ impl App {
                     }
                 }
                 Event::Contacts(contacts) => {
-                    self.invalidate_message_layouts();
+                    if contacts
+                        .iter()
+                        .any(|contact| self.contacts.get(&contact.id) != Some(contact))
+                    {
+                        self.invalidate_message_layouts();
+                    }
                     for contact in contacts {
                         self.contacts.insert(contact.id.clone(), contact);
                     }
@@ -3873,6 +3894,66 @@ mod tests {
         events.send(older(Vec::new())).unwrap();
         app.handle_events();
         assert!(load_untils(&app).is_empty());
+    }
+
+    #[test]
+    fn unchanged_names_keep_settled_row_heights() {
+        let root = std::env::temp_dir().join(format!("whatsapp-app-{}", std::process::id()));
+        let (mut app, events) = App::headless(AppDirs::under(&root), Settings::default());
+        let chat = "peer@s.whatsapp.net";
+        app.chats.push(Chat::new(chat.into(), "Peer".into()));
+        app.me = Some("me@s.whatsapp.net".into());
+        app.me_name = Some("Me".into());
+        let contact = Contact {
+            id: chat.into(),
+            push_name: Some("Peer".into()),
+            ..Default::default()
+        };
+        app.contacts.insert(chat.into(), contact.clone());
+        let mut conversation = Conversation::default();
+        conversation.merge(vec![message(chat, "a", 1), message(chat, "b", 2)], false);
+        app.conversations.insert(chat.into(), conversation);
+        let settle = |app: &mut App| {
+            let heights = &mut app.conversations.get_mut(chat).unwrap().row_heights;
+            heights.set("a", None, 20.0);
+            heights.set("a", None, 20.0);
+        };
+        let settled = |app: &App| app.conversations[chat].row_heights.get("a", None).is_some();
+        let deliver = |app: &mut App, event: Event| {
+            events.send(event).unwrap();
+            app.handle_events();
+        };
+
+        settle(&mut app);
+        let same = app.chats.clone();
+        deliver(&mut app, Event::Chats(same.clone()));
+        assert!(settled(&app), "an identical chat list keeps row heights");
+        let mut renamed = same;
+        renamed[0].name = "Renamed".into();
+        deliver(&mut app, Event::Chats(renamed));
+        assert!(!settled(&app), "a renamed chat lays rows out again");
+
+        settle(&mut app);
+        let me = |name: &str| Event::Me {
+            id: "me@s.whatsapp.net".into(),
+            name: Some(name.into()),
+            about: None,
+        };
+        deliver(&mut app, me("Me"));
+        assert!(
+            settled(&app),
+            "a reconnect with the same identity keeps rows"
+        );
+        deliver(&mut app, me("New me"));
+        assert!(!settled(&app));
+
+        settle(&mut app);
+        deliver(&mut app, Event::Contacts(vec![contact.clone()]));
+        assert!(settled(&app), "an identical contact keeps rows");
+        let mut changed = contact;
+        changed.push_name = Some("Pat".into());
+        deliver(&mut app, Event::Contacts(vec![changed]));
+        assert!(!settled(&app));
     }
 
     fn message(chat: &str, id: &str, timestamp: i64) -> Message {

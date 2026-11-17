@@ -2091,7 +2091,10 @@ impl Worker {
         if !on_demand && lazy.progress().is_some_and(|progress| progress >= 100) {
             self.sync_deadline = Some(Instant::now() + Duration::from_secs(3));
         }
-        self.emit_chats();
+        // An on-demand page already sent ChatUpdated for each chat it filed.
+        if !on_demand {
+            self.emit_chats();
+        }
     }
 
     fn store_history_batch(&mut self, batch: &mut Vec<(Message, Vec<u8>)>) {
