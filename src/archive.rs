@@ -220,6 +220,32 @@ fn status_rank(status: Delivery) -> i64 {
     }
 }
 
+/// LIKE patterns and the optional FTS phrase for a search query. The index
+/// folds only ASCII case, like SQLite's lower(), so the query is folded both
+/// that way, to find text with capitals outside ASCII as typed, and fully, to
+/// keep finding lowercase text from a capitalised query. FTS needs both folds
+/// long enough for trigrams, or it would hide the other fold's matches.
+fn search_terms(needle: &str) -> ([String; 2], Option<String>) {
+    let ascii = needle.to_ascii_lowercase();
+    let unicode = needle.to_lowercase();
+    let phrase = match (search::phrase(&ascii), search::phrase(&unicode)) {
+        (Some(ascii), Some(unicode)) if ascii == unicode => Some(ascii),
+        (Some(ascii), Some(unicode)) => Some(format!("{ascii} OR {unicode}")),
+        _ => None,
+    };
+    ([like_pattern(&ascii), like_pattern(&unicode)], phrase)
+}
+
+/// A LIKE pattern matching `text` literally anywhere, escaped with `\`.
+fn like_pattern(text: &str) -> String {
+    format!(
+        "%{}%",
+        text.replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_")
+    )
+}
+
 /// Timestamp column for a remembered delivery stage.
 fn stamp_column(status: Delivery) -> Option<&'static str> {
     match status {
@@ -768,17 +794,10 @@ impl Archive {
     }
 
     /// Searches visible message text, filenames, polls, contacts, and places.
-    /// ASCII matching is case-insensitive; other text follows SQLite behavior.
+    /// ASCII matching is case-insensitive. Other text matches as typed (the
+    /// index folds only ASCII) or as typed lowercased.
     pub fn search_messages(&self, needle: &str, limit: usize) -> Result<Vec<Message>> {
-        let normalized = needle.to_lowercase();
-        let pattern = format!(
-            "%{}%",
-            normalized
-                .replace('\\', "\\\\")
-                .replace('%', "\\%")
-                .replace('_', "\\_")
-        );
-        let phrase = search::phrase(&normalized);
+        let (patterns, phrase) = search_terms(needle);
         if phrase.is_some() && limit > 0 && limit <= 256 {
             // Common terms can match most of a large archive. If the newest
             // 256 rows contain a full page, it is already the correct result;
@@ -786,7 +805,7 @@ impl Archive {
             // across the entire archive, including older matches.
             let recent = self.search_rows(
                 "AND rowid IN (SELECT rowid FROM messages ORDER BY timestamp DESC, rowid DESC LIMIT 256) AND ?3 IS NULL",
-                &pattern, limit, None, None, None,
+                &patterns, limit, None, None, None,
             )?;
             if recent.len() == limit {
                 return Ok(recent);
@@ -797,7 +816,7 @@ impl Archive {
         } else {
             "AND ?3 IS NULL"
         };
-        self.search_rows(candidates, &pattern, limit, phrase.as_deref(), None, None)
+        self.search_rows(candidates, &patterns, limit, phrase.as_deref(), None, None)
     }
 
     /// Searches one conversation, optionally within a half-open local-day range.
@@ -810,15 +829,7 @@ impl Archive {
         day: Option<(i64, i64)>,
         limit: usize,
     ) -> Result<Vec<Message>> {
-        let normalized = needle.to_lowercase();
-        let pattern = format!(
-            "%{}%",
-            normalized
-                .replace('\\', "\\\\")
-                .replace('%', "\\%")
-                .replace('_', "\\_")
-        );
-        let phrase = search::phrase(&normalized);
+        let (patterns, phrase) = search_terms(needle);
         let candidates = if phrase.is_some() {
             "AND rowid IN (SELECT rowid FROM message_search WHERE message_search MATCH ?3)"
         } else {
@@ -826,7 +837,7 @@ impl Archive {
         };
         self.search_rows(
             candidates,
-            &pattern,
+            &patterns,
             limit,
             phrase.as_deref(),
             Some(chat),
@@ -837,7 +848,7 @@ impl Archive {
     fn search_rows(
         &self,
         candidates: &str,
-        pattern: &str,
+        patterns: &[String; 2],
         limit: usize,
         phrase: Option<&str>,
         chat: Option<&str>,
@@ -855,18 +866,21 @@ impl Archive {
         };
         let sql = format!(
             "SELECT chat, id, sender, sender_name, from_me, timestamp, content, status, quoted, reactions, edited, thumbnail, mentions, forwarded, delivered_at, read_at
-             FROM messages WHERE json_valid(content) AND search_text LIKE ?1 ESCAPE '\\' {candidates} {scope} {dates}
+             FROM messages WHERE json_valid(content)
+                 AND (search_text LIKE ?1 ESCAPE '\\' OR search_text LIKE ?7 ESCAPE '\\')
+                 {candidates} {scope} {dates}
              ORDER BY timestamp DESC, rowid DESC LIMIT ?2"
         );
         let mut statement = self.connection.prepare_cached(&sql)?;
         let rows = statement.query_map(
             params![
-                pattern,
+                patterns[0],
                 limit as i64,
                 phrase,
                 chat,
                 day.map(|d| d.0),
-                day.map(|d| d.1)
+                day.map(|d| d.1),
+                patterns[1]
             ],
             |row| {
                 let chat: String = row.get(0)?;
@@ -1523,6 +1537,43 @@ mod tests {
     }
 
     #[test]
+    fn search_finds_capitals_outside_ascii_as_typed_and_lowercase_text() {
+        let archive = Archive::in_memory().unwrap();
+        archive.ensure_chat("1@s.whatsapp.net", "A").unwrap();
+        for (id, timestamp, text) in [
+            ("m1", 10, "Über Москва Çfarë"),
+            ("m2", 20, "über москва çfarë"),
+        ] {
+            let mut row = message("1@s.whatsapp.net", id, timestamp, false);
+            row.content = Content::text(text);
+            archive.insert_message(&row, None).unwrap();
+        }
+        for (needle, expected) in [
+            // Previously only the lowercase copy was found.
+            ("Über", vec!["m2", "m1"]),
+            ("über", vec!["m2"]),
+            ("Москва", vec!["m2", "m1"]),
+            ("Çfarë", vec!["m2", "m1"]),
+            // Too short for trigrams: the LIKE-only path.
+            ("Üb", vec!["m2", "m1"]),
+        ] {
+            let ids = |hits: Vec<Message>| hits.into_iter().map(|hit| hit.id).collect::<Vec<_>>();
+            assert_eq!(
+                ids(archive.search_messages(needle, 10).unwrap()),
+                expected,
+                "query {needle:?}"
+            );
+            assert_eq!(
+                ids(archive
+                    .search_chat_messages("1@s.whatsapp.net", needle, None, 10)
+                    .unwrap()),
+                expected,
+                "chat query {needle:?}"
+            );
+        }
+    }
+
+    #[test]
     fn substring_index_matches_the_original_query_for_literal_and_unicode_text() {
         let archive = Archive::in_memory().unwrap();
         let texts = [
@@ -1534,6 +1585,8 @@ mod tests {
             "A😀B and 🧑‍💻",
             "",
             "a%_b",
+            "Über Москва",
+            "über москва",
         ];
         for (i, text) in texts.iter().enumerate() {
             let mut row = message("chat", &i.to_string(), i as i64, false);
@@ -1564,15 +1617,15 @@ mod tests {
             "a%_b",
             "missing",
             "a\0b",
+            "Über",
+            "ÜBER",
+            "über",
+            "Москва",
+            "москва",
         ] {
-            let pattern = format!(
-                "%{}%",
-                needle
-                    .to_lowercase()
-                    .replace('\\', "\\\\")
-                    .replace('%', "\\%")
-                    .replace('_', "\\_")
-            );
+            // The index folds ASCII only; a query matches either fold of itself.
+            let ascii = like_pattern(&needle.to_ascii_lowercase());
+            let unicode = like_pattern(&needle.to_lowercase());
             let expected: Vec<String> = archive
                 .connection
                 .prepare(
@@ -1583,10 +1636,17 @@ mod tests {
                     coalesce(json_extract(content, '$.question'), '') || char(10) ||
                     coalesce(json_extract(content, '$.display_name'), '') || char(10) ||
                     coalesce(json_extract(content, '$.name'), '')) LIKE ?1 ESCAPE '\\'
+                    OR json_valid(content) AND lower(
+                    coalesce(json_extract(content, '$.text'), '') || char(10) ||
+                    coalesce(json_extract(content, '$.caption'), '') || char(10) ||
+                    coalesce(json_extract(content, '$.file_name'), '') || char(10) ||
+                    coalesce(json_extract(content, '$.question'), '') || char(10) ||
+                    coalesce(json_extract(content, '$.display_name'), '') || char(10) ||
+                    coalesce(json_extract(content, '$.name'), '')) LIKE ?2 ESCAPE '\\'
                     ORDER BY timestamp DESC, rowid DESC LIMIT 50",
                 )
                 .unwrap()
-                .query_map([pattern], |row| row.get(0))
+                .query_map([ascii, unicode], |row| row.get(0))
                 .unwrap()
                 .collect::<Result<_>>()
                 .unwrap();
