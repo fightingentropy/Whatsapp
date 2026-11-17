@@ -576,6 +576,13 @@ pub enum Event {
     Error(String),
 }
 
+/// Delay for worker-event repaints. egui subtracts the predicted frame time
+/// and only calls back when a request is sooner than the pending one, so the
+/// effective delay is about 16 ms at 60 Hz (25 ms at 120 Hz) and a burst of
+/// events collapses into one frame per window.
+#[cfg(not(target_os = "ios"))]
+const EVENT_BATCH: std::time::Duration = std::time::Duration::from_millis(33);
+
 /// Cross-thread window wake handle.
 #[derive(Clone, Default)]
 #[cfg(not(target_os = "ios"))]
@@ -594,6 +601,19 @@ impl Waker {
     pub fn wake(&self) {
         if let Some(ctx) = self.0.lock().unwrap_or_else(|p| p.into_inner()).as_ref() {
             ctx.request_repaint();
+        } else {
+            #[cfg(target_os = "macos")]
+            crate::background::wake();
+        }
+    }
+
+    /// Wakes for worker events. A burst of them (for example a reconnect
+    /// catch-up) draws at most one frame per [`EVENT_BATCH`] instead of
+    /// back-to-back frames, since repaints are not vsync-limited. Input still
+    /// repaints at once.
+    pub fn wake_batched(&self) {
+        if let Some(ctx) = self.0.lock().unwrap_or_else(|p| p.into_inner()).as_ref() {
+            ctx.request_repaint_after(EVENT_BATCH);
         } else {
             #[cfg(target_os = "macos")]
             crate::background::wake();
@@ -623,6 +643,11 @@ impl Waker {
         if let Some(callback) = &self.0 {
             callback();
         }
+    }
+
+    /// The Swift side already coalesces main-queue drains.
+    pub fn wake_batched(&self) {
+        self.wake();
     }
 }
 
@@ -769,6 +794,46 @@ mod status_tests {
                 }
             ),
             "Disconnected"
+        );
+    }
+}
+
+#[cfg(all(test, not(target_os = "ios")))]
+mod waker_tests {
+    use super::Waker;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    #[test]
+    fn a_burst_of_worker_events_asks_for_one_delayed_frame() {
+        let ctx = egui::Context::default();
+        // Settle egui's own start-up repaints first.
+        for _ in 0..10 {
+            ctx.run_ui(egui::RawInput::default(), |_| {})
+                .textures_delta
+                .clear();
+            if !ctx.has_requested_repaint() {
+                break;
+            }
+        }
+        assert!(!ctx.has_requested_repaint());
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&requests);
+        ctx.set_request_repaint_callback(move |info| seen.lock().unwrap().push(info.delay));
+        let waker = Waker::default();
+        waker.attach(&ctx);
+        for _ in 0..3 {
+            waker.wake_batched();
+        }
+        let batched = requests.lock().unwrap().clone();
+        assert_eq!(batched.len(), 1, "one callback for the burst: {batched:?}");
+        assert!(batched[0] > Duration::ZERO, "the frame is delayed");
+        waker.wake();
+        let all = requests.lock().unwrap().clone();
+        assert_eq!(
+            all.last(),
+            Some(&Duration::ZERO),
+            "plain wakes stay immediate"
         );
     }
 }

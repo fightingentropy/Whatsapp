@@ -1258,7 +1258,8 @@ fn messages(app: &mut App, ui: &mut egui::Ui, chat: &Chat) {
             });
             let selecting = selecting || held_inside;
             if held_inside && let Some(pointer) = ui.input(|input| input.pointer.latest_pos()) {
-                let delta = edge_scroll(pointer.y, viewport.top(), viewport.bottom());
+                let dt = ui.input(|input| input.stable_dt);
+                let delta = edge_scroll_step(pointer.y, viewport.top(), viewport.bottom(), dt);
                 if delta != 0.0 {
                     if delta < 0.0 {
                         edge_scrolled_up = true;
@@ -1903,6 +1904,13 @@ pub fn edge_scroll(pointer: f32, top: f32, bottom: f32) -> f32 {
     } else {
         0.0
     }
+}
+
+/// [`edge_scroll`] scaled by the frame time, so the selection scrolls at the
+/// same speed whatever the frame rate (repaints are not vsync-limited).
+pub fn edge_scroll_step(pointer: f32, top: f32, bottom: f32, dt: f32) -> f32 {
+    // `edge_scroll` is the step for one 60 fps frame; a stall moves at most three.
+    edge_scroll(pointer, top, bottom) * dt.clamp(0.0, 0.05) * 60.0
 }
 
 /// Stable message-bubble id used by interaction tests.

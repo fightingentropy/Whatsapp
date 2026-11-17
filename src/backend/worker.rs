@@ -415,7 +415,7 @@ struct ParsedMessage {
 impl Worker {
     fn emit(&self, event: Event) {
         let _ = self.events.send(event);
-        self.waker.wake();
+        self.waker.wake_batched();
     }
 
     /// Syncs a chat setting to the phone without blocking the worker.

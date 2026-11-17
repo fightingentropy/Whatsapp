@@ -3080,6 +3080,22 @@ mod tests {
         );
     }
 
+    /// The selection edge-scroll speed does not depend on the frame rate.
+    #[test]
+    fn edge_scrolling_moves_at_the_same_speed_at_any_frame_rate() {
+        use crate::ui::conversation::{edge_scroll, edge_scroll_step};
+        let at_60 = edge_scroll_step(110.0, 100.0, 700.0, 1.0 / 60.0);
+        assert!((at_60 - edge_scroll(110.0, 100.0, 700.0)).abs() < 1e-4);
+        let at_240 = 4.0 * edge_scroll_step(110.0, 100.0, 700.0, 1.0 / 240.0);
+        assert!((at_240 - at_60).abs() < 1e-3, "{at_240} vs {at_60}");
+        assert_eq!(
+            edge_scroll_step(690.0, 100.0, 700.0, 2.0),
+            edge_scroll_step(690.0, 100.0, 700.0, 0.05),
+            "a stalled frame does not jump far"
+        );
+        assert_eq!(edge_scroll_step(300.0, 100.0, 700.0, 1.0 / 60.0), 0.0);
+    }
+
     /// Multi-message copies include WhatsApp-style timestamps and senders.
     #[test]
     fn a_copy_across_messages_names_each_writer() {
