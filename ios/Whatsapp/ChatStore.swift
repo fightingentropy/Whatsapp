@@ -307,7 +307,13 @@ final class ChatStore {
         stopComposing()
         video.stop()
         audioRequest = UUID()
-        if let current = selectedChat { rememberConversation(current) }
+        if let current = selectedChat {
+            // A replaced conversation's view closes after this one opens, so
+            // finish its private session state here, as close() would.
+            rememberConversation(current)
+            draftBeforeEditing = nil
+            audio.pauseForBackground(); audio.stopPlayback()
+        }
         // Replies still owed to an earlier visit must not join this window.
         abandonPageReplies()
         selectedChat = chat

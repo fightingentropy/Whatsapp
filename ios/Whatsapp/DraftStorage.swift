@@ -73,9 +73,13 @@ extension ChatStore {
 
     func saveDraft(_ text: String, chat: String) {
         let id = canonical(chat)
-        let value = selectedChat == id ? (draftBeforeEditing ?? text) : text
+        // Only the selected chat's views save. A view disappearing after another
+        // chat opened already saved its draft and reply on every change; its
+        // late write would store the text of a message being edited.
+        guard selectedChat == id else { return }
+        let value = draftBeforeEditing ?? text
         if drafts[id] != value { drafts[id] = value }
-        if selectedChat == id, draftReplies[id] != reply { draftReplies[id] = reply }
+        if draftReplies[id] != reply { draftReplies[id] = reply }
     }
 
     func flushDrafts(completion: @escaping (Bool) -> Void = { _ in }) {

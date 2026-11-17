@@ -12,6 +12,26 @@ final class DraftStorageTests: XCTestCase {
         XCTAssertEqual(store.drafts["weekend@g.us"], "Unsent draft")
     }
 
+    func testReplacingConversationWhileEditingKeepsEachChatsOwnDraft() {
+        let store = ChatStore(demo: true)
+        store.open("weekend@g.us")
+        store.draftBeforeEditing = "Unsent draft"
+        store.editing = store.messages.last
+        store.saveDraft("Edited text", chat: "weekend@g.us")
+        XCTAssertEqual(store.drafts["weekend@g.us"], "Unsent draft")
+        // A notification replaces the stack: the new view appears before the old one disappears.
+        store.open("other@lid")
+        XCTAssertNil(store.draftBeforeEditing)
+        XCTAssertNil(store.editing)
+        store.saveDraft("Edited text", chat: "weekend@g.us")
+        XCTAssertEqual(store.drafts["weekend@g.us"], "Unsent draft", "The old view's late save is ignored")
+        store.saveDraft("Typed in B", chat: "other@lid")
+        XCTAssertEqual(store.drafts["other@lid"], "Typed in B")
+        store.close("weekend@g.us")
+        XCTAssertEqual(store.selectedChat, "other@lid")
+        XCTAssertEqual(store.drafts["weekend@g.us"], "Unsent draft")
+    }
+
     func testDraftAttachmentsAndInterruptedUploadsSurviveNewStore() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("Drafts-\(UUID())")
         defer { try? FileManager.default.removeItem(at: root) }
