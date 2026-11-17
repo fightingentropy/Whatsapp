@@ -827,8 +827,9 @@ fn moves(path: &Path) -> bool {
         && head.windows(4).any(|window| window == b"ANIM")
 }
 
+/// A still tile: egui's own loader would decode and animate every frame.
 fn sticker_picture(ui: &egui::Ui, path: &Path, rect: Rect) {
-    egui::Image::new(format!("file://{}", path.display()))
+    egui::Image::new(crate::sticker_still::uri(path))
         .fit_to_exact_size(rect.size())
         .paint_at(ui, rect);
 }

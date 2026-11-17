@@ -2861,6 +2861,55 @@ mod tests {
         );
     }
 
+    /// Records texture requests for the demo sticker and passes them on.
+    struct StickerRequests(std::sync::Mutex<Vec<String>>);
+
+    impl egui::load::TextureLoader for StickerRequests {
+        fn id(&self) -> &str {
+            "demo::StickerRequests"
+        }
+
+        fn load(
+            &self,
+            _: &egui::Context,
+            uri: &str,
+            _: egui::TextureOptions,
+            _: egui::load::SizeHint,
+        ) -> egui::load::TextureLoadResult {
+            if uri.contains("demo-sticker") {
+                self.0.lock().unwrap().push(uri.to_owned());
+            }
+            Err(egui::load::LoadError::NotSupported)
+        }
+
+        fn forget(&self, _: &str) {}
+
+        fn forget_all(&self) {}
+
+        fn byte_size(&self) -> usize {
+            0
+        }
+    }
+
+    #[test]
+    fn sticker_tiles_load_stills_instead_of_every_frame() {
+        let mut app = app();
+        apply_flags(&mut app, Some("stickers"));
+        let ctx = egui::Context::default();
+        app.attach(&ctx);
+        let requests = std::sync::Arc::new(StickerRequests(Default::default()));
+        ctx.add_texture_loader(requests.clone());
+        render(&mut app, &ctx);
+        let requested = requests.0.lock().unwrap().clone();
+        assert!(!requested.is_empty(), "the tiles were drawn");
+        assert!(
+            requested
+                .iter()
+                .all(|uri| uri.starts_with("sticker-still://")),
+            "{requested:?}"
+        );
+    }
+
     #[test]
     fn a_drag_selects_short_messages_on_opposite_sides_of_the_chat() {
         let mut app = app();

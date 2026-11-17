@@ -27,6 +27,7 @@ pub mod qr;
 pub mod renderer;
 pub mod settings;
 pub mod single_instance;
+pub mod sticker_still;
 pub mod system_fonts;
 pub mod theme;
 pub mod transcript;

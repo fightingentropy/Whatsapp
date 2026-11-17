@@ -636,6 +636,7 @@ impl App {
             self.dirs.media_cache_dir().join("video-posters"),
             self.waker.clone(),
         );
+        crate::sticker_still::install(ctx, self.waker.clone());
         // Use a faster wheel speed for short chat rows.
         ctx.options_mut(|options| options.input_options.line_scroll_speed = 120.0);
         self.applied_dark = None;
@@ -2468,6 +2469,7 @@ impl App {
                 self.toast("Sticker saved");
             }
             Action::ForgetSticker(path) => {
+                ctx.forget_image(&crate::sticker_still::uri(&path));
                 self.backend.send(Command::ForgetSticker { path });
             }
             Action::ImportStickerUrl(url) => {
@@ -2480,6 +2482,14 @@ impl App {
                 self.backend.send(Command::PickStickerArchive);
             }
             Action::DeleteStickerPack(dir) => {
+                for sticker in self
+                    .sticker_packs
+                    .iter()
+                    .filter(|pack| pack.dir == dir)
+                    .flat_map(|pack| &pack.stickers)
+                {
+                    ctx.forget_image(&crate::sticker_still::uri(sticker));
+                }
                 self.backend.send(Command::DeleteStickerPack { dir });
             }
             Action::SendSticker(path) => {

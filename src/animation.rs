@@ -391,6 +391,38 @@ fn decode_webp(path: &Path, emit: &mut Sink<'_>) -> Option<()> {
     (count > 1).then_some(())
 }
 
+/// The first frame of a sticker or animated image, at most [`MAX_WIDTH`]
+/// pixels on its longest side, for showing it without playing it.
+pub(crate) fn still_frame(path: &Path) -> Option<ColorImage> {
+    const MAX_BYTES: u64 = 16 * 1024 * 1024;
+    if std::fs::metadata(path).ok()?.len() > MAX_BYTES {
+        return None;
+    }
+    let bytes = std::fs::read(path).ok()?;
+    // Extended WebP (animated or not) through libwebp, which decodes one frame.
+    if let Some((width, height)) = webp_canvas(&bytes) {
+        if !canvas_allowed(width, height) {
+            return None;
+        }
+        if let Ok(decoder) = webp_animation::Decoder::new(&bytes) {
+            let (width, height) = decoder.dimensions();
+            if let Some(frame) = decoder.into_iter().next() {
+                let image = image::RgbaImage::from_raw(width, height, frame.data().to_vec())?;
+                return Some(to_color_image(&image));
+            }
+        }
+    }
+    // Simple WebP, GIF (its first frame), PNG and JPEG.
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(&bytes))
+        .with_guessed_format()
+        .ok()?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_CANVAS);
+    limits.max_image_height = Some(MAX_CANVAS);
+    reader.limits(limits);
+    Some(to_color_image(&reader.decode().ok()?.to_rgba8()))
+}
+
 fn canvas_allowed(width: u32, height: u32) -> bool {
     width > 0 && height > 0 && width <= MAX_CANVAS && height <= MAX_CANVAS
 }

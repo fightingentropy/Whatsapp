@@ -3031,6 +3031,7 @@ pub(crate) fn forget_cached_messages(
         {
             ctx.forget_image(&file_uri(path));
             ctx.forget_image(&crate::video_poster::uri(path));
+            ctx.forget_image(&crate::sticker_still::uri(path));
             ctx.data_mut(|data| data.remove::<Vec2>(decoded_size_id(path)));
         }
     }
@@ -3221,7 +3222,13 @@ fn picture(
             }
             return size.x;
         }
-        let image = egui::Image::new(file_uri(path));
+        // A sticker that is not playing shows its first frame, decoded off
+        // the interface thread; egui's loader would decode every frame here.
+        let image = egui::Image::new(if sticker == Some(true) {
+            crate::sticker_still::uri(path)
+        } else {
+            file_uri(path)
+        });
         return match image.load_for_size(ui.ctx(), vec2(max_width, max_height)) {
             Ok(egui::load::TexturePoll::Ready { texture }) => {
                 if remembered != Some(texture.size) {
