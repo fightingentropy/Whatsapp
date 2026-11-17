@@ -189,6 +189,41 @@ final class PairingLifecycleTests: XCTestCase {
         XCTAssertTrue(store.loading)
     }
 
+    private func page(_ ids: [String]) -> CoreEvent {
+        var event = CoreEvent(type: "messages"); event.chat = "fixture@lid"; event.requested = true; event.complete = true
+        event.messages = ids.enumerated().map { ChatStore.sampleMessage(id: $1, chat: "fixture@lid", text: "Fixture", fromMe: false, time: Double($0 + 1)) }
+        return event
+    }
+
+    func testRestartDuringShutdownClearsRequestsTheStoppedWorkerOwed() {
+        let (store, engine, activity, _) = fixture()
+        store.open("fixture@lid"); store.apply([page(["a", "b"])])
+        store.status = "connected"; store.archiveComplete = true; store.phoneComplete = false
+        store.loadOlder()
+        XCTAssertTrue(store.fetchingPhone); XCTAssertEqual(engine.commands.last, "older")
+        store.prepareForBackground(); activity.timeRemaining = 8; store.background()
+        XCTAssertEqual(engine.stops.count, 1)
+        store.activate()
+        XCTAssertFalse(store.fetchingPhone); XCTAssertFalse(store.loadingNewer)
+        XCTAssertEqual(engine.commands.last, "load")
+        engine.finishStop()
+        XCTAssertFalse(store.fetchingPhone)
+        XCTAssertEqual(store.status, "connecting")
+    }
+
+    func testJumpInterruptedByShutdownIsRetriedAfterRestart() {
+        let (store, engine, activity, _) = fixture()
+        store.open("fixture@lid"); store.apply([page(["a", "b"])])
+        store.jump(to: "missing")
+        XCTAssertEqual(engine.commands.last, "around")
+        store.prepareForBackground(); activity.timeRemaining = 8; store.background()
+        store.activate(); engine.finishStop()
+        engine.commands = []
+        store.apply([page(["a", "b"])])
+        XCTAssertTrue(engine.commands.contains("around"), "The jump is asked of the new worker")
+        XCTAssertNil(store.error)
+    }
+
     func testStorageFailureCanRetryOnNextActivation() {
         let (store, engine, _, _) = fixture()
         engine.onError?("Fixture storage failure")

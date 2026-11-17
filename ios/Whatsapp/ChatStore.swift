@@ -156,7 +156,7 @@ final class ChatStore {
             self?.engineStarted = false
             self?.diagnostics.record(.engineError)
             self?.error = $0; self?.status = "failed"
-            self?.loading = false; self?.fetchingPhone = false
+            self?.loading = false; self?.fetchingPhone = false; self?.loadingNewer = false
             self?.pageReplies.removeAll()
             if let self, let id = self.uploadingAttachment { self.failAttachment(id, error: "Connection interrupted. Check this chat before retrying.") }
         }
@@ -185,8 +185,10 @@ final class ChatStore {
             recentConversations.removeAll()
             requestedAvatars.removeAll()
             engine.start(root: root)
-            // The stopped worker can never answer its outstanding page requests.
+            // The stopped worker can never answer its outstanding page, phone
+            // history or jump requests; the new one is asked again below.
             pageReplies.removeAll()
+            fetchingPhone = false; loadingNewer = false; jumpRequested = false
             if let selectedChat {
                 loading = true
                 if !newerComplete, let anchor = visibleMessageIDs.first ?? messages.first?.id {
