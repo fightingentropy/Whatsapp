@@ -43,7 +43,9 @@ and archive. This is an explicit additional target; keep the Mac build intact.
   must answer each accepted one with exactly one page reply, in order, and never
   send an unrequested page. Opening, closing or merging the open chat abandons
   outstanding tickets. `wa_stop` returns the events never polled; only
-  non-page, non-link ones are applied after a stop.
+  non-page, non-link ones are applied after a stop. An update that cannot be
+  decoded stops the worker, so the next start never reuses one whose replies
+  the store has already forgotten.
   Attachment paths are repaired on access, not by a startup scan.
   Animated sticker reservations share a 32 MiB cap; pause/release them for
   backgrounding, Low Power Mode and Reduce Motion.
@@ -87,10 +89,14 @@ and archive. This is an explicit additional target; keep the Mac build intact.
   the keys to fetch an attachment live in it. Partial indexes back identity
   merges, the sticker picker and read receipts; SQLite uses one only when the
   query repeats its condition verbatim, so those queries are shared constants
-  with query-plan tests. A re-filed row keeps a deleted or edited body and its
-  reactions. An incoming edit or delete applies only from the message's author
-  (plus a group admin's delete). Own rows still Pending at startup become
-  Failed for an explicit retry; history files the phone's unsent rows as Sent.
+  with query-plan tests. A re-filed row keeps a deleted or edited body, and per
+  person the newer reaction (`Reaction::sent_at`, zero when unknown); our own
+  optimistic reaction stays undated so this clock never outranks the phone.
+  An incoming edit or delete applies only from the message's author. A delete
+  claiming a group admin's authority is held (`admin_revokes`) until freshly
+  fetched metadata names the sender an admin; the stanza's marker alone is the
+  sender's claim. Own rows still Pending at startup become Failed for an
+  explicit retry; history files the phone's unsent rows as Sent.
 - `src/archive/disappearing.rs` stores chat timers separately, including explicit
   off, ordered by setting timestamp and merged with privacy identities. History,
   keyless ephemeral controls and group notifications update them. Shared sends
@@ -245,7 +251,10 @@ and archive. This is an explicit additional target; keep the Mac build intact.
   one hour), rekey with identity merges and settle only after archive commits.
   All attachment transfers share two iPhone/four desktop slots, deduplicate
   pending chat/message requests and use the protocol library's streaming writer
-  with private atomic staging files. Missing stickers use a stable cursor so a
+  with private atomic staging files. Staging names carry their writer's process
+  id; launch removes those of earlier processes by name, off the worker loop,
+  and nothing else. A sent attachment's local copy is filed when its row is
+  published, not while a batch waits its turn. Missing stickers use a stable cursor so a
   failed first page cannot starve older rows. Recent/received sticker downloads
   share two slots and exponential rate-limit
   backoff; synchronous failures release their slot. Local video posters use

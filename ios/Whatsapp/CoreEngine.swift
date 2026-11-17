@@ -129,6 +129,10 @@ final class CoreEngine: MessagingEngine, @unchecked Sendable {
             for id in prepared?.deferred ?? [] where known.insert(id).inserted { deferredPortraits.append(id) }
             schedulePortraitRestoration()
         } catch {
+            // The store forgets its outstanding requests on an error. A worker
+            // left running would answer them later, into the next session's
+            // requests, so end it; reopening starts a fresh one.
+            stopOnQueue()
             fail("This build could not read a messaging update. Reopen the app to reconnect.")
         }
     }
@@ -163,21 +167,26 @@ final class CoreEngine: MessagingEngine, @unchecked Sendable {
 
     func stop(completion: @escaping () -> Void) {
         queue.async {
-            let handle = self.handle
-            self.handle = 0
-            self.generation += 1
-            self.deferredPortraits.removeAll(); self.portraitRestoreScheduled = false
-            let callbacks = Array(self.audioRequests.values)
-            self.audioRequests.removeAll()
-            DispatchQueue.main.async { callbacks.forEach { $0(nil) } }
-            if handle != 0, let pointer = wa_stop(handle) {
-                // Deliver what the worker emitted before shutdown but no drain
-                // collected, ahead of the completion that fails interrupted uploads.
-                let events = ((try? self.decode(pointer)) ?? []).filter(Self.survivesStop)
-                wa_free_string(pointer)
-                if !events.isEmpty { DispatchQueue.main.async { self.onEvents?(events) } }
-            }
+            self.stopOnQueue()
             DispatchQueue.main.async(execute: completion)
+        }
+    }
+
+    /// Ends the worker, on the engine queue. The next start() creates a new one.
+    private func stopOnQueue() {
+        let handle = self.handle
+        self.handle = 0
+        generation += 1
+        deferredPortraits.removeAll(); portraitRestoreScheduled = false
+        let callbacks = Array(audioRequests.values)
+        audioRequests.removeAll()
+        DispatchQueue.main.async { callbacks.forEach { $0(nil) } }
+        if handle != 0, let pointer = wa_stop(handle) {
+            // Deliver what the worker emitted before shutdown but no drain
+            // collected, ahead of whatever the caller reports next.
+            let events = ((try? decode(pointer)) ?? []).filter(Self.survivesStop)
+            wa_free_string(pointer)
+            if !events.isEmpty { DispatchQueue.main.async { self.onEvents?(events) } }
         }
     }
 
