@@ -3031,6 +3031,7 @@ pub(crate) fn forget_cached_messages(
         {
             ctx.forget_image(&file_uri(path));
             ctx.forget_image(&crate::video_poster::uri(path));
+            ctx.data_mut(|data| data.remove::<Vec2>(decoded_size_id(path)));
         }
     }
 }
@@ -3130,6 +3131,36 @@ fn frame_size(media: &Media, thumbnail_hint: Option<(u32, u32)>, limit: f32) -> 
     fit_picture(w, h, limit, PICTURE_HEIGHT.min(limit * 1.3))
 }
 
+/// Displayed size of a decoded picture or sticker.
+fn fit_texture(size: Vec2, sticker: bool, max_width: f32, max_height: f32) -> Vec2 {
+    if sticker {
+        fit_sticker(size.x, size.y)
+    } else {
+        fit_picture(size.x, size.y, max_width, max_height)
+    }
+}
+
+/// Where the decoded size of a downloaded picture is remembered.
+fn decoded_size_id(path: &Path) -> egui::Id {
+    egui::Id::new(("picture-size", path))
+}
+
+/// Displayed size of a downloaded picture known without decoding it: from an
+/// earlier decode, else from its declared dimensions. `None` when unknown.
+fn predicted_picture_size(
+    remembered: Option<Vec2>,
+    media: &Media,
+    sticker: bool,
+    max_width: f32,
+    max_height: f32,
+) -> Option<Vec2> {
+    let natural = remembered.or(match (media.width, media.height) {
+        (Some(w), Some(h)) if w > 0 && h > 0 => Some(vec2(w as f32, h as f32)),
+        _ => None,
+    })?;
+    Some(fit_texture(natural, sticker, max_width, max_height))
+}
+
 /// Draws an image or sticker, using its preview until downloaded. Returns its width.
 fn picture(
     ui: &mut egui::Ui,
@@ -3146,6 +3177,24 @@ fn picture(
         None => (width.min(PICTURE_WIDTH), PICTURE_HEIGHT),
     };
     if let Some(path) = &media.path {
+        let remembered = ui
+            .ctx()
+            .data(|data| data.get_temp::<Vec2>(decoded_size_id(path)));
+        let predicted =
+            predicted_picture_size(remembered, media, sticker.is_some(), max_width, max_height);
+        // Rows without a settled height are laid out even far offscreen (on
+        // open, paging and invalidation). Reserve their known size there
+        // rather than decoding and uploading the full picture; the row is laid
+        // out again, and the picture loaded, as it nears the viewport.
+        if let Some(size) = predicted {
+            let clip = ui.clip_rect();
+            let margin = clip.height().max(200.0);
+            let top = ui.cursor().top();
+            if top + size.y < clip.top() - margin || top > clip.bottom() + margin {
+                ui.allocate_exact_size(size, Sense::hover());
+                return size.x;
+            }
+        }
         let animated = sticker == Some(true)
             && ui.is_rect_visible(Rect::from_min_size(
                 ui.cursor().min,
@@ -3175,11 +3224,12 @@ fn picture(
         let image = egui::Image::new(file_uri(path));
         return match image.load_for_size(ui.ctx(), vec2(max_width, max_height)) {
             Ok(egui::load::TexturePoll::Ready { texture }) => {
-                let size = if sticker.is_some() {
-                    fit_sticker(texture.size.x, texture.size.y)
-                } else {
-                    fit_picture(texture.size.x, texture.size.y, max_width, max_height)
-                };
+                if remembered != Some(texture.size) {
+                    ui.ctx().data_mut(|data| {
+                        data.insert_temp(decoded_size_id(path), texture.size);
+                    });
+                }
+                let size = fit_texture(texture.size, sticker.is_some(), max_width, max_height);
                 let response = ui.add(
                     image
                         .fit_to_exact_size(size)
@@ -3205,11 +3255,13 @@ fn picture(
             }
             Ok(egui::load::TexturePoll::Pending { .. }) => {
                 view.layout_pending.set(true);
-                let size = if sticker.is_some() {
-                    Vec2::splat(STICKER_SIDE)
-                } else {
-                    frame_size(media, None, max_width)
-                };
+                let size = predicted.unwrap_or_else(|| {
+                    if sticker.is_some() {
+                        Vec2::splat(STICKER_SIDE)
+                    } else {
+                        frame_size(media, None, max_width)
+                    }
+                });
                 let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
                 if ui.is_rect_visible(rect) {
                     ui.painter().rect_filled(rect, 6.0, palette.surface);
@@ -3989,6 +4041,34 @@ mod tests {
         assert!(unknown.x > unknown.y);
         let tiny = frame_size(&media(Some(40), Some(40)), None, 340.0);
         assert!(tiny.x >= 120.0);
+    }
+
+    #[test]
+    fn offscreen_picture_placeholders_match_the_decoded_size() {
+        // A narrow bubble, where the pending frame's bounds would differ.
+        let (max_width, max_height) = (200.0, PICTURE_HEIGHT);
+        let photo = media(Some(600), Some(1200));
+        let decoded = fit_texture(vec2(600.0, 1200.0), false, max_width, max_height);
+        assert_eq!(
+            predicted_picture_size(None, &photo, false, max_width, max_height),
+            Some(decoded)
+        );
+        assert_ne!(frame_size(&photo, None, max_width), decoded);
+        // An earlier decode wins over declared dimensions (e.g. EXIF rotation).
+        let rotated = vec2(1200.0, 600.0);
+        assert_eq!(
+            predicted_picture_size(Some(rotated), &photo, false, max_width, max_height),
+            Some(fit_texture(rotated, false, max_width, max_height))
+        );
+        assert_eq!(
+            predicted_picture_size(None, &media(Some(512), Some(512)), true, 0.0, 0.0),
+            Some(fit_sticker(512.0, 512.0))
+        );
+        assert_eq!(
+            predicted_picture_size(None, &media(None, Some(10)), false, max_width, max_height),
+            None,
+            "unknown dimensions load right away instead of guessing"
+        );
     }
 
     #[test]

@@ -2774,6 +2774,93 @@ mod tests {
         assert!(!copied.trim().is_empty(), "{copied:?}");
     }
 
+    /// Records which test photos the conversation asks to decode.
+    struct PhotoRequests(std::sync::Mutex<std::collections::BTreeSet<String>>);
+
+    const PHOTO_DIR: &str = "/nonexistent/whatsapp-offscreen-photos/";
+
+    impl egui::load::TextureLoader for PhotoRequests {
+        fn id(&self) -> &str {
+            "demo::PhotoRequests"
+        }
+
+        fn load(
+            &self,
+            _: &egui::Context,
+            uri: &str,
+            _: egui::TextureOptions,
+            _: egui::load::SizeHint,
+        ) -> egui::load::TextureLoadResult {
+            let Some(name) = uri.strip_prefix(&format!("file://{PHOTO_DIR}")) else {
+                return Err(egui::load::LoadError::NotSupported);
+            };
+            self.0.lock().unwrap().insert(name.to_owned());
+            Ok(egui::load::TexturePoll::Pending { size: None })
+        }
+
+        fn forget(&self, _: &str) {}
+
+        fn forget_all(&self) {}
+
+        fn byte_size(&self) -> usize {
+            0
+        }
+    }
+
+    #[test]
+    fn opening_a_photo_chat_decodes_only_photos_near_the_view() {
+        let mut app = app();
+        let chat = sample_ids()[0].to_owned();
+        let count = 40;
+        app.conversations.get_mut(&chat).unwrap().messages = (0..count)
+            .map(|index| {
+                let mut photo = media("image/jpeg", 400_000, Some(1600), Some(1200));
+                photo.path = Some(format!("{PHOTO_DIR}{index:02}.jpg").into());
+                message(
+                    &chat,
+                    &format!("photo-{index:02}"),
+                    false,
+                    1_000 + index as i64,
+                    Content::Image {
+                        caption: None,
+                        media: photo,
+                    },
+                )
+            })
+            .collect();
+        let ctx = egui::Context::default();
+        app.attach(&ctx);
+        let requests = std::sync::Arc::new(PhotoRequests(Default::default()));
+        ctx.add_texture_loader(requests.clone());
+        render(&mut app, &ctx);
+        render(&mut app, &ctx);
+        let requested = requests.0.lock().unwrap().clone();
+        assert!(
+            requested.contains(&format!("{:02}.jpg", count - 1)),
+            "the newest photo, in view, loads: {requested:?}"
+        );
+        // The first frame of a newly opened chat is drawn from the top before
+        // it pins to the bottom, so a viewport's worth there may load too.
+        assert!(
+            requested.len() < count / 2,
+            "far offscreen photos must not decode: {requested:?}"
+        );
+        assert!(!requested.contains("20.jpg"), "{requested:?}");
+        let heights = &app.conversations[&chat].row_heights;
+        let settled = (0..count)
+            .filter(|index| {
+                let previous = (*index > 0).then(|| format!("photo-{:02}", index - 1));
+                heights
+                    .get(&format!("photo-{index:02}"), previous.as_deref())
+                    .is_some()
+            })
+            .count();
+        assert!(
+            settled + requested.len() >= count,
+            "rows with a reserved photo settle their height ({settled} settled)"
+        );
+    }
+
     #[test]
     fn a_drag_selects_short_messages_on_opposite_sides_of_the_chat() {
         let mut app = app();
