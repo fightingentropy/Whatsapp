@@ -4466,6 +4466,7 @@ impl Worker {
                                 file_name.as_deref(),
                                 false,
                                 Some(path),
+                                &dir,
                             )
                             .await?
                         }
@@ -4557,7 +4558,8 @@ impl Worker {
                         })
                         .await
                         .map_err(|error| error.to_string())??;
-                        prepare_media(&client, encoded, "image/jpeg", None, false, None).await?
+                        prepare_media(&client, encoded, "image/jpeg", None, false, None, &dir)
+                            .await?
                     }
                 };
                 file_outbound(&client, &chat, &me, &dir, prepared, caption, mentions).await
@@ -4778,7 +4780,7 @@ impl Worker {
                 .await
                 .map_err(|error| error.to_string())??;
                 let mut prepared =
-                    prepare_media(&client, bytes, "video/mp4", None, true, None).await?;
+                    prepare_media(&client, bytes, "video/mp4", None, true, None, &dir).await?;
                 if let Content::Video { media, .. } = &mut prepared.content {
                     media.width = Some(gif.width);
                     media.height = Some(gif.height);
@@ -5517,9 +5519,54 @@ struct Prepared {
     message: wa::Message,
     content: Content,
     thumbnail: Option<Vec<u8>>,
-    bytes: Vec<u8>,
+    body: Body,
     mime: String,
     file_name: Option<String>,
+}
+
+/// The local copy of a sent attachment, filed in media storage after upload.
+enum Body {
+    Bytes(Vec<u8>),
+    /// Written before a large upload, so the upload can take the only buffer.
+    Staged(Staged),
+}
+
+impl Body {
+    async fn store(self, path: &Path) -> Result<(), String> {
+        match self {
+            Body::Bytes(bytes) => tokio::fs::write(path, &bytes).await,
+            Body::Staged(staged) => tokio::fs::rename(&staged.0, path).await,
+        }
+        .map_err(|error| error.to_string())
+    }
+}
+
+/// A hidden sibling file holding an outgoing attachment; removed on drop
+/// unless it was renamed into place first.
+struct Staged(PathBuf);
+
+impl Drop for Staged {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// Writes `bytes` to a new hidden file in `dir`, the directory its final copy
+/// is renamed into.
+async fn stage_outgoing(dir: &Path, bytes: &[u8]) -> Result<Staged, String> {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    tokio::fs::create_dir_all(dir)
+        .await
+        .map_err(|error| error.to_string())?;
+    let staged = Staged(dir.join(format!(
+        ".outgoing-{}-{}.part",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    )));
+    tokio::fs::write(&staged.0, bytes)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(staged)
 }
 
 /// Encodes JPEG bytes, tagging them with `icc` (an RGB colour profile carried
@@ -5581,7 +5628,7 @@ async fn prepare_voice(
             waveform,
         },
         thumbnail: None,
-        bytes,
+        body: Body::Bytes(bytes),
         mime,
         file_name: None,
     })
@@ -5689,6 +5736,7 @@ async fn prepare_animation(
             None,
             true,
             Some(staging.clone()),
+            dir,
         )
         .await
         .map(|prepared| Animation::Video(Box::new(prepared))),
@@ -5787,6 +5835,7 @@ async fn prepare_media(
     file_name: Option<&str>,
     gif: bool,
     source: Option<PathBuf>,
+    dir: &Path,
 ) -> Result<Prepared, String> {
     let kind = mime.split('/').next().unwrap_or_default();
     let is_picture = matches!(
@@ -5827,7 +5876,7 @@ async fn prepare_media(
                 ),
             },
             thumbnail,
-            bytes: jpeg,
+            body: Body::Bytes(jpeg),
             mime: "image/jpeg".to_owned(),
             file_name: None,
         });
@@ -5847,8 +5896,10 @@ async fn prepare_media(
         let seconds = poster.as_ref().map(|p| p.seconds);
         let width = poster.as_ref().map(|p| p.width);
         let height = poster.as_ref().map(|p| p.height);
+        // The archive copy goes to disk first, so the upload takes the only buffer.
+        let staged = stage_outgoing(dir, &bytes).await?;
         let upload = client
-            .upload(bytes.clone(), MediaType::Video, UploadOptions::default())
+            .upload(bytes, MediaType::Video, UploadOptions::default())
             .await
             .map_err(|error| error.to_string())?;
         let mut message = video_message(
@@ -5874,15 +5925,16 @@ async fn prepare_media(
                 gif,
             },
             thumbnail,
-            bytes,
+            body: Body::Staged(staged),
             mime: mime_owned,
             file_name: file_name.map(str::to_owned),
         });
     }
     if let Some(audio_mime) = whatsapp_audio_mime(mime) {
         let mime_owned = audio_mime.to_owned();
+        let staged = stage_outgoing(dir, &bytes).await?;
         let upload = client
-            .upload(bytes.clone(), MediaType::Audio, UploadOptions::default())
+            .upload(bytes, MediaType::Audio, UploadOptions::default())
             .await
             .map_err(|error| error.to_string())?;
         let message = audio_message(
@@ -5902,13 +5954,14 @@ async fn prepare_media(
                 waveform: Vec::new(),
             },
             thumbnail: None,
-            bytes,
+            body: Body::Staged(staged),
             mime: mime_owned,
             file_name: file_name.map(str::to_owned),
         });
     }
+    let staged = stage_outgoing(dir, &bytes).await?;
     let upload = client
-        .upload(bytes.clone(), MediaType::Document, UploadOptions::default())
+        .upload(bytes, MediaType::Document, UploadOptions::default())
         .await
         .map_err(|error| error.to_string())?;
     let name = file_name.unwrap_or("file").to_owned();
@@ -5930,7 +5983,7 @@ async fn prepare_media(
             pages: None,
         },
         thumbnail: None,
-        bytes,
+        body: Body::Staged(staged),
         mime: mime_owned,
         file_name: Some(name),
     })
@@ -5983,7 +6036,7 @@ async fn prepare_sticker(client: &Client, bytes: Vec<u8>) -> Result<Prepared, St
             animated,
         },
         thumbnail: None,
-        bytes,
+        body: Body::Bytes(bytes),
         mime: "image/webp".to_owned(),
         file_name: None,
     })
@@ -6158,9 +6211,7 @@ async fn file_outbound(
     tokio::fs::create_dir_all(dir)
         .await
         .map_err(|error| error.to_string())?;
-    tokio::fs::write(&path, &prepared.bytes)
-        .await
-        .map_err(|error| error.to_string())?;
+    prepared.body.store(&path).await?;
     let mut content = prepared.content;
     if let Some(media) = content.media_mut() {
         media.path = Some(path);
@@ -7211,6 +7262,38 @@ mod receipt_tests {
             Some(AvatarRetry::Pending(2))
         );
         assert!(events.try_iter().next().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_staged_outgoing_file_is_moved_into_place_or_removed() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("media");
+        let files = || {
+            std::fs::read_dir(&dir)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+                .collect::<Vec<_>>()
+        };
+        let abandoned = stage_outgoing(&dir, b"failed upload").await.unwrap();
+        assert!(abandoned.0.starts_with(&dir));
+        assert!(abandoned.0.extension().is_some_and(|ext| ext == "part"));
+        assert_eq!(std::fs::read(&abandoned.0).unwrap(), b"failed upload");
+        drop(abandoned);
+        assert!(files().is_empty());
+
+        let staged = stage_outgoing(&dir, b"large video").await.unwrap();
+        let target = dir.join("sent.mp4");
+        Body::Staged(staged).store(&target).await.unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"large video");
+        let plain = dir.join("sent.jpg");
+        Body::Bytes(b"small picture".to_vec())
+            .store(&plain)
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read(&plain).unwrap(), b"small picture");
+        let mut names = files();
+        names.sort();
+        assert_eq!(names, ["sent.jpg", "sent.mp4"]);
     }
 
     #[test]
