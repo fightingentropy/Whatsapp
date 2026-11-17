@@ -44,6 +44,20 @@ impl ChatSearch {
             .then(|| Instant::now() + Duration::from_millis(180));
     }
 
+    /// Searches the same query again after the chat's messages changed,
+    /// keeping the current results and selection on screen meanwhile.
+    pub fn refresh(&mut self) {
+        if self.query.trim().is_empty() && self.day.is_none() {
+            return;
+        }
+        self.request = self.request.wrapping_add(1);
+        // A steady stream of changes cannot postpone the search forever.
+        self.due = Some(
+            self.due
+                .unwrap_or_else(|| Instant::now() + Duration::from_millis(180)),
+        );
+    }
+
     pub fn accept(
         &mut self,
         chat: &str,
@@ -57,7 +71,15 @@ impl ChatSearch {
         self.pending = false;
         self.truncated = truncated;
         match result {
-            Ok(hits) => self.hits = hits,
+            Ok(hits) => {
+                let keep = self
+                    .selected
+                    .and_then(|index| self.hits.get(index))
+                    .map(|hit| hit.id.clone());
+                self.hits = hits;
+                self.selected = keep.and_then(|id| self.hits.iter().position(|hit| hit.id == id));
+                self.error = None;
+            }
             Err(error) => self.error = Some(error),
         }
     }
@@ -130,6 +152,63 @@ mod tests {
             let (start, end) = day_range(date.parse().unwrap(), zone.clone()).unwrap();
             assert_eq!(end - start, hours * 3600);
         }
+    }
+
+    fn hit(id: &str) -> Message {
+        Message {
+            id: id.into(),
+            chat: "chat".into(),
+            sender: "chat".into(),
+            sender_name: None,
+            from_me: false,
+            timestamp: 1,
+            content: crate::model::Content::text(id),
+            status: crate::model::Delivery::None,
+            delivered_at: None,
+            read_at: None,
+            quoted: None,
+            reactions: Vec::new(),
+            edited: false,
+            mentions: Vec::new(),
+            forwarded: false,
+            thumbnail: None,
+        }
+    }
+
+    #[test]
+    fn a_refresh_keeps_results_and_follows_the_selected_hit() {
+        let mut search = ChatSearch {
+            chat: Some("chat".into()),
+            query: "fixture".into(),
+            hits: vec![hit("a"), hit("b"), hit("c")],
+            selected: Some(1),
+            ..Default::default()
+        };
+        search.refresh();
+        assert_eq!(search.hits.len(), 3);
+        assert_eq!(search.selected, Some(1));
+        assert!(!search.pending, "the results stay on screen");
+        let due = search.due.expect("a new search is scheduled");
+        search.refresh();
+        assert_eq!(search.due, Some(due), "later changes do not postpone it");
+        let request = search.request;
+        search.accept(
+            "chat",
+            request,
+            Ok(vec![hit("x"), hit("a"), hit("b"), hit("c")]),
+            false,
+        );
+        assert_eq!(search.hits.len(), 4);
+        assert_eq!(search.selected, Some(2), "the same message stays selected");
+        search.accept("chat", request, Ok(vec![hit("a")]), false);
+        assert_eq!(search.selected, None, "a vanished hit is unselected");
+
+        let mut idle = ChatSearch {
+            chat: Some("chat".into()),
+            ..Default::default()
+        };
+        idle.refresh();
+        assert!(idle.due.is_none(), "nothing to search again");
     }
 
     #[test]

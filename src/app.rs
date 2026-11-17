@@ -1077,7 +1077,7 @@ impl App {
                     requested,
                 } => {
                     if !requested && self.chat_search.chat.as_ref() == Some(&chat) {
-                        self.chat_search.changed();
+                        self.chat_search.refresh();
                     }
                     // Every row is already durable in SQLite. Do not recreate
                     // an evicted/unopened history for a background update.
@@ -1187,7 +1187,34 @@ impl App {
                 Event::MessageUpdated(message) => {
                     let message = *message;
                     if self.chat_search.chat.as_ref() == Some(&message.chat) {
-                        self.chat_search.changed();
+                        // Receipts, reactions and downloads do not change what
+                        // the search matches.
+                        let searchable = |known: &Message| {
+                            let mut content = known.content.clone();
+                            if let (Some(media), Some(update)) =
+                                (content.media_mut(), message.content.media())
+                            {
+                                media.state = update.state.clone();
+                                media.path = update.path.clone();
+                            }
+                            content != message.content || known.timestamp != message.timestamp
+                        };
+                        let changed = match self
+                            .conversations
+                            .get(&message.chat)
+                            .and_then(|conversation| conversation.message(&message.id))
+                        {
+                            Some(known) => searchable(known),
+                            None => self
+                                .chat_search
+                                .hits
+                                .iter()
+                                .find(|hit| hit.id == message.id)
+                                .is_none_or(searchable),
+                        };
+                        if changed {
+                            self.chat_search.refresh();
+                        }
                     }
                     if let Some(conversation) = self.conversations.get_mut(&message.chat)
                         && let Some(existing) = conversation.message_mut(&message.id)
@@ -1273,7 +1300,7 @@ impl App {
                 }
                 Event::MessageDeleted { chat, id } => {
                     if self.chat_search.chat.as_ref() == Some(&chat) {
-                        self.chat_search.changed();
+                        self.chat_search.refresh();
                     }
                     if let Some(conversation) = self.conversations.get_mut(&chat) {
                         conversation.invalidate_row(&id);
@@ -3954,6 +3981,60 @@ mod tests {
         changed.push_name = Some("Pat".into());
         deliver(&mut app, Event::Contacts(vec![changed]));
         assert!(!settled(&app));
+    }
+
+    #[test]
+    fn receipts_keep_the_chat_search_results_and_selection() {
+        let root = std::env::temp_dir().join(format!("whatsapp-app-{}", std::process::id()));
+        let (mut app, events) = App::headless(AppDirs::under(&root), Settings::default());
+        app.backend.record_demo_commands();
+        let ctx = egui::Context::default();
+        let chat = "peer@s.whatsapp.net";
+        let loaded = message(chat, "a", 1);
+        let mut conversation = Conversation::default();
+        conversation.merge(vec![loaded.clone()], false);
+        app.conversations.insert(chat.into(), conversation);
+        app.chat_search.chat = Some(chat.into());
+        app.chat_search.query = "a".into();
+        app.chat_search.hits = vec![loaded.clone(), message(chat, "b", 2)];
+        app.chat_search.selected = Some(1);
+
+        let mut read = loaded.clone();
+        read.status = Delivery::Read;
+        read.reactions.push(crate::model::Reaction {
+            sender: chat.into(),
+            from_me: false,
+            emoji: "👍".into(),
+        });
+        let mut unloaded = message(chat, "b", 2);
+        unloaded.status = Delivery::Delivered;
+        for update in [read, unloaded] {
+            events
+                .send(Event::MessageUpdated(Box::new(update)))
+                .unwrap();
+        }
+        app.handle_events();
+        app.pump_chat_search(Instant::now() + Duration::from_secs(1), &ctx);
+        assert_eq!(app.chat_search.hits.len(), 2);
+        assert_eq!(app.chat_search.selected, Some(1));
+        assert!(!app.chat_search.pending);
+        assert!(
+            app.backend.take_demo_commands().is_empty(),
+            "a receipt does not search again"
+        );
+
+        let mut edited = loaded;
+        edited.content = Content::text("a, edited");
+        events
+            .send(Event::MessageUpdated(Box::new(edited)))
+            .unwrap();
+        app.handle_events();
+        app.pump_chat_search(Instant::now() + Duration::from_secs(1), &ctx);
+        assert_eq!(app.chat_search.selected, Some(1), "results stay meanwhile");
+        assert!(matches!(
+            app.backend.take_demo_commands().as_slice(),
+            [Command::SearchChat { .. }]
+        ));
     }
 
     fn message(chat: &str, id: &str, timestamp: i64) -> Message {
