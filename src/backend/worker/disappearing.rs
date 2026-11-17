@@ -7,6 +7,10 @@ pub(super) struct SendState {
     pub generation: u64,
     pub timer: Option<DisappearingTimer>,
     pub retry: bool,
+    /// Completes when the previous send to the same chat has finished.
+    pub previous: Option<oneshot::Receiver<()>>,
+    /// Dropped once this send has finished, releasing the next one.
+    pub done: oneshot::Sender<()>,
 }
 
 pub(super) fn timer(seconds: u32, updated_at: i64) -> Option<DisappearingTimer> {
@@ -92,7 +96,7 @@ impl Worker {
     }
 
     pub(super) fn queue_send(
-        &self,
+        &mut self,
         client: Arc<Client>,
         chat: ChatId,
         jid: Jid,
@@ -113,6 +117,7 @@ impl Worker {
                 return;
             }
         };
+        let (previous, done) = self.chain_send(&chat);
         tokio::spawn(send_outgoing(
             client,
             self.commands.clone(),
@@ -124,8 +129,20 @@ impl Worker {
                 generation: self.bot_generation,
                 timer,
                 retry,
+                previous,
+                done,
             },
         ));
+    }
+
+    /// Orders sends to one chat: each waits for the one queued before it, so
+    /// messages sent in quick succession reach the server in the order shown.
+    pub(super) fn chain_send(
+        &mut self,
+        chat: &str,
+    ) -> (Option<oneshot::Receiver<()>>, oneshot::Sender<()>) {
+        let (done, tail) = oneshot::channel();
+        (self.send_tails.insert(chat.to_owned(), tail), done)
     }
 
     pub(super) fn prepare_send(

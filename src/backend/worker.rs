@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use whatsapp_rust::download::MediaType;
 use whatsapp_rust::media::{
     AudioOptions, DocumentOptions, ImageOptions, VideoOptions, audio_message, document_message,
@@ -229,6 +229,7 @@ pub async fn run(
         group_info_retry: Vec::new(),
         presence_subscribed: HashSet::new(),
         presence_wanted: None,
+        send_tails: HashMap::new(),
         pending_older: HashMap::new(),
         local_revokes: HashSet::new(),
         older_warned: HashSet::new(),
@@ -327,6 +328,8 @@ struct Worker {
     presence_subscribed: HashSet<String>,
     /// The direct chat opened last, subscribed again once connected.
     presence_wanted: Option<ChatId>,
+    /// Completion of the latest queued send per chat; see `chain_send`.
+    send_tails: HashMap<ChatId, oneshot::Receiver<()>>,
     /// Pending phone-history request time and boundary by chat.
     pending_older: HashMap<ChatId, (Instant, super::PageKey)>,
     /// Messages this device optimistically marked deleted and has not heard
@@ -4798,6 +4801,9 @@ impl Worker {
 
 // --- free helpers ----------------------------------------------------------
 
+/// How long a send waits for the previous send to the same chat.
+const SEND_PATIENCE: Duration = Duration::from_secs(30);
+
 async fn send_outgoing(
     client: Arc<Client>,
     commands: mpsc::UnboundedSender<Command>,
@@ -4805,8 +4811,13 @@ async fn send_outgoing(
     jid: Jid,
     id: String,
     message: wa::Message,
-    state: SendState,
+    mut state: SendState,
 ) {
+    if let Some(previous) = state.previous.take() {
+        // A finished, failed or dropped predecessor releases this send; a
+        // stuck one stops holding the chat after a while.
+        let _ = tokio::time::timeout(SEND_PATIENCE, previous).await;
+    }
     let result = async {
         // Group settings are separate from the library's slim routing cache.
         // A fresh query also repairs existing chats whose timers older builds
@@ -4896,6 +4907,7 @@ async fn send_outgoing(
         id,
         error: result.err(),
     });
+    drop(state.done);
 }
 
 /// An incoming edit or delete-for-everyone, checked against the row it names.
@@ -6875,6 +6887,7 @@ mod receipt_tests {
             group_info_retry: Vec::new(),
             presence_subscribed: HashSet::new(),
             presence_wanted: None,
+            send_tails: HashMap::new(),
             pending_older: HashMap::new(),
             local_revokes: HashSet::new(),
             older_warned: HashSet::new(),
@@ -7080,6 +7093,37 @@ mod receipt_tests {
                 assert_eq!(worker.pairing_phone.as_deref(), Some("synthetic-phone"));
             }
         }
+    }
+
+    #[tokio::test]
+    async fn sends_to_one_chat_wait_for_the_one_before() {
+        let (mut worker, _events, _inbox, _wa) = worker();
+        let (first_wait, first_done) = worker.chain_send(PEER);
+        assert!(first_wait.is_none());
+        let (second_wait, second_done) = worker.chain_send(PEER);
+        let mut second_wait = second_wait.unwrap();
+        // Another chat does not wait.
+        let (other_wait, _other_done) = worker.chain_send("123-456@g.us");
+        assert!(other_wait.is_none());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), &mut second_wait)
+                .await
+                .is_err()
+        );
+        drop(first_done);
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), second_wait)
+                .await
+                .is_ok()
+        );
+        // A predecessor that already finished, or failed, releases at once.
+        let (third_wait, _third_done) = worker.chain_send(PEER);
+        drop(second_done);
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), third_wait.unwrap())
+                .await
+                .is_ok()
+        );
     }
 
     #[tokio::test]
