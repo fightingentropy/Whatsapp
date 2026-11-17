@@ -1400,6 +1400,9 @@ impl App {
                 }
             }
             LinkStatus::LoggedOut => {
+                // Unlinking explains itself; drop staged work without a second toast.
+                self.pending.clear();
+                self.recording = None;
                 // Also ends typing state, which would otherwise keep a 1 Hz repaint.
                 self.close_open_chat();
                 self.image_preview = None;
@@ -1616,6 +1619,7 @@ impl App {
             self.composer_mentions = self.draft_mentions.remove(&id).unwrap_or_default();
             self.reply_to = None;
             self.editing = None;
+            self.discard_staged();
         }
         self.emoji_start = None;
         self.mention_start = None;
@@ -1642,9 +1646,21 @@ impl App {
     }
 
     /// Closes the open chat, keeping its draft and ending typing state.
+    /// Staged attachments and a live recording belong to the open chat only.
+    fn discard_staged(&mut self) {
+        let had = !self.pending.is_empty() || self.recording.is_some();
+        self.pending.clear();
+        // Dropping the recorder stops the microphone, as CancelRecording does.
+        self.recording = None;
+        if had {
+            self.toast("Unsent attachments discarded");
+        }
+    }
+
     fn close_open_chat(&mut self) {
         self.stop_video();
         self.chat_search.close();
+        self.discard_staged();
         if let Some(chat) = self.open_chat.take() {
             self.stop_composing(&chat);
             let draft = std::mem::take(&mut self.composer);
@@ -4524,6 +4540,46 @@ mod tests {
         app.stage_files(vec![PathBuf::from("/tmp/a.txt")]);
         assert!(app.reply_to.is_none());
         assert_eq!(app.pending.len(), 1);
+    }
+
+    #[test]
+    fn switching_chats_discards_staged_attachments() {
+        let mut app = app();
+        app.chats
+            .push(Chat::new("1@s.whatsapp.net".into(), "Ada".into()));
+        app.chats
+            .push(Chat::new("2@s.whatsapp.net".into(), "Bob".into()));
+        app.open_chat("1@s.whatsapp.net".into());
+        app.stage_files(vec![PathBuf::from("/tmp/a.txt")]);
+        app.open_chat("1@s.whatsapp.net".into());
+        assert_eq!(app.pending.len(), 1, "reopening the same chat keeps them");
+        assert!(app.toasts.is_empty());
+
+        app.open_chat("2@s.whatsapp.net".into());
+        assert!(app.pending.is_empty());
+        assert_eq!(
+            app.toasts.last().map(|toast| toast.message.as_str()),
+            Some("Unsent attachments discarded")
+        );
+    }
+
+    #[test]
+    fn closing_the_chat_or_unlinking_discards_staged_attachments() {
+        let mut app = app();
+        let ctx = egui::Context::default();
+        app.chats
+            .push(Chat::new("1@s.whatsapp.net".into(), "Ada".into()));
+        app.open_chat("1@s.whatsapp.net".into());
+        app.stage_files(vec![PathBuf::from("/tmp/a.txt")]);
+        app.apply(Action::CloseChat, &ctx);
+        assert!(app.pending.is_empty());
+
+        app.open_chat("1@s.whatsapp.net".into());
+        app.stage_files(vec![PathBuf::from("/tmp/a.txt")]);
+        app.toasts.clear();
+        app.handle_link(LinkStatus::LoggedOut);
+        assert!(app.pending.is_empty());
+        assert_eq!(app.toasts.len(), 1, "only the unlink notice");
     }
 
     #[test]
