@@ -140,6 +140,33 @@ fn group_name(group: emojis::Group) -> &'static str {
     }
 }
 
+/// Every emoji with its lowercase name and shortcodes, built once so a
+/// search does not lowercase the whole table on every frame.
+fn search_index() -> &'static [(&'static str, Vec<String>)] {
+    static INDEX: std::sync::OnceLock<Vec<(&'static str, Vec<String>)>> =
+        std::sync::OnceLock::new();
+    INDEX.get_or_init(|| {
+        emojis::iter()
+            .map(|emoji| {
+                let terms = std::iter::once(emoji.name())
+                    .chain(emoji.shortcodes())
+                    .map(str::to_lowercase)
+                    .collect();
+                (emoji.as_str(), terms)
+            })
+            .collect()
+    })
+}
+
+/// Emojis whose name or a shortcode contains the lowercase `query`.
+fn search_emoji(query: &str) -> Vec<&'static str> {
+    search_index()
+        .iter()
+        .filter(|(_, terms)| terms.iter().any(|term| term.contains(query)))
+        .map(|(emoji, _)| *emoji)
+        .collect()
+}
+
 fn rows_for(app: &App, columns: usize) -> Vec<Row> {
     let query = app.picker_search.trim().to_lowercase();
     let mut rows = Vec::new();
@@ -155,15 +182,7 @@ fn rows_for(app: &App, columns: usize) -> Vec<Row> {
         }
     };
     if !query.is_empty() {
-        let found: Vec<&'static str> = emojis::iter()
-            .filter(|emoji| {
-                emoji.name().to_lowercase().contains(&query)
-                    || emoji
-                        .shortcodes()
-                        .any(|code| code.to_lowercase().contains(&query))
-            })
-            .map(|emoji| emoji.as_str())
-            .collect();
+        let found = search_emoji(&query);
         if found.is_empty() {
             rows.push(Row::Header("Nothing matches"));
         } else {
@@ -401,6 +420,33 @@ mod emoji_tests {
         assert_eq!(move_emoji_selection(10, 25, 10, Key::ArrowUp), 0);
         assert_eq!(move_emoji_selection(20, 25, 10, Key::ArrowDown), 20);
         assert_eq!(move_emoji_selection(24, 25, 10, Key::ArrowRight), 24);
+    }
+
+    #[test]
+    fn emoji_search_matches_names_and_shortcodes_like_before() {
+        let previous = |query: &str| -> Vec<&'static str> {
+            emojis::iter()
+                .filter(|emoji| {
+                    emoji.name().to_lowercase().contains(query)
+                        || emoji
+                            .shortcodes()
+                            .any(|code| code.to_lowercase().contains(query))
+                })
+                .map(|emoji| emoji.as_str())
+                .collect()
+        };
+        let thumbs = emojis::get("👍").unwrap();
+        let code = thumbs.shortcode().expect("a shortcode").to_lowercase();
+        assert!(!thumbs.name().to_lowercase().contains(&code));
+        for query in ["grin", "heart", code.as_str(), "face_", "e g", "zzzz-none"] {
+            assert_eq!(search_emoji(query), previous(query), "query {query:?}");
+        }
+        assert!(
+            search_emoji(&code).contains(&"👍"),
+            "found by shortcode alone"
+        );
+        assert!(search_emoji("grin").contains(&"😀"));
+        assert!(search_emoji("zzzz-none").is_empty());
     }
 }
 
