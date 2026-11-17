@@ -141,6 +141,15 @@ pub struct Presence {
     pub last_seen: Option<i64>,
 }
 
+/// A group's resolved member names, reused across frames until names change.
+#[derive(Debug, PartialEq)]
+pub struct MemberNames {
+    /// `App::participant_list`: (id, display name), sorted, our id last.
+    pub list: Vec<(String, String)>,
+    /// `App::participant_names`: the chat header's comma-separated names.
+    pub subtitle: String,
+}
+
 pub struct App {
     pub dirs: AppDirs,
     pub settings: Settings,
@@ -166,6 +175,11 @@ pub struct App {
     chat_aliases: HashMap<ChatId, ChatId>,
     pub conversations: HashMap<ChatId, Conversation>,
     conversations_dirty: bool,
+    /// Bumped by every event and applied action; invalidates `member_names`.
+    names_revision: u64,
+    /// Group member names by chat, with the revision and the
+    /// names-from-contacts setting they were resolved under.
+    member_names: HashMap<ChatId, (u64, bool, std::sync::Arc<MemberNames>)>,
     pub open_chat: Option<ChatId>,
     /// Chat row to reveal after keyboard navigation.
     pub scroll_chat_into_view: Option<ChatId>,
@@ -397,6 +411,8 @@ impl App {
             chat_aliases: HashMap::new(),
             conversations: HashMap::new(),
             conversations_dirty: true,
+            names_revision: 0,
+            member_names: HashMap::new(),
             open_chat,
             scroll_chat_into_view: None,
             drafts: HashMap::new(),
@@ -807,7 +823,7 @@ impl App {
                 named.push((id.clone(), name));
             }
         }
-        named.sort_by_key(|(_, name)| name.trim_start_matches('~').to_lowercase());
+        named.sort_by_cached_key(|(_, name)| name.trim_start_matches('~').to_lowercase());
         numbers.sort_by(|a, b| a.1.cmp(&b.1));
         named.extend(numbers);
         if let Some(me) = me
@@ -819,14 +835,16 @@ impl App {
     }
 
     /// Group members matching the active composer mention query.
-    pub fn mention_candidates(&self, chat: &Chat, query: &str) -> Vec<(String, String)> {
+    pub fn mention_candidates(&mut self, chat: &Chat, query: &str) -> Vec<(String, String)> {
         if !chat.is_group() {
             return Vec::new();
         }
         let needle = query.trim().to_lowercase();
         let digits: String = query.chars().filter(char::is_ascii_digit).collect();
-        self.participant_list(chat)
-            .into_iter()
+        let members = self.member_names(chat);
+        members
+            .list
+            .iter()
             .filter(|(id, name)| {
                 if self.me.as_deref() == Some(id) {
                     return false;
@@ -843,7 +861,40 @@ impl App {
                             .next()
                             .is_some_and(|user| user.contains(&digits)))
             })
+            .cloned()
             .collect()
+    }
+
+    /// Cached `participant_list` and `participant_names` for a group. Entries
+    /// last until the next event or applied action, so frames that only
+    /// scroll or hover reuse them instead of resolving every member again.
+    pub fn member_names(&mut self, chat: &Chat) -> std::sync::Arc<MemberNames> {
+        let key = (self.names_revision, self.settings.names_from_contacts);
+        if let Some((revision, contacts, names)) = self.member_names.get(&chat.id)
+            && (*revision, *contacts) == key
+        {
+            return names.clone();
+        }
+        if self
+            .member_names
+            .values()
+            .any(|(revision, contacts, _)| (*revision, *contacts) != key)
+        {
+            self.member_names.clear();
+        }
+        let names = std::sync::Arc::new(MemberNames {
+            list: self.participant_list(chat),
+            subtitle: self.participant_names(chat),
+        });
+        self.member_names
+            .insert(chat.id.clone(), (key.0, key.1, names.clone()));
+        names
+    }
+
+    /// Marks resolved names stale. Events and applied actions call this; so
+    /// must anything else that edits contacts, chats or `me` between frames.
+    pub fn invalidate_names(&mut self) {
+        self.names_revision = self.names_revision.wrapping_add(1);
     }
 
     pub fn participant_names(&self, chat: &Chat) -> String {
@@ -863,7 +914,7 @@ impl App {
                 names.push(name.split_whitespace().next().unwrap_or(name).to_owned());
             }
         }
-        names.sort_by_key(|name| name.to_lowercase());
+        names.sort_by_cached_key(|name| name.to_lowercase());
         names.dedup();
         numbers.sort();
         numbers.dedup();
@@ -1026,6 +1077,7 @@ impl App {
     fn handle_events(&mut self) {
         for event in self.backend.poll() {
             self.conversations_dirty = true;
+            self.invalidate_names();
             match event {
                 Event::Link(status) => self.handle_link(status),
                 Event::Me { id, name, about } => {
@@ -1427,6 +1479,7 @@ impl App {
 
     fn invalidate_message_layouts(&mut self) {
         self.conversations_dirty = true;
+        self.invalidate_names();
         for conversation in self.conversations.values_mut() {
             conversation.row_heights.clear();
             conversation.cached_bytes = None;
@@ -1983,11 +2036,16 @@ impl App {
     fn apply_actions(&mut self, ctx: &egui::Context) {
         let mut actions = std::mem::take(&mut self.actions);
         self.conversations_dirty |= !actions.is_empty();
+        // Any action may rename someone (a started chat, a settings toggle).
+        let applied = !actions.is_empty();
         while !actions.is_empty() {
             for action in actions.drain(..) {
                 self.apply(action, ctx);
             }
             actions = std::mem::take(&mut self.actions);
+        }
+        if applied {
+            self.invalidate_names();
         }
         self.trim_conversations(ctx);
     }
@@ -5007,6 +5065,91 @@ mod name_tests {
             app.display_name_or("3@s.whatsapp.net", Some("Cy")),
             "Cy",
             "a name the message carried, for someone unknown"
+        );
+    }
+
+    #[test]
+    fn member_names_are_cached_until_an_event_or_setting_changes_them() {
+        let root = std::env::temp_dir().join(format!("whatsapp-members-{}", std::process::id()));
+        let (mut app, events) = App::headless(AppDirs::under(&root), Settings::default());
+        let named = self::app();
+        app.me = named.me.clone();
+        app.contacts = named.contacts.clone();
+        let mut group = Chat::new("g@g.us".into(), "Group".into());
+        group.participants = vec![
+            "15550001111@s.whatsapp.net".into(),
+            "3@s.whatsapp.net".into(),
+            "1@s.whatsapp.net".into(),
+            "2@s.whatsapp.net".into(),
+        ];
+        app.chats.push(group.clone());
+
+        let first = app.member_names(&group);
+        assert_eq!(first.list, app.participant_list(&group));
+        assert_eq!(first.subtitle, app.participant_names(&group));
+        assert_eq!(
+            first.subtitle,
+            format!("Ada, Bob, {}, You", crate::util::phone("3"))
+        );
+        assert!(
+            std::sync::Arc::ptr_eq(&first, &app.member_names(&group)),
+            "a frame without events reuses the resolved names"
+        );
+
+        events
+            .send(Event::Contacts(vec![Contact {
+                id: "3@s.whatsapp.net".into(),
+                full_name: Some("Cyd Charisse".into()),
+                push_name: None,
+            }]))
+            .unwrap();
+        app.handle_events();
+        let renamed = app.member_names(&group);
+        assert!(!std::sync::Arc::ptr_eq(&first, &renamed));
+        assert_eq!(renamed.subtitle, "Ada, Bob, Cyd, You");
+        assert_eq!(
+            app.mention_candidates(&group, "cy"),
+            vec![("3@s.whatsapp.net".to_owned(), "Cyd Charisse".to_owned())]
+        );
+
+        app.settings.names_from_contacts = false;
+        let public = app.member_names(&group);
+        assert_eq!(public.subtitle, app.participant_names(&group));
+        assert!(public.list.iter().any(|(_, name)| name == "Ada"));
+        assert_eq!(app.member_names.len(), 1, "stale entries are dropped");
+    }
+
+    #[test]
+    fn member_order_ignores_case_and_the_profile_name_marker() {
+        let mut app = app();
+        for (id, name) in [("4", "bea"), ("5", "Al"), ("6", "carl"), ("7", "Bea")] {
+            app.contacts.insert(
+                format!("{id}@s.whatsapp.net"),
+                Contact {
+                    id: format!("{id}@s.whatsapp.net"),
+                    full_name: None,
+                    push_name: Some(name.into()),
+                },
+            );
+        }
+        let mut group = Chat::new("g@g.us".into(), "Group".into());
+        group.participants = ["4", "5", "1", "6", "7", "2"]
+            .iter()
+            .map(|id| format!("{id}@s.whatsapp.net"))
+            .collect();
+        let names: Vec<String> = app
+            .participant_list(&group)
+            .into_iter()
+            .map(|(_, name)| name)
+            .collect();
+        assert_eq!(
+            names,
+            ["Ada Lovelace", "~Al", "~bea", "~Bea", "~Bob", "~carl"],
+            "stable for equal keys"
+        );
+        assert_eq!(
+            app.participant_names(&group),
+            "Ada, Al, bea, Bea, Bob, carl"
         );
     }
 

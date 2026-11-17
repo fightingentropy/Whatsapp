@@ -270,7 +270,7 @@ fn header(app: &mut App, ui: &mut egui::Ui, chat: &Chat) {
 }
 
 /// Chat-header subtitle.
-fn subtitle(app: &App, chat: &Chat) -> (String, Color32) {
+fn subtitle(app: &mut App, chat: &Chat) -> (String, Color32) {
     let palette = app.palette;
     let typing = app.typing_in(&chat.id);
     if !typing.is_empty() {
@@ -287,12 +287,12 @@ fn subtitle(app: &App, chat: &Chat) -> (String, Color32) {
         return (text, palette.accent);
     }
     if chat.is_group() {
-        let names = app.participant_names(chat);
+        let names = app.member_names(chat);
         return (
-            if names.is_empty() {
+            if names.subtitle.is_empty() {
                 "Group".to_owned()
             } else {
-                names
+                names.subtitle.clone()
             },
             palette.secondary,
         );
@@ -590,7 +590,9 @@ fn mention_picker(app: &mut App, ui: &mut egui::Ui, chat: &Chat, field: egui::Id
         return;
     };
     let start = app.mention_start.expect("checked above");
-    let candidates = app.mention_candidates(chat, query);
+    // The query borrows the composer; candidates come from App's name cache.
+    let query = query.to_owned();
+    let candidates = app.mention_candidates(chat, &query);
     if candidates.is_empty() {
         return;
     }
