@@ -251,7 +251,8 @@ impl Playing {
 }
 
 fn receive(entries: &mut HashMap<PathBuf, Playing>, now: Instant) {
-    for playing in entries.values_mut() {
+    let mut cancelled = Vec::new();
+    for (path, playing) in entries.iter_mut() {
         // Bound UI work even if a fast producer keeps replenishing its queue.
         for _ in 0..=QUEUED_FRAMES {
             let Some(receiver) = &playing.receiver else {
@@ -261,11 +262,17 @@ fn receive(entries: &mut HashMap<PathBuf, Playing>, now: Instant) {
                 Ok(update) => playing.accept(update, now),
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    playing.accept(Update::Complete(false), now);
+                    // A decoder always reports Complete, failures included,
+                    // so a silent disconnect means the job was cancelled
+                    // (a stalled mailbox). Drop it so the next frame retries.
+                    cancelled.push(path.clone());
                     break;
                 }
             }
         }
+    }
+    for path in cancelled {
+        entries.remove(&path);
     }
 }
 
@@ -914,6 +921,28 @@ mod tests {
         assert!(!entries.contains_key(Path::new("fresh.gif")));
         // A started decode is always inserted, so none was started here.
         assert!(entries.contains_key(Path::new("visible")));
+    }
+
+    #[test]
+    fn a_cancelled_decode_is_retried_but_a_failed_one_stays_failed() {
+        let ctx = egui::Context::default();
+        for (name, report_failure) in [("cancelled", false), ("failed", true)] {
+            let (sender, receiver) = queue::channel();
+            let mut playing = Playing::new(Instant::now());
+            playing.receiver = Some(receiver);
+            cache(&ctx).0.lock().unwrap().insert(name.into(), playing);
+            let (image, delay) = clip(8).frames.remove(0);
+            sender.send(Update::Frame(image, delay)).unwrap();
+            if report_failure {
+                sender.send(Update::Complete(false)).unwrap();
+            }
+            drop(sender);
+        }
+        maintain(&ctx);
+        let entries = cache(&ctx);
+        let entries = entries.0.lock().unwrap();
+        assert!(!entries.contains_key(Path::new("cancelled")));
+        assert!(entries[Path::new("failed")].failed);
     }
 
     #[test]
