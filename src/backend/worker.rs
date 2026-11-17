@@ -547,6 +547,21 @@ impl Worker {
         if let Err(error) = self.archive.fail_interrupted_sends() {
             log::warn!("could not mark interrupted sends as failed: {error}");
         }
+        // So were its transfers; a killed process could not remove their
+        // staging files. A listing of names only, kept off the worker loop.
+        let dirs = [
+            self.dirs.media_cache_dir(),
+            self.dirs.sticker_cache_dir(),
+            self.dirs.avatar_cache_dir(),
+        ];
+        let _ = std::thread::Builder::new()
+            .name("staging-sweep".into())
+            .spawn(move || {
+                let removed: usize = dirs.iter().map(|dir| sweep_stale_staging(dir)).sum();
+                if removed > 0 {
+                    log::info!("removed {removed} staging files left by an earlier session");
+                }
+            });
         self.me_pn = self.archive.meta("me_pn").ok().flatten();
         self.me_lid = self.archive.meta("me_lid").ok().flatten();
         self.me_name = self.archive.meta("me_name").ok().flatten();
@@ -4500,10 +4515,18 @@ impl Worker {
                             .await?
                         }
                     };
-                    file_outbound(&client, &chat, &me, &dir, prepared, caption, mentions).await
+                    Ok::<_, String>(outbound_row(
+                        &client, &chat, &me, &dir, prepared, caption, mentions,
+                    ))
                 }
                 .await;
-                publish_in_order(wait, done, move || {
+                publish_in_order(wait, done, async move {
+                    // Filed only now: a batch cut short while later files wait
+                    // their turn leaves none of them in media storage.
+                    let outcome = match outcome {
+                        Ok(unfiled) => unfiled.store().await,
+                        Err(error) => Err(error),
+                    };
                     // Stamped on publish, so times follow the chosen order.
                     let outcome = outcome.map(|(mut row, raw)| {
                         row.timestamp = crate::util::now();
@@ -4916,12 +4939,12 @@ impl Worker {
 async fn publish_in_order(
     wait: Option<oneshot::Receiver<()>>,
     done: oneshot::Sender<()>,
-    publish: impl FnOnce(),
+    publish: impl Future<Output = ()>,
 ) {
     if let Some(wait) = wait {
         let _ = wait.await;
     }
-    publish();
+    publish.await;
     drop(done);
 }
 
@@ -5611,6 +5634,42 @@ async fn stage_outgoing(dir: &Path, bytes: &[u8]) -> Result<Staged, String> {
     Ok(staged)
 }
 
+/// Whether `name` is a transfer's staging file (a download, an outgoing copy,
+/// a GIF conversion or a profile picture) written by a process other than
+/// this one. Staging names carry their writer's process id.
+fn stale_staging(name: &str) -> bool {
+    let Some((writer, rest)) = [".download-", ".outgoing-", ".avatar-", ".gif-"]
+        .iter()
+        .find_map(|prefix| name.strip_prefix(prefix))
+        .and_then(|rest| rest.split_once('-'))
+    else {
+        return false;
+    };
+    let numbered = rest
+        .strip_suffix(".part")
+        .or_else(|| rest.strip_suffix(".mp4"))
+        .is_some_and(|serial| !serial.is_empty() && serial.bytes().all(|b| b.is_ascii_digit()));
+    numbered
+        && writer
+            .parse::<u32>()
+            .is_ok_and(|writer| writer != std::process::id())
+}
+
+/// Removes the staging files an earlier process left in `dir` when it was
+/// killed mid-transfer, and returns how many. This process's own are kept, as
+/// is every file that is not a staging file.
+fn sweep_stale_staging(dir: &Path) -> usize {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .filter(|entry| entry.file_name().to_str().is_some_and(stale_staging))
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
+        .filter(|entry| std::fs::remove_file(entry.path()).is_ok())
+        .count()
+}
+
 /// Encodes JPEG bytes, tagging them with `icc` (an RGB colour profile carried
 /// over from the source) so wide-gamut pictures keep their colours.
 fn encode_jpeg(
@@ -6215,10 +6274,48 @@ async fn file_outbound(
     chat: &str,
     me: &str,
     dir: &Path,
-    mut prepared: Prepared,
+    prepared: Prepared,
     caption: Option<String>,
     mentions: Vec<String>,
 ) -> Result<(Message, Vec<u8>), String> {
+    outbound_row(client, chat, me, dir, prepared, caption, mentions)
+        .store()
+        .await
+}
+
+/// A sent attachment's archive row, with the local copy its media path names
+/// still to be written.
+struct Unfiled {
+    row: Message,
+    raw: Vec<u8>,
+    body: Body,
+    path: PathBuf,
+}
+
+impl Unfiled {
+    /// Files the local copy. Until this runs, nothing is in media storage, so
+    /// a row that is never published leaves no file without a message.
+    async fn store(self) -> Result<(Message, Vec<u8>), String> {
+        if let Some(dir) = self.path.parent() {
+            tokio::fs::create_dir_all(dir)
+                .await
+                .map_err(|error| error.to_string())?;
+        }
+        self.body.store(&self.path).await?;
+        Ok((self.row, self.raw))
+    }
+}
+
+/// Builds a sent attachment's archive row without touching media storage.
+fn outbound_row(
+    client: &Client,
+    chat: &str,
+    me: &str,
+    dir: &Path,
+    mut prepared: Prepared,
+    caption: Option<String>,
+    mentions: Vec<String>,
+) -> Unfiled {
     if let Some(caption) = caption.filter(|caption| !caption.trim().is_empty()) {
         match &mut prepared.content {
             Content::Image { caption: slot, .. }
@@ -6250,13 +6347,9 @@ async fn file_outbound(
         &prepared.mime,
         prepared.file_name.as_deref(),
     );
-    tokio::fs::create_dir_all(dir)
-        .await
-        .map_err(|error| error.to_string())?;
-    prepared.body.store(&path).await?;
     let mut content = prepared.content;
     if let Some(media) = content.media_mut() {
-        media.path = Some(path);
+        media.path = Some(path.clone());
     }
     let row = Message {
         id,
@@ -6282,7 +6375,12 @@ async fn file_outbound(
         forwarded: false,
         thumbnail: prepared.thumbnail,
     };
-    Ok((row, prepared.message.encode_to_vec()))
+    Unfiled {
+        row,
+        raw: prepared.message.encode_to_vec(),
+        body: prepared.body,
+        path,
+    }
 }
 
 /// Decodes a history chunk off the worker thread.
@@ -7553,7 +7651,7 @@ mod receipt_tests {
                         // A task that ends without publishing still releases.
                         return;
                     }
-                    publish_in_order(wait, done, move || {
+                    publish_in_order(wait, done, async move {
                         if middle == Middle::Sent {
                             published.lock().unwrap().push(index);
                         }
@@ -7603,6 +7701,64 @@ mod receipt_tests {
                 .await
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn launch_removes_only_staging_files_left_by_an_earlier_process() {
+        let root = tempfile::tempdir().unwrap();
+        let ours = std::process::id();
+        let theirs = ours.wrapping_add(1);
+        let stale = [
+            format!(".outgoing-{theirs}-3.part"),
+            format!(".download-{theirs}-0.part"),
+            format!(".avatar-{theirs}-12.part"),
+            format!(".gif-{theirs}-1.mp4"),
+        ];
+        let kept = [
+            // This process's own transfers are still running.
+            format!(".outgoing-{ours}-0.part"),
+            format!(".download-{ours}-7.part"),
+            // Not staging names: attachments, and files that merely resemble them.
+            "3EB0FIXTURE.jpg".to_owned(),
+            ".outgoing-notes.part".to_owned(),
+            format!(".download-{theirs}-x.part"),
+            format!(".gif-{theirs}-1.mov"),
+            format!("outgoing-{theirs}-3.part"),
+        ];
+        for name in stale.iter().chain(&kept) {
+            std::fs::write(root.path().join(name), b"fixture").unwrap();
+        }
+        // A directory is never removed, whatever it is called.
+        let folder = root.path().join(format!(".download-{theirs}-9.part"));
+        std::fs::create_dir(&folder).unwrap();
+
+        assert_eq!(sweep_stale_staging(root.path()), stale.len());
+        for name in &stale {
+            assert!(!root.path().join(name).exists(), "{name}");
+        }
+        for name in &kept {
+            assert!(root.path().join(name).exists(), "{name}");
+        }
+        assert!(folder.is_dir());
+        assert_eq!(sweep_stale_staging(&root.path().join("missing")), 0);
+    }
+
+    #[tokio::test]
+    async fn an_attachment_is_filed_only_when_it_is_stored() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("media").join("FIXTURE.bin");
+        let unfiled = Unfiled {
+            row: own_message("FIXTURE", 10),
+            raw: vec![1, 2, 3],
+            body: Body::Bytes(b"synthetic attachment".to_vec()),
+            path: path.clone(),
+        };
+        // Built but not stored: nothing is in media storage yet, so dropping
+        // the row (a batch cut short) leaves no file without a message.
+        assert!(!path.exists());
+        let (row, raw) = unfiled.store().await.unwrap();
+        assert_eq!((row.id.as_str(), raw), ("FIXTURE", vec![1, 2, 3]));
+        assert_eq!(std::fs::read(&path).unwrap(), b"synthetic attachment");
     }
 
     #[test]
