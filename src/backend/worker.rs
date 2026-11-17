@@ -977,7 +977,10 @@ impl Worker {
     /// Queues a group metadata request, at the front when `force` is true.
     fn request_group_info(&mut self, id: &str, force: bool) {
         if force {
+            // Ask once, at the front, and drop any pending retry for it.
             self.group_info_requested.remove(id);
+            self.group_info_queue.retain(|queued| queued != id);
+            self.group_info_retry.retain(|(_, queued)| queued != id);
         } else {
             // Already asked: skip the archive read the insert below would discard.
             if self.group_info_requested.contains(id) {
@@ -1030,11 +1033,13 @@ impl Worker {
     }
 
     /// Schedules metadata retry with backoff, or stops on permanent failure.
+    /// A permanently failed group stays marked as asked, so only a forced
+    /// request (a group update) asks about it again.
     fn handle_failed_group(&mut self, chat: String, permanent: bool) {
-        self.group_info_requested.remove(&chat);
         if permanent {
             self.group_info_tries.remove(&chat);
         } else {
+            self.group_info_requested.remove(&chat);
             let tries = self.group_info_tries.entry(chat.clone()).or_insert(0);
             *tries += 1;
             if *tries <= 7 {
@@ -6707,14 +6712,39 @@ mod receipt_tests {
         // Without a client, processing schedules a retry.
         worker.pump_group_info();
         assert!(worker.group_info_queue.is_empty() || worker.group_info_retry.len() >= 2);
-        // Permanent failures are not requeued.
+        // Permanent failures are not requeued, nor asked again unforced.
         worker.group_info_retry.clear();
+        worker.group_info_queue.clear();
+        worker
+            .archive
+            .ensure_chat("gone@g.us", "Group")
+            .expect("chat");
+        worker.group_info_requested.insert("gone@g.us".into());
         worker.handle_failed_group("gone@g.us".to_owned(), true);
         assert!(worker.group_info_retry.is_empty());
+        worker.request_group_info("gone@g.us", false);
+        assert!(worker.group_info_queue.is_empty(), "final failure");
+        // A group update still asks, once, however many arrive.
+        worker.request_group_info("2-2@g.us", false);
+        worker.request_group_info("gone@g.us", true);
+        worker.request_group_info("gone@g.us", true);
+        assert_eq!(
+            Vec::from(worker.group_info_queue.clone()),
+            ["gone@g.us", "2-2@g.us"]
+        );
         // Retry transient failures after their delay.
+        worker.group_info_requested.insert("busy@g.us".into());
         worker.handle_failed_group("busy@g.us".to_owned(), false);
         assert_eq!(worker.group_info_retry.len(), 1);
         assert_eq!(worker.group_info_tries.get("busy@g.us"), Some(&1));
+        assert!(!worker.group_info_requested.contains("busy@g.us"));
+        // Forcing a group with a pending retry drops the retry.
+        worker.request_group_info("busy@g.us", true);
+        assert!(worker.group_info_retry.is_empty());
+        assert_eq!(
+            worker.group_info_queue.front().map(String::as_str),
+            Some("busy@g.us")
+        );
     }
 
     pub(super) fn worker() -> (
