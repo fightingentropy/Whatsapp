@@ -1507,6 +1507,20 @@ impl App {
         if conversation.loading_older {
             return;
         }
+        if conversation.messages.is_empty() {
+            if conversation.complete {
+                // The first try may have been offline or in the cooldown.
+                self.fetch_older(chat);
+            } else if conversation.requested && !conversation.loading_initial {
+                // Phone history may have been archived since the empty page.
+                conversation.loading_initial = true;
+                self.backend.send(Command::LoadChat {
+                    chat: chat.to_owned(),
+                    before: None,
+                });
+            }
+            return;
+        }
         let Some(oldest) = conversation.messages.first() else {
             return;
         };
@@ -4122,6 +4136,55 @@ mod tests {
         app.handle_link(LinkStatus::LoggedOut);
         assert!(app.open_chat.is_none());
         assert!(!app.composing, "unlinking leaves no typing repaint behind");
+    }
+
+    #[test]
+    fn an_empty_chat_asks_again_after_going_online_or_a_phone_timeout() {
+        let mut app = app();
+        let (backend, mut commands) = Backend::recording();
+        app.backend = backend;
+        let ctx = egui::Context::default();
+        let chat = "bare@s.whatsapp.net";
+        app.chats.push(Chat::new(chat.into(), "Bare".into()));
+        app.link = LinkStatus::Starting;
+        app.conversations.insert(
+            chat.into(),
+            Conversation {
+                requested: true,
+                complete: true,
+                ..Default::default()
+            },
+        );
+        app.apply(Action::LoadOlder(chat.into()), &ctx);
+        assert!(
+            commands.try_recv().is_err(),
+            "only a connected phone answers"
+        );
+        app.link = LinkStatus::Connected;
+        app.apply(Action::LoadOlder(chat.into()), &ctx);
+        assert!(matches!(commands.try_recv().unwrap(), Command::FetchOlder(id) if id == chat));
+        assert!(app.conversations[chat].fetching_phone);
+        assert!(app.scroll_anchor.is_none());
+
+        // A phone timeout pages the archive again, where a late answer lands.
+        let conversation = app.conversations.get_mut(chat).unwrap();
+        conversation.fetching_phone = false;
+        conversation.complete = false;
+        app.apply(Action::LoadOlder(chat.into()), &ctx);
+        assert!(matches!(
+            commands.try_recv().unwrap(),
+            Command::LoadChat { chat: id, before: None } if id == chat
+        ));
+        assert!(app.conversations[chat].loading_initial);
+        app.apply(Action::LoadOlder(chat.into()), &ctx);
+        assert!(commands.try_recv().is_err(), "one local query at a time");
+
+        // A failed first read is retried by reopening, not every frame.
+        let conversation = app.conversations.get_mut(chat).unwrap();
+        conversation.loading_initial = false;
+        conversation.requested = false;
+        app.apply(Action::LoadOlder(chat.into()), &ctx);
+        assert!(commands.try_recv().is_err());
     }
 
     fn message(chat: &str, id: &str, timestamp: i64) -> Message {
