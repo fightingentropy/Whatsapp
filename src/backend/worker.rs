@@ -7045,7 +7045,7 @@ mod receipt_tests {
             dirs: AppDirs::under(&root),
             events,
             commands,
-            waker: Waker(Arc::new(std::sync::Mutex::new(None))),
+            waker: Waker::default(),
             archive: Archive::in_memory().expect("archive"),
             client: None,
             handle: None,

@@ -576,22 +576,47 @@ pub enum Event {
     Error(String),
 }
 
-/// Delay for worker-event repaints. egui subtracts the predicted frame time
-/// and only calls back when a request is sooner than the pending one, so the
-/// effective delay is about 16 ms at 60 Hz (25 ms at 120 Hz) and a burst of
-/// events collapses into one frame per window.
+/// Shortest gap between frames drawn for worker events. Repaints are not
+/// vsync-limited, so a burst of events (a reconnect catch-up, a history
+/// chunk) would otherwise draw back-to-back frames.
 #[cfg(not(target_os = "ios"))]
 const EVENT_BATCH: std::time::Duration = std::time::Duration::from_millis(33);
+
+/// When the frame for a worker event should run: at once after a quiet
+/// spell, otherwise one [`EVENT_BATCH`] after the previous event frame.
+/// Returns the delay from `now` and the time of that frame, which may still
+/// lie ahead when a burst has already scheduled it.
+#[cfg(not(target_os = "ios"))]
+fn event_frame(
+    last: Option<std::time::Instant>,
+    now: std::time::Instant,
+) -> (std::time::Duration, std::time::Instant) {
+    match last {
+        // A frame is already scheduled; ask again in case another repaint
+        // superseded that request.
+        Some(last) if last > now => (last - now, last),
+        Some(last) if now - last < EVENT_BATCH => {
+            let due = last + EVENT_BATCH;
+            (due - now, due)
+        }
+        _ => (std::time::Duration::ZERO, now),
+    }
+}
 
 /// Cross-thread window wake handle.
 #[derive(Clone, Default)]
 #[cfg(not(target_os = "ios"))]
-pub struct Waker(Arc<std::sync::Mutex<Option<egui::Context>>>);
+pub struct Waker(
+    Arc<std::sync::Mutex<Option<egui::Context>>>,
+    /// Time of the latest frame drawn or scheduled for a worker event.
+    Arc<std::sync::Mutex<Option<std::time::Instant>>>,
+);
 
 #[cfg(not(target_os = "ios"))]
 impl Waker {
     pub fn attach(&self, ctx: &egui::Context) {
         *self.0.lock().unwrap_or_else(|p| p.into_inner()) = Some(ctx.clone());
+        *self.1.lock().unwrap_or_else(|p| p.into_inner()) = None;
     }
 
     pub fn detach(&self) {
@@ -607,13 +632,16 @@ impl Waker {
         }
     }
 
-    /// Wakes for worker events. A burst of them (for example a reconnect
-    /// catch-up) draws at most one frame per `EVENT_BATCH` instead of
-    /// back-to-back frames, since repaints are not vsync-limited. Input still
+    /// Wakes for worker events. The first event after a quiet spell repaints
+    /// at once, so a reply to the reader's own click is not held back; the
+    /// rest of a burst shares one frame per `EVENT_BATCH`. Input still
     /// repaints at once.
     pub fn wake_batched(&self) {
         if let Some(ctx) = self.0.lock().unwrap_or_else(|p| p.into_inner()).as_ref() {
-            ctx.request_repaint_after(EVENT_BATCH);
+            let mut last = self.1.lock().unwrap_or_else(|p| p.into_inner());
+            let (delay, frame) = event_frame(*last, std::time::Instant::now());
+            *last = Some(frame);
+            ctx.request_repaint_after(delay);
         } else {
             #[cfg(target_os = "macos")]
             crate::background::wake();
@@ -800,12 +828,12 @@ mod status_tests {
 
 #[cfg(all(test, not(target_os = "ios")))]
 mod waker_tests {
-    use super::Waker;
+    use super::{EVENT_BATCH, Waker, event_frame};
     use std::sync::{Arc, Mutex};
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     #[test]
-    fn a_burst_of_worker_events_asks_for_one_delayed_frame() {
+    fn a_burst_of_worker_events_draws_at_once_and_then_once_per_batch() {
         let ctx = egui::Context::default();
         // Settle egui's own start-up repaints first.
         for _ in 0..10 {
@@ -826,8 +854,15 @@ mod waker_tests {
             waker.wake_batched();
         }
         let batched = requests.lock().unwrap().clone();
-        assert_eq!(batched.len(), 1, "one callback for the burst: {batched:?}");
-        assert!(batched[0] > Duration::ZERO, "the frame is delayed");
+        assert_eq!(
+            batched.first(),
+            Some(&Duration::ZERO),
+            "the first event repaints at once: {batched:?}"
+        );
+        assert!(
+            batched[1..].iter().all(|delay| *delay > Duration::ZERO),
+            "the rest of the burst asks for no second immediate frame: {batched:?}"
+        );
         waker.wake();
         let all = requests.lock().unwrap().clone();
         assert_eq!(
@@ -835,5 +870,22 @@ mod waker_tests {
             Some(&Duration::ZERO),
             "plain wakes stay immediate"
         );
+    }
+
+    #[test]
+    fn event_frames_are_immediate_when_quiet_and_one_batch_apart_in_a_burst() {
+        let start = Instant::now();
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        // Nothing drawn yet, or the last event frame is old: draw now.
+        assert_eq!(event_frame(None, at(0)), (Duration::ZERO, at(0)));
+        assert_eq!(event_frame(Some(at(0)), at(40)), (Duration::ZERO, at(40)));
+        // Soon after an event frame: one batch after it.
+        let due = at(0) + EVENT_BATCH;
+        assert_eq!(event_frame(Some(at(0)), at(5)), (due - at(5), due));
+        // That frame is already scheduled: later events share it.
+        assert_eq!(event_frame(Some(due), at(9)), (due - at(9), due));
+        // After it has run, the next event waits one more batch.
+        let next = due + EVENT_BATCH;
+        assert_eq!(event_frame(Some(due), due), (EVENT_BATCH, next));
     }
 }
