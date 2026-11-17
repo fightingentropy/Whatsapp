@@ -117,7 +117,9 @@ impl TextureLoader for Loader {
             None => {
                 let generation = {
                     let mut cache = self.cache.lock().unwrap_or_else(|p| p.into_inner());
-                    if cache.entries.len() >= ENTRIES {
+                    // Stills drawn in this pass stay: with more than the limit
+                    // on screen at once, the cache grows until they scroll away.
+                    while cache.entries.len() >= ENTRIES {
                         let oldest = cache
                             .entries
                             .iter()
@@ -125,7 +127,7 @@ impl TextureLoader for Loader {
                             .min_by_key(|(_, entry)| entry.seen)
                             .map(|(key, _)| key.clone());
                         let Some(oldest) = oldest else {
-                            return Ok(TexturePoll::Pending { size: None });
+                            break;
                         };
                         cache.entries.remove(&oldest);
                     }
@@ -230,7 +232,7 @@ impl Job {
         if !current(&cache.lock().unwrap_or_else(|p| p.into_inner())) {
             return;
         }
-        let image = crate::animation::still_frame(&self.source).map(Arc::new);
+        let image = guarded(|| crate::animation::still_frame(&self.source)).map(Arc::new);
         let published = {
             let mut cache = cache.lock().unwrap_or_else(|p| p.into_inner());
             if current(&cache) {
@@ -245,6 +247,14 @@ impl Job {
             self.waker.wake();
         }
     }
+}
+
+/// Decodes a received file. A decoder panic fails that one still; unguarded,
+/// it would end the only worker and with it every later still.
+fn guarded<T>(decode: impl FnOnce() -> Option<T>) -> Option<T> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(decode))
+        .ok()
+        .flatten()
 }
 
 fn worker() -> Option<&'static mpsc::SyncSender<Job>> {
@@ -315,6 +325,16 @@ mod tests {
     }
 
     #[test]
+    fn a_panicking_decode_fails_one_still_and_spares_the_worker() {
+        assert_eq!(guarded(|| Some(1)), Some(1));
+        assert_eq!(guarded(|| None::<u8>), None);
+        assert_eq!(
+            guarded(|| -> Option<u8> { panic!("synthetic decoder panic") }),
+            None
+        );
+    }
+
+    #[test]
     fn egui_does_not_treat_a_still_as_an_animation() {
         let ctx = egui::Context::default();
         let still = uri(Path::new("/stickers/pack/001.webp"));
@@ -378,9 +398,22 @@ mod tests {
                 SizeHint::default(),
             );
         }
-        // A busy shared queue may refuse a job and drop its entry, never add one.
-        assert!(loader.cache.lock().unwrap().entries.len() <= ENTRIES);
+        // Stills drawn in one pass all stay, even past the limit, so none
+        // waits forever. A busy shared queue may refuse a job and drop its
+        // entry, never add one.
+        let drawn = loader.cache.lock().unwrap().entries.len();
+        assert!(drawn <= ENTRIES + 3, "{drawn}");
         assert!(loader.cache.lock().unwrap().next >= ENTRIES as u64);
+        // Once they are no longer drawn, the next request trims to the limit.
+        ctx.end_pass().textures_delta.clear();
+        ctx.begin_pass(egui::RawInput::default());
+        let _ = loader.load(
+            &ctx,
+            &uri(&root.path().join("later.webp")),
+            TextureOptions::LINEAR,
+            SizeHint::default(),
+        );
+        assert!(loader.cache.lock().unwrap().entries.len() <= ENTRIES);
         assert!(loader.byte_size() <= ENTRIES * SIDE * SIDE * 4);
         let kept = uri(&root.path().join("0.webp"));
         loader.forget(&kept);
