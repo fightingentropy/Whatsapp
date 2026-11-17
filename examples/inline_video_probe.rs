@@ -279,6 +279,11 @@ fn main() {
     let mut player = Player::default();
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
     let file = root.join("inline-video.mp4");
+    // Pausing before the first frame cancels the load rather than polling it.
+    player.toggle("fixture", "video", &file).unwrap();
+    assert!(player.active().unwrap().texture.is_none());
+    player.pause();
+    assert!(player.active().is_none(), "a paused load is cancelled");
     player.toggle("fixture", "video", &file).unwrap();
     player.toggle_mute("fixture", "video");
     until(
@@ -399,6 +404,6 @@ fn main() {
     expanded_playback(&ctx);
     local_posters();
     println!(
-        "PASS: decoded color frames, enabled audio track, pause, forward/backward seek, mute, end/replay, portrait rotation, clip switching, bounded textures, expanded playback continuity, sharp posters painted before playback and invalid-media failure"
+        "PASS: decoded color frames, enabled audio track, pause, forward/backward seek, mute, end/replay, portrait rotation, clip switching, cancelled loads, bounded textures, expanded playback continuity, sharp posters painted before playback and invalid-media failure"
     );
 }

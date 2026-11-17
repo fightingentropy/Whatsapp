@@ -117,7 +117,17 @@ impl Player {
         self.active = None;
     }
 
+    /// Pauses playback. Before the first frame this cancels the load
+    /// instead, releasing the player so the bubble returns to its poster.
     pub fn pause(&mut self) {
+        if self
+            .active
+            .as_ref()
+            .is_some_and(|active| pause_cancels_load(active.state, active.texture.is_some()))
+        {
+            self.active = None;
+            return;
+        }
         if let Some(active) = &mut self.active {
             // SAFETY: all AVPlayer access stays on the creating main thread.
             unsafe { active.native.player.pause() };
@@ -365,6 +375,11 @@ impl Drop for Native {
     }
 }
 
+/// Whether pausing should drop a player that has not shown a frame yet.
+fn pause_cancels_load(state: State, has_texture: bool) -> bool {
+    !has_texture && !matches!(state, State::Failed | State::Ended)
+}
+
 fn seek_position(duration: f64, fraction: f64) -> Option<f64> {
     (duration.is_finite() && duration > 0.0 && fraction.is_finite())
         .then(|| duration * fraction.clamp(0.0, 1.0))
@@ -475,6 +490,17 @@ mod tests {
                 wide.right_bottom()
             ]
         );
+    }
+
+    #[test]
+    fn pausing_before_the_first_frame_cancels_the_load() {
+        assert!(pause_cancels_load(State::Loading, false));
+        assert!(pause_cancels_load(State::Paused, false));
+        assert!(!pause_cancels_load(State::Loading, true));
+        assert!(!pause_cancels_load(State::Playing, true));
+        assert!(!pause_cancels_load(State::Paused, true));
+        assert!(!pause_cancels_load(State::Failed, false));
+        assert!(!pause_cancels_load(State::Ended, false));
     }
 
     #[test]
