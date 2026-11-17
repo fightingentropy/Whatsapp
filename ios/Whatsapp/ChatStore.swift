@@ -157,6 +157,7 @@ final class ChatStore {
             self?.diagnostics.record(.engineError)
             self?.error = $0; self?.status = "failed"
             self?.loading = false; self?.fetchingPhone = false; self?.loadingNewer = false
+            self?.jumpRequested = false
             self?.pageReplies.removeAll()
             if let self, let id = self.uploadingAttachment { self.failAttachment(id, error: "Connection interrupted. Check this chat before retrying.") }
         }
@@ -194,7 +195,11 @@ final class ChatStore {
                 if !newerComplete, let anchor = visibleMessageIDs.first ?? messages.first?.id {
                     restoredAnchor = anchor
                     requestPage(["type": "around", "chat": selectedChat, "id": anchor])
-                } else { requestPage(["type": "load", "chat": selectedChat]) }
+                } else {
+                    // The latest page is the newest end of the chat.
+                    newerComplete = true
+                    requestPage(["type": "load", "chat": selectedChat])
+                }
             }
         } catch { self.error = "Could not create private storage on this iPhone." }
     }

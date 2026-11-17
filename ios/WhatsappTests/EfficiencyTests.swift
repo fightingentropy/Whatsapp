@@ -147,7 +147,8 @@ final class EfficiencyTests: XCTestCase {
         engine.accept = false
         store.loadOlder()
         XCTAssertTrue(store.pageReplies.isEmpty)
-        engine.accept = true; store.loading = false
+        XCTAssertFalse(store.loading, "A refused request leaves no spinner behind")
+        engine.accept = true
         store.apply([page(0..<60)])
         XCTAssertEqual(store.messages.count, 60)
     }

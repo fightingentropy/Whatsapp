@@ -83,7 +83,11 @@ extension ChatStore {
         let ticket = UUID()
         pageReplies.append((ticket, true))
         engine.send(command) { [weak self] accepted in
-            if !accepted { self?.pageReplies.removeAll { $0.id == ticket } }
+            guard !accepted, let self else { return }
+            pageReplies.removeAll { $0.id == ticket }
+            // A stopped engine answers nothing; with no other page on its way,
+            // nothing is loading. The next start asks again.
+            if pageReplies.isEmpty { loading = false; loadingNewer = false; jumpRequested = false }
         }
     }
 
