@@ -63,6 +63,15 @@ const SYNC_QUIET: Duration = Duration::from_secs(20);
 const AWAITED: &str = "Waiting for this message. Open WhatsApp on your phone";
 /// Profile-picture cache lifetime.
 const AVATAR_FRESH: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// Where a deferred or failed profile-picture lookup stands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AvatarRetry {
+    /// Waiting for a connection or the next tick, after this many failures.
+    Pending(u32),
+    /// Failed three times; asked again only after the next connection.
+    GaveUp,
+}
 /// Phone history-request timeout.
 const PHONE_PATIENCE: Duration = Duration::from_secs(30);
 /// Phone history-request batch size.
@@ -339,7 +348,7 @@ struct Worker {
     /// Chats already notified about a phone-history timeout.
     older_warned: HashSet<ChatId>,
     /// Deferred profile-picture requests and retry counts.
-    pending_avatars: HashMap<(String, bool), u32>,
+    pending_avatars: HashMap<(String, bool), AvatarRetry>,
     sticker_pace: sticker_pace::Pace,
     sticker_cursor: Option<crate::archive::MissingSticker>,
     stickers_requested: bool,
@@ -1201,6 +1210,7 @@ impl Worker {
                 };
                 self.remember_identity(pn, lid, name);
                 self.set_status(LinkStatus::Connected);
+                self.rearm_avatars();
                 self.retry_avatars();
                 self.pump_read_sync();
                 if let Some(chat) = self.presence_wanted.clone() {
@@ -3139,11 +3149,14 @@ impl Worker {
                 // Keep the last local picture, even after giving up a refresh.
                 // Carry the count across in-flight requests rather than resetting
                 // it whenever retry_avatars removes a queued attempt.
-                if attempts < 3 {
-                    self.pending_avatars.insert((id, full), attempts);
+                // After the third failure the key stays as given up: the tick
+                // no longer asks, but the next connection re-arms it.
+                let retry = if attempts < 3 {
+                    AvatarRetry::Pending(attempts)
                 } else {
-                    self.pending_avatars.remove(&(id, full));
-                }
+                    AvatarRetry::GaveUp
+                };
+                self.pending_avatars.insert((id, full), retry);
             }
             Command::PrepareSend {
                 chat,
@@ -4112,8 +4125,15 @@ impl Worker {
             .as_ref()
             .is_some_and(|client| client.is_connected());
         let Some(client) = self.client.clone().filter(|_| connected) else {
-            // Defer profile-picture lookup until connected.
-            self.pending_avatars.entry((id, full)).or_insert(attempts);
+            // Defer profile-picture lookup until connected. A pending count
+            // carries across in-flight requests; a given-up key is revived.
+            let retry = self
+                .pending_avatars
+                .entry((id, full))
+                .or_insert(AvatarRetry::Pending(attempts));
+            if *retry == AvatarRetry::GaveUp {
+                *retry = AvatarRetry::Pending(attempts);
+            }
             return;
         };
         let commands = self.commands.clone();
@@ -4187,13 +4207,28 @@ impl Worker {
         {
             return;
         }
-        let due: Vec<(String, bool)> = self.pending_avatars.keys().cloned().collect();
-        for (id, full) in due {
-            let attempts = self
-                .pending_avatars
-                .remove(&(id.clone(), full))
-                .unwrap_or(0);
+        let due: Vec<((String, bool), u32)> = self
+            .pending_avatars
+            .iter()
+            .filter_map(|(key, retry)| match retry {
+                AvatarRetry::Pending(attempts) => Some((key.clone(), *attempts)),
+                AvatarRetry::GaveUp => None,
+            })
+            .collect();
+        for ((id, full), attempts) in due {
+            self.pending_avatars.remove(&(id.clone(), full));
             self.fetch_avatar_attempt(id, full, attempts);
+        }
+    }
+
+    /// Gives every given-up profile picture one more round of attempts. Only
+    /// a fresh connection calls this, so lookups that always fail cannot
+    /// cost a periodic query.
+    fn rearm_avatars(&mut self) {
+        for retry in self.pending_avatars.values_mut() {
+            if *retry == AvatarRetry::GaveUp {
+                *retry = AvatarRetry::Pending(0);
+            }
         }
     }
 
@@ -7021,7 +7056,11 @@ mod receipt_tests {
                 .await;
             assert_eq!(
                 worker.pending_avatars.get(&(PEER.into(), false)).copied(),
-                (attempts < 3).then_some(attempts)
+                Some(if attempts < 3 {
+                    AvatarRetry::Pending(attempts)
+                } else {
+                    AvatarRetry::GaveUp
+                })
             );
         }
         assert!(events.try_iter().next().is_none());
@@ -7033,6 +7072,57 @@ mod receipt_tests {
     }
 
     #[tokio::test]
+    async fn given_up_avatar_is_rearmed_on_reconnect_only() {
+        let (mut worker, events, _inbox, _wa) = worker();
+        let root = tempfile::tempdir().unwrap();
+        worker.dirs = AppDirs::under(root.path());
+        let key = (PEER.to_owned(), false);
+        for attempts in 1..=3 {
+            worker
+                .handle_command(Command::AvatarFailed {
+                    id: PEER.into(),
+                    full: false,
+                    attempts,
+                })
+                .await;
+        }
+        assert_eq!(
+            worker.pending_avatars.get(&key).copied(),
+            Some(AvatarRetry::GaveUp)
+        );
+        // The periodic retry leaves a given-up lookup alone.
+        worker.retry_avatars();
+        assert_eq!(
+            worker.pending_avatars.get(&key).copied(),
+            Some(AvatarRetry::GaveUp)
+        );
+        worker.rearm_avatars();
+        assert_eq!(
+            worker.pending_avatars.get(&key).copied(),
+            Some(AvatarRetry::Pending(0))
+        );
+        // A fresh request while offline revives a given-up key too.
+        worker
+            .pending_avatars
+            .insert(key.clone(), AvatarRetry::GaveUp);
+        worker.fetch_avatar(PEER.into(), false);
+        assert_eq!(
+            worker.pending_avatars.get(&key).copied(),
+            Some(AvatarRetry::Pending(0))
+        );
+        // ...but keeps an existing count rather than resetting it.
+        worker
+            .pending_avatars
+            .insert(key.clone(), AvatarRetry::Pending(2));
+        worker.fetch_avatar(PEER.into(), false);
+        assert_eq!(
+            worker.pending_avatars.get(&key).copied(),
+            Some(AvatarRetry::Pending(2))
+        );
+        assert!(events.try_iter().next().is_none());
+    }
+
+    #[tokio::test]
     async fn successful_avatar_removal_cannot_restore_an_old_picture_on_relaunch() {
         let (mut worker, events, _inbox, _wa) = worker();
         let root = tempfile::tempdir().unwrap();
@@ -7040,7 +7130,9 @@ mod receipt_tests {
         let path = worker.avatar_file(PEER, false);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, b"old portrait").unwrap();
-        worker.pending_avatars.insert((PEER.into(), false), 2);
+        worker
+            .pending_avatars
+            .insert((PEER.into(), false), AvatarRetry::Pending(2));
         worker
             .handle_command(Command::AvatarFetched {
                 id: PEER.into(),
