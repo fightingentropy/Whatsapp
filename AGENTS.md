@@ -34,11 +34,17 @@ and archive. This is an explicit additional target; keep the Mac build intact.
   snapshots are bounded to four chats / approximately 16 MiB and invalidated on
   inactive message mutations, identity merges, worker restart and memory pressure.
   Active history uses bidirectional SQLite windows (600 messages / approximately
-  8 MiB), protecting visible rows and selection/quote/edit/in-flight operations.
+  8 MiB), protecting visible rows and selection/edit/in-flight operations; a
+  reply quote is held by value, not as a window row.
   iPhone windows order equal timestamps by message ID in both Swift and SQLite;
   desktop paging retains its existing ordering. Quote jumps replace the window
   around their target. Never join a live message onto an older window across an
-  unloaded gap. Attachment paths are repaired on access, not by a startup scan.
+  unloaded gap. Page commands (load/around/newer) take FIFO tickets: the worker
+  must answer each accepted one with exactly one page reply, in order, and never
+  send an unrequested page. Opening, closing or merging the open chat abandons
+  outstanding tickets. `wa_stop` returns the events never polled; only
+  non-page, non-link ones are applied after a stop.
+  Attachment paths are repaired on access, not by a startup scan.
   Animated sticker reservations share a 32 MiB cap; pause/release them for
   backgrounding, Low Power Mode and Reduce Motion.
   The first 64 cached portrait paths are restored before publishing chat batches;
@@ -71,10 +77,20 @@ and archive. This is an explicit additional target; keep the Mac build intact.
   `Bot`, the message archive, downloads, and profile pictures. The two
   sides talk only through `Command` (interface to runtime) and `Event`
   (runtime to interface); every event wakes the window through `Waker`.
+  Worker events use `Waker::wake_batched`: the first after a quiet spell
+  repaints at once, the rest of a burst share one frame per 33 ms. Sends,
+  edits and deletes for one chat leave in order through the worker's per-chat
+  send chain (30 s patience, rekeyed on identity merges).
 - `src/archive.rs` is the SQLite store of chats, messages, contacts, and
   privacy-id mappings. WhatsApp replays history once, at link time, so the
   archive is the only copy. It keeps each message's raw protobuf because
-  the keys to fetch an attachment live in it.
+  the keys to fetch an attachment live in it. Partial indexes back identity
+  merges, the sticker picker and read receipts; SQLite uses one only when the
+  query repeats its condition verbatim, so those queries are shared constants
+  with query-plan tests. A re-filed row keeps a deleted or edited body and its
+  reactions. An incoming edit or delete applies only from the message's author
+  (plus a group admin's delete). Own rows still Pending at startup become
+  Failed for an explicit retry; history files the phone's unsent rows as Sent.
 - `src/archive/disappearing.rs` stores chat timers separately, including explicit
   off, ordered by setting timestamp and merged with privacy identities. History,
   keyless ephemeral controls and group notifications update them. Shared sends
@@ -108,6 +124,17 @@ and archive. This is an explicit additional target; keep the Mac build intact.
   an outstanding first-page query. Local read failures clear their loading flags
   and allow reopening/reconnection to retry. `Conversation::message_mut` also
   invalidates cached memory size and pending-operation state.
+  `LoadUntil` returns the chunk adjoining the loaded window and the app chains
+  chunks until the target arrives. The first page after an identity merge
+  replaces the window; a row kept before it (reply/edit target, download)
+  starts a contiguous fill (`fill_gap_to`), never a join across the gap.
+- The open chat owns staged attachments and a recording. Every path that
+  switches or closes it goes through `open_chat`/`close_open_chat`, which
+  discard them with a notice; an identity merge keeps them. Edit mode and
+  staged attachments exclude each other. Group member names are cached per
+  names revision, bumped by every event and applied action: code that changes
+  contacts, chats or `me` any other way must call `App::invalidate_names`.
+  Row heights are cleared only when a name actually changed.
 - `src/model.rs` holds the app's own types. Views never touch a protobuf;
   the worker translates in `classify()` and `parse_conversation()`.
 - Chat ids are canonical strings: a chat behind a privacy id (`@lid`) is
@@ -174,6 +201,12 @@ and archive. This is an explicit additional target; keep the Mac build intact.
   `media/video-posters` is keyed by source path, size and modification time.
   Eviction/forgetting invalidates pending jobs; never prune original attachments.
   Keep the transmitted 96px thumbnail separate and show it until a local still is ready.
+- `src/sticker_still.rs` decodes a sticker's first frame (at most 320 px) on one
+  background worker, for picker tiles and stickers that are not playing; egui's
+  own loader would decode every frame on the interface thread. Stills drawn in
+  the current pass always load, beyond the 64-entry cache if need be, and a
+  decoder panic fails only its own still. Offscreen photos reserve their height
+  from the declared dimensions and decode only near the viewport.
 - `src/gif_video.rs` turns an animated GIF/WebP into WhatsApp's GIF video (H.264
   MP4, gif_playback) with ImageIO and AVAssetWriter in `apple.m`, on the upload
   worker within the shared budget. Stills return false and keep their old path.

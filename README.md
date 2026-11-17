@@ -155,7 +155,10 @@ See [PERFORMANCE.md](PERFORMANCE.md) for measurements, remaining costs and valid
   original (up to 24 MiB) and Apple's encoder turns it into the small H.264 video
   WhatsApp uses for GIFs. Stills, other addresses and failed fetches send the
   copied picture as before.
-  They stay in the composer until you send them or press Escape. Local videos
+  They stay in the composer until you send them, press Escape, or leave the
+  chat: switching or closing the chat discards staged attachments and an unsent
+  recording with a notice, so they cannot be sent to another chat. Attachments
+  cannot be added while a message is being edited. Local videos
   include a small JPEG preview, dimensions and duration when Apple can decode them;
   metadata preparation runs on the bounded upload worker.
   WAV, FLAC and other audio formats phones cannot play inline are sent as
@@ -164,7 +167,9 @@ See [PERFORMANCE.md](PERFORMANCE.md) for measurements, remaining costs and valid
   applies on your phone and to desktop notifications.
 - **Voice messages.** Play, seek, record, reply with, and send voice messages
   in the chat. The app normalizes quiet recordings and handles OGG/Opus
-  without external tools.
+  without external tools. A recording that ends on its own (the microphone
+  goes away, or the length limit is reached) stops its timer, says so, and
+  can still be sent.
 - **Send messages.** Press Enter to send text and Shift+Enter for a new line.
   You can swap these keys in Settings. The composer is focused when you open
   or return to a conversation; invoking search keeps focus in search, and
