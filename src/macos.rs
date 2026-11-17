@@ -126,6 +126,31 @@ pub fn attach(ctx: &egui::Context) {
     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
 }
 
+/// Undoes Cmd+H and brings the app forward: winit's focus request ignores a
+/// window that is hidden with the app or minimized to the Dock.
+pub fn activate() {
+    let Some(main) = objc2::MainThreadMarker::new() else {
+        return;
+    };
+    let app = NSApplication::sharedApplication(main);
+    app.unhide(None);
+    // Its replacement, `activate`, needs macOS 14; the deployment target is 11.
+    #[allow(deprecated)]
+    app.activateIgnoringOtherApps(true);
+}
+
+/// Whether the app's window is minimized to the Dock. egui-winit reads this
+/// only when a window is created on macOS, so ask AppKit instead.
+pub fn window_minimized() -> bool {
+    let Some(main) = objc2::MainThreadMarker::new() else {
+        return false;
+    };
+    NSApplication::sharedApplication(main)
+        .windows()
+        .iter()
+        .any(|window| window.isMiniaturized())
+}
+
 /// Releases the closed window's context, with its fonts and image caches.
 /// The next window attaches its own; menu events meanwhile wake the headless loop.
 pub fn detach() {
@@ -200,7 +225,7 @@ fn edit_event(id: &str) -> Option<egui::Event> {
     })
 }
 
-fn action(id: &str, hidden: bool) -> Option<Action> {
+fn action(id: &str, hidden: bool, minimized: bool) -> Option<Action> {
     Some(match id {
         "about" => Action::ShowDialog(Dialog::About),
         "settings" => Action::Open(Page::Settings),
@@ -217,18 +242,12 @@ fn action(id: &str, hidden: bool) -> Option<Action> {
         "help" => Action::OpenUrl("https://github.com/fightingentropy/Whatsapp#using-it".into()),
         "show-window" => Action::ShowWindow,
         // These two ids are shared with the native tray menu.
-        "show" => {
-            if hidden {
-                Action::ShowWindow
-            } else {
-                Action::HideWindow
-            }
-        }
+        "show" => crate::app::show_hide(hidden, minimized),
         _ => return None,
     })
 }
 
-pub fn drain(ctx: &egui::Context, hidden: bool) -> Vec<Action> {
+pub fn drain(ctx: &egui::Context, hidden: bool, minimized: bool) -> Vec<Action> {
     let events = std::mem::take(&mut *EVENTS.lock().unwrap_or_else(|p| p.into_inner()));
     let mut actions = Vec::new();
     for id in events {
@@ -236,7 +255,7 @@ pub fn drain(ctx: &egui::Context, hidden: bool) -> Vec<Action> {
             if !hidden {
                 ctx.input_mut(|input| input.events.push(event));
             }
-        } else if let Some(action) = action(&id, hidden) {
+        } else if let Some(action) = action(&id, hidden, minimized) {
             if hidden
                 && matches!(
                     action,
@@ -327,13 +346,33 @@ mod tests {
     }
 
     #[test]
+    fn app_activation_is_a_no_op_off_the_main_thread() {
+        activate();
+        assert!(!window_minimized());
+    }
+
+    #[test]
     fn menu_uses_the_apps_close_quit_and_edit_paths() {
-        assert!(matches!(action("close", false), Some(Action::CloseWindow)));
-        assert!(matches!(action("quit", true), Some(Action::Quit)));
-        assert!(matches!(action("show", true), Some(Action::ShowWindow)));
-        assert!(matches!(action("search", false), Some(Action::Find)));
         assert!(matches!(
-            action("search-all", false),
+            action("close", false, false),
+            Some(Action::CloseWindow)
+        ));
+        assert!(matches!(action("quit", true, false), Some(Action::Quit)));
+        assert!(matches!(
+            action("show", true, false),
+            Some(Action::ShowWindow)
+        ));
+        assert!(matches!(
+            action("show", false, true),
+            Some(Action::ShowWindow)
+        ));
+        assert!(matches!(
+            action("help", true, false),
+            Some(Action::OpenUrl(_))
+        ));
+        assert!(matches!(action("search", false, false), Some(Action::Find)));
+        assert!(matches!(
+            action("search-all", false, false),
             Some(Action::FocusSearch)
         ));
         assert!(matches!(edit_event("copy"), Some(egui::Event::Copy)));

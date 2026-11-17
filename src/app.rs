@@ -524,18 +524,16 @@ impl App {
         self.tray.is_some() && self.settings.keep_running_in_background
     }
 
-    fn handle_tray(&mut self) {
+    fn handle_tray(&mut self, minimized: bool) {
         let Some(commands) = self.tray.as_ref().map(TrayService::drain_commands) else {
             return;
         };
         for command in commands {
             match command {
                 TrayCommand::Show => self.actions.push(Action::ShowWindow),
-                TrayCommand::ShowHide => self.actions.push(if self.window_hidden {
-                    Action::ShowWindow
-                } else {
-                    Action::HideWindow
-                }),
+                TrayCommand::ShowHide => {
+                    self.actions.push(show_hide(self.window_hidden, minimized))
+                }
                 TrayCommand::Quit => self.actions.push(Action::Quit),
             }
         }
@@ -2215,6 +2213,12 @@ impl App {
                     }
                 }
             }
+            // The headless context has no platform output to open a link.
+            Action::OpenUrl(url) if self.window_hidden => {
+                if let Err(error) = open::that_detached(&url) {
+                    self.toast_error(format!("Could not open the link: {error}"));
+                }
+            }
             Action::OpenUrl(url) => ctx.open_url(egui::OpenUrl::new_tab(url)),
             Action::CopyImage(path) => {
                 if self.image_copy.is_none() {
@@ -2770,6 +2774,9 @@ impl App {
                     // The headless loop in `main` will create the window.
                     self.wants_show = true;
                 } else {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                    #[cfg(target_os = "macos")]
+                    crate::macos::activate();
                     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                 }
             }
@@ -2817,10 +2824,15 @@ impl App {
         if self.window_hidden || ctx.input(|input| input.viewport().focused) == Some(false) {
             self.window_focused = false;
         }
-        self.handle_tray();
+        // egui does not track a Dock minimize on macOS.
+        #[cfg(target_os = "macos")]
+        let minimized = !self.window_hidden && crate::macos::window_minimized();
+        #[cfg(not(target_os = "macos"))]
+        let minimized = ctx.input(|input| input.viewport().minimized) == Some(true);
+        self.handle_tray(minimized);
         #[cfg(target_os = "macos")]
         self.actions
-            .extend(crate::macos::drain(ctx, self.window_hidden));
+            .extend(crate::macos::drain(ctx, self.window_hidden, minimized));
         self.handle_control_commands();
         self.handle_notification_opens();
         self.handle_events();
@@ -3300,6 +3312,15 @@ impl App {
     pub fn shutdown(&mut self) {
         self.save_state();
         self.backend.shutdown();
+    }
+}
+
+/// The menu-bar toggle: a closed or minimized window is shown, a visible one hidden.
+pub(crate) fn show_hide(hidden: bool, minimized: bool) -> Action {
+    if hidden || minimized {
+        Action::ShowWindow
+    } else {
+        Action::HideWindow
     }
 }
 
@@ -3930,6 +3951,33 @@ mod tests {
         let mut output = ctx.run_ui(input, |ui| app.background_frame(ui.ctx()));
         output.textures_delta.clear();
         assert_eq!(app.chat(&chat.id).unwrap().unread, 1);
+    }
+
+    #[test]
+    fn the_menu_bar_toggle_restores_a_minimized_window() {
+        assert!(matches!(show_hide(false, false), Action::HideWindow));
+        assert!(matches!(show_hide(true, false), Action::ShowWindow));
+        assert!(matches!(show_hide(false, true), Action::ShowWindow));
+    }
+
+    #[test]
+    fn showing_a_live_window_restores_it_before_focusing() {
+        let mut app = app();
+        let ctx = egui::Context::default();
+        app.actions.push(Action::ShowWindow);
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            app.apply_actions(ui.ctx());
+        });
+        output.textures_delta.clear();
+        let commands = &output.viewport_output[&egui::ViewportId::ROOT].commands;
+        let restore = commands
+            .iter()
+            .position(|command| *command == egui::ViewportCommand::Minimized(false));
+        let focus = commands
+            .iter()
+            .position(|command| *command == egui::ViewportCommand::Focus);
+        assert!(restore.is_some() && restore < focus, "{commands:?}");
+        assert!(!app.wants_show);
     }
 
     #[test]
