@@ -2,6 +2,12 @@
 
 use super::{Archive, Result, params};
 
+/// Moves a privacy id's group messages to the phone id. The LIKE term repeats
+/// the `messages_lid_sender` partial index's condition so SQLite can use it
+/// instead of scanning every message; `put_lid` only ever passes `…@lid` here.
+pub(super) const MERGE_LID_SENDER: &str =
+    "UPDATE messages SET sender = ?2 WHERE sender = ?1 AND sender LIKE '%@lid'";
+
 impl Archive {
     /// Older builds remembered mappings but left existing rows under the alias.
     /// Only visit identities with stale rows, keeping normal startup inexpensive.
@@ -124,10 +130,8 @@ impl Archive {
             .execute("DELETE FROM messages WHERE chat = ?1", [from])?;
         self.connection
             .execute("DELETE FROM chats WHERE id = ?1", [from])?;
-        self.connection.execute(
-            "UPDATE messages SET sender = ?2 WHERE sender = ?1",
-            params![from, into],
-        )?;
+        self.connection
+            .execute(MERGE_LID_SENDER, params![from, into])?;
         // A read position from either identity covers the merged conversation.
         self.connection.execute(
             "UPDATE chats SET last_activity = MAX(last_activity,
@@ -346,5 +350,50 @@ mod tests {
                 .iter()
                 .all(|row| row.chat == PN)
         );
+    }
+
+    #[test]
+    fn a_mapping_rewrites_group_senders_and_receipts() {
+        let archive = Archive::in_memory().unwrap();
+        let group = "1-1@g.us";
+        archive.ensure_chat(group, "Group").unwrap();
+        let mut theirs = message(group, "theirs", 10, false);
+        theirs.sender = LID.into();
+        archive.insert_message(&theirs, None).unwrap();
+        archive
+            .insert_message(&message(group, "ours", 20, true), None)
+            .unwrap();
+        archive
+            .snapshot_group_recipients(group, "ours", &[LID.to_owned()])
+            .unwrap();
+
+        archive.put_lid("123456", "15550002222").unwrap();
+
+        assert_eq!(
+            archive.message(group, "theirs").unwrap().unwrap().sender,
+            PN
+        );
+        let recipients: Vec<String> = archive
+            .connection
+            .prepare("SELECT recipient FROM group_receipts WHERE chat = ?1 AND id = 'ours'")
+            .unwrap()
+            .query_map([group], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_>>()
+            .unwrap();
+        assert_eq!(recipients, [PN]);
+    }
+
+    #[test]
+    fn identity_merge_uses_sender_and_recipient_indexes() {
+        let archive = Archive::in_memory().unwrap();
+        let plan = crate::archive::tests::query_plan(&archive, MERGE_LID_SENDER);
+        assert!(plan.contains("messages_lid_sender"), "{plan}");
+        let plan = crate::archive::tests::query_plan(
+            &archive,
+            "DELETE FROM group_receipts WHERE recipient = ?1",
+        );
+        assert!(plan.contains("group_receipts_by_recipient"), "{plan}");
+        assert!(!plan.contains("SCAN"), "{plan}");
     }
 }

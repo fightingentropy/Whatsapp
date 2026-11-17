@@ -115,6 +115,8 @@ CREATE TABLE IF NOT EXISTS group_receipts (
     played_at INTEGER,
     PRIMARY KEY (chat, id, recipient)
 );
+CREATE INDEX IF NOT EXISTS messages_lid_sender ON messages (sender) WHERE sender LIKE '%@lid';
+CREATE INDEX IF NOT EXISTS group_receipts_by_recipient ON group_receipts (recipient);
 CREATE TRIGGER IF NOT EXISTS delete_group_receipts AFTER DELETE ON messages BEGIN
     DELETE FROM group_receipts WHERE chat = OLD.chat AND id = OLD.id;
 END;
@@ -1392,6 +1394,20 @@ mod tests {
             forwarded: false,
             thumbnail: None,
         }
+    }
+
+    /// The `detail` lines of SQLite's plan for `sql`, with parameters unbound.
+    pub(super) fn query_plan(archive: &Archive, sql: &str) -> String {
+        let mut statement = archive
+            .connection
+            .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+            .unwrap();
+        let mut rows = statement.raw_query();
+        let mut details = Vec::new();
+        while let Some(row) = rows.next().unwrap() {
+            details.push(row.get::<_, String>(3).unwrap());
+        }
+        details.join("\n")
     }
 
     #[test]
