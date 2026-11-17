@@ -808,15 +808,30 @@ pub unsafe extern "C" fn wa_free_string(value: *mut c_char) {
 
 /// Finishes database/network work. Call off the main thread; never deletes the session.
 /// All API calls, including stop/start, must be serialized by the owning UI engine.
+/// Returns the events the worker emitted but were not yet polled (such as an
+/// upload acknowledgement), in `wa_poll`'s format without audio results, or
+/// null for a stale handle. Caller frees it with `wa_free_string`. Event JSON
+/// must never be logged.
 #[unsafe(no_mangle)]
-pub extern "C" fn wa_stop(handle: u64) {
+pub extern "C" fn wa_stop(handle: u64) -> *mut c_char {
     let backend = sessions()
         .lock()
         .unwrap_or_else(|p| p.into_inner())
         .remove(&handle);
-    if let Some(mut session) = backend {
-        session.backend.shutdown();
-    }
+    let Some(mut session) = backend else {
+        return std::ptr::null_mut();
+    };
+    session.backend.shutdown();
+    // The receiver keeps buffered events after the worker's sender is gone.
+    let values: Vec<_> = session
+        .backend
+        .poll()
+        .into_iter()
+        .filter_map(event_json)
+        .collect();
+    CString::new(json!({"version":1,"events":values}).to_string())
+        .expect("JSON escapes NUL bytes")
+        .into_raw()
 }
 
 /// Queues archived OGG/Opus conversion. Results arrive as `audio` events.
@@ -1049,10 +1064,48 @@ mod tests {
             unsafe { wa_prepare_audio(handle, std::ptr::null(), request.as_ptr()) },
             0
         );
-        wa_stop(handle);
+        unsafe { wa_free_string(wa_stop(handle)) };
         assert_eq!(
             unsafe { wa_prepare_audio(handle, input.as_ptr(), request.as_ptr()) },
             -1
+        );
+    }
+
+    #[test]
+    fn stop_returns_events_emitted_before_shutdown_that_were_never_polled() {
+        let f = FilesFixture::new();
+        let (backend, events) = Backend::detached();
+        let handle = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
+        sessions().lock().unwrap().insert(
+            handle,
+            Session {
+                backend,
+                dirs: f.dirs.clone(),
+                audio: crate::audio_preview::AudioJobs::new(None),
+            },
+        );
+        events
+            .send(Event::Attachment {
+                chat: "fixture@g.us".into(),
+                request: "fixture".into(),
+                message: Some("id".into()),
+                error: None,
+            })
+            .unwrap();
+        let pointer = wa_stop(handle);
+        assert!(!pointer.is_null());
+        let batch: Value =
+            serde_json::from_str(unsafe { CStr::from_ptr(pointer) }.to_str().unwrap()).unwrap();
+        unsafe { wa_free_string(pointer) };
+        assert_eq!(batch["version"], 1);
+        let events = batch["events"].as_array().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["type"], "attachment");
+        assert_eq!(events[0]["id"], "fixture");
+        assert_eq!(events[0]["messageID"], "id");
+        assert!(
+            wa_stop(handle).is_null(),
+            "A stopped handle has nothing left"
         );
     }
 
@@ -1245,7 +1298,7 @@ mod tests {
             Command::Reconnect
         ));
         assert!(wa_poll(u64::MAX).is_null());
-        wa_stop(u64::MAX);
+        assert!(wa_stop(u64::MAX).is_null());
         let command = CString::new(r#"{"type":"reconnect"}"#).unwrap();
         assert_eq!(unsafe { wa_command(u64::MAX, command.as_ptr()) }, -1);
         assert_eq!(unsafe { wa_command(1, std::ptr::null()) }, 0);

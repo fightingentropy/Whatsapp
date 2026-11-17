@@ -86,19 +86,33 @@ final class CoreEngine: MessagingEngine, @unchecked Sendable {
 
     func drain() { queue.async { self.drainOnQueue() } }
 
+    /// Never print the event JSON: pairing codes and private messages live here.
+    private func decode(_ pointer: UnsafeMutablePointer<CChar>) throws -> [CoreEvent] {
+        let batch = try JSONDecoder().decode(CoreBatch.self, from: Data(bytes: pointer, count: strlen(pointer)))
+        guard batch.version == 1 else { throw CocoaError(.coderInvalidValue) }
+        return batch.events
+    }
+
+    /// Events from a stopped worker that still matter after shutdown, such as
+    /// an upload acknowledgement. Connection state belongs to the next session,
+    /// page replies to the store's request ledger, and audio callbacks were
+    /// already failed by stop().
+    static func survivesStop(_ event: CoreEvent) -> Bool {
+        if event.type == "messages" { return event.requested != true }
+        return !["link", "sync", "progress", "around", "newer", "load_failed", "audio"].contains(event.type)
+    }
+
     private func drainOnQueue() {
         guard handle != 0, let pointer = wa_poll(handle) else { return }
         defer { wa_free_string(pointer) }
-        let data = Data(bytes: pointer, count: strlen(pointer))
         do {
-            let batch = try JSONDecoder().decode(CoreBatch.self, from: data)
-            guard batch.version == 1 else { throw CocoaError(.coderInvalidValue) }
-            guard !batch.events.isEmpty else { return }
+            let batch = try decode(pointer)
+            guard !batch.isEmpty else { return }
             // Decode cached portraits alongside local chat/history restoration,
             // before rows appear. This never waits for the reconnecting worker
             // to service an avatar command and never performs UI-thread decoding.
             var normal: [CoreEvent] = []
-            for event in batch.events {
+            for event in batch {
                 if event.type == "audio", let id = event.id {
                     if let callback = audioRequests.removeValue(forKey: id) {
                         let url = event.path.map { URL(fileURLWithPath: $0) }
@@ -115,7 +129,6 @@ final class CoreEngine: MessagingEngine, @unchecked Sendable {
             for id in prepared?.deferred ?? [] where known.insert(id).inserted { deferredPortraits.append(id) }
             schedulePortraitRestoration()
         } catch {
-            // Never print the event JSON: pairing codes and private messages live here.
             fail("This build could not read a messaging update. Reopen the app to reconnect.")
         }
     }
@@ -157,7 +170,13 @@ final class CoreEngine: MessagingEngine, @unchecked Sendable {
             let callbacks = Array(self.audioRequests.values)
             self.audioRequests.removeAll()
             DispatchQueue.main.async { callbacks.forEach { $0(nil) } }
-            if handle != 0 { wa_stop(handle) }
+            if handle != 0, let pointer = wa_stop(handle) {
+                // Deliver what the worker emitted before shutdown but no drain
+                // collected, ahead of the completion that fails interrupted uploads.
+                let events = ((try? self.decode(pointer)) ?? []).filter(Self.survivesStop)
+                wa_free_string(pointer)
+                if !events.isEmpty { DispatchQueue.main.async { self.onEvents?(events) } }
+            }
             DispatchQueue.main.async(execute: completion)
         }
     }

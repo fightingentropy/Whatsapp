@@ -224,6 +224,29 @@ final class PairingLifecycleTests: XCTestCase {
         XCTAssertNil(store.error)
     }
 
+    func testShutdownDeliversUnpolledUploadAckInsteadOfFailingTheJob() {
+        let (store, engine, activity, _) = fixture()
+        store.status = "connected"
+        store.outgoingAttachments = [OutgoingAttachment(id: "upload", chat: "fixture@g.us",
+            file: PendingAttachment(url: URL(fileURLWithPath: "/fictional/photo.jpg")), caption: "", mentions: [])]
+        store.pumpAttachments()
+        XCTAssertEqual(store.uploadingAttachment, "upload")
+        var ack = CoreEvent(type: "attachment"); ack.chat = "fixture@g.us"; ack.id = "upload"; ack.messageID = "archived"
+        var link = CoreEvent(type: "link"); link.status = "connected"
+        var page = CoreEvent(type: "messages"); page.chat = "fixture@g.us"; page.requested = true
+        engine.finalEvents = [link, ack, page]
+        store.prepareForBackground(); activity.timeRemaining = 8; store.background()
+        engine.finishStop()
+        XCTAssertTrue(store.outgoingAttachments.isEmpty, "The acknowledged upload is not marked interrupted")
+        XCTAssertNil(store.uploadingAttachment)
+        XCTAssertFalse(store.hasSession, "Connection state from the stopped worker is not applied")
+        XCTAssertEqual(store.status, "suspended")
+        XCTAssertFalse(CoreEngine.survivesStop(page))
+        var live = page; live.requested = false
+        XCTAssertTrue(CoreEngine.survivesStop(live))
+        store.activate()
+    }
+
     func testStorageFailureCanRetryOnNextActivation() {
         let (store, engine, _, _) = fixture()
         engine.onError?("Fixture storage failure")
@@ -239,6 +262,8 @@ private final class FakeMessagingEngine: MessagingEngine {
     var onStop: (() -> Void)?
     var commands: [String] = []
     var stops: [() -> Void] = []
+    /// Unpolled events the real engine returns from wa_stop.
+    var finalEvents: [CoreEvent] = []
     var starts = 0
     func start(root: URL) { starts += 1 }
     func drain() {}
@@ -248,7 +273,11 @@ private final class FakeMessagingEngine: MessagingEngine {
         completion?(true)
     }
     func stop(completion: @escaping () -> Void) { stops.append(completion); onStop?() }
-    func finishStop() { stops.removeFirst()() }
+    func finishStop() {
+        let events = finalEvents.filter(CoreEngine.survivesStop); finalEvents = []
+        if !events.isEmpty { onEvents?(events) }
+        stops.removeFirst()()
+    }
 }
 
 @MainActor

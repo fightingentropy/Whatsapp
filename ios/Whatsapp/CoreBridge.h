@@ -6,6 +6,7 @@ uint64_t wa_start(const char *root, void (*wake)(void));
 int32_t wa_command(uint64_t handle, const char *input);
 char *wa_poll(uint64_t handle);
 void wa_free_string(char *value);
-void wa_stop(uint64_t handle);
+// Returns unpolled events (free with wa_free_string), or NULL for a stale handle.
+char *wa_stop(uint64_t handle);
 int32_t wa_prepare_audio(uint64_t handle, const char *source, const char *request);
 #endif
