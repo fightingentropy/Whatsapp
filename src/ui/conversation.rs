@@ -1454,6 +1454,23 @@ fn messages(app: &mut App, ui: &mut egui::Ui, chat: &Chat) {
     let loading = conversation.loading_older;
     let fetching = conversation.fetching_phone;
     let exhausted = conversation.phone_exhausted;
+    // The reader left the old top while the phone was loading: keep their
+    // place when the answer arrives instead of centring the old top again.
+    if fetching
+        && reader_scrolled
+        && let Some(anchor) = app.scroll_anchor.as_deref()
+        && conversation
+            .messages
+            .first()
+            .is_some_and(|oldest| oldest.id == anchor)
+        && conversation
+            .row_heights
+            .anchor
+            .as_ref()
+            .is_some_and(|(id, _)| id != anchor)
+    {
+        app.scroll_anchor = None;
+    }
     // Drawing can add selection geometry to the conversation's memory budget.
     conversation.cached_bytes = None;
     app.conversations

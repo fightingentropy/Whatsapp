@@ -2392,6 +2392,86 @@ mod tests {
     }
 
     #[test]
+    fn scrolling_away_during_a_phone_fetch_keeps_the_readers_place() {
+        let chat = sample_ids()[0];
+        let at_top_fetching = || {
+            let mut app = app();
+            long_history(&mut app, 1000);
+            let ctx = egui::Context::default();
+            app.attach(&ctx);
+            render(&mut app, &ctx);
+            app.actions
+                .push(crate::model::Action::ScrollTo("long-0".into()));
+            render(&mut app, &ctx);
+            render(&mut app, &ctx);
+            assert!(app.scroll_anchor.is_none());
+            app.conversations.get_mut(chat).unwrap().fetching_phone = true;
+            app.scroll_anchor = Some("long-0".into());
+            (app, ctx)
+        };
+        let body = |ctx: &egui::Context, id: &str| {
+            ctx.data(|data| {
+                data.get_temp::<egui::Rect>(
+                    crate::ui::conversation::bubble_id(chat, id).with("body"),
+                )
+            })
+            .expect("drawn body")
+        };
+        let answer = |app: &mut App, ctx: &egui::Context| {
+            let conversation = app.conversations.get_mut(chat).unwrap();
+            let mut older = conversation.messages[0].clone();
+            older.id = "from-phone".into();
+            older.timestamp -= 60;
+            conversation.messages.insert(0, older);
+            conversation.fetching_phone = false;
+            render(app, ctx);
+        };
+
+        let (mut app, ctx) = at_top_fetching();
+        let viewport = app.selection_view.lock().unwrap().unwrap();
+        for _ in 0..4 {
+            frame_with(
+                &mut app,
+                &ctx,
+                vec![
+                    egui::Event::PointerMoved(viewport.center()),
+                    egui::Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Point,
+                        delta: egui::vec2(0.0, -400.0),
+                        modifiers: egui::Modifiers::NONE,
+                        phase: egui::TouchPhase::Move,
+                    },
+                ],
+            );
+        }
+        // Let wheel smoothing settle.
+        for _ in 0..10 {
+            render(&mut app, &ctx);
+        }
+        assert!(
+            app.scroll_anchor.is_none(),
+            "scrolling away from the old top cancels its anchor"
+        );
+        let (anchor, _) = app.conversations[chat].row_heights.anchor.clone().unwrap();
+        assert_ne!(anchor, "long-0");
+        let before = body(&ctx, &anchor).top();
+        answer(&mut app, &ctx);
+        assert!(
+            (body(&ctx, &anchor).top() - before).abs() < 1.0,
+            "the phone's answer keeps the reader's place"
+        );
+
+        // A reader who stays at the top still sees the old top centred.
+        let (mut app, ctx) = at_top_fetching();
+        render(&mut app, &ctx);
+        assert_eq!(app.scroll_anchor.as_deref(), Some("long-0"));
+        answer(&mut app, &ctx);
+        assert!(app.scroll_anchor.is_none(), "the anchor was applied");
+        let viewport = app.selection_view.lock().unwrap().unwrap();
+        assert!(viewport.intersects(body(&ctx, "long-0")));
+    }
+
+    #[test]
     fn cached_rows_match_full_layout_geometry() {
         let mut app = app();
         let ctx = egui::Context::default();
