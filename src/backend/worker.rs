@@ -228,6 +228,7 @@ pub async fn run(
         group_info_tries: HashMap::new(),
         group_info_retry: Vec::new(),
         presence_subscribed: HashSet::new(),
+        presence_wanted: None,
         pending_older: HashMap::new(),
         local_revokes: HashSet::new(),
         older_warned: HashSet::new(),
@@ -321,7 +322,11 @@ struct Worker {
     group_info_tries: HashMap<String, u32>,
     /// Next retry time for failed group metadata requests.
     group_info_retry: Vec<(Instant, String)>,
+    /// Direct chats whose presence subscription was sent on the current
+    /// client, in flight or confirmed.
     presence_subscribed: HashSet<String>,
+    /// The direct chat opened last, subscribed again once connected.
+    presence_wanted: Option<ChatId>,
     /// Pending phone-history request time and boundary by chat.
     pending_older: HashMap<ChatId, (Instant, super::PageKey)>,
     /// Messages this device optimistically marked deleted and has not heard
@@ -679,6 +684,8 @@ impl Worker {
 
     async fn start_bot(&mut self) {
         self.bot_generation = self.bot_generation.wrapping_add(1);
+        // A new client has no presence subscriptions to renew.
+        self.presence_subscribed.clear();
         self.qr = None;
         self.pair_code = None;
         self.pairing_phone = None;
@@ -1189,6 +1196,10 @@ impl Worker {
                 self.set_status(LinkStatus::Connected);
                 self.retry_avatars();
                 self.pump_read_sync();
+                if let Some(chat) = self.presence_wanted.clone() {
+                    let chat = self.canonical_str(&chat);
+                    self.subscribe_presence(&chat);
+                }
                 if let Some(client) = self.client.clone() {
                     let me = self.me_pn.clone().and_then(|pn| Self::jid_of(&pn));
                     let commands = self.commands.clone();
@@ -1434,6 +1445,7 @@ impl Worker {
         self.group_info_tries.clear();
         self.group_info_retry.clear();
         self.presence_subscribed.clear();
+        self.presence_wanted = None;
         self.read_syncs.clear();
         self.pending_older.clear();
         self.pending_avatars.clear();
@@ -3016,6 +3028,11 @@ impl Worker {
             Command::GroupInfoFailed { chat, permanent } => {
                 self.handle_failed_group(chat, permanent);
             }
+            Command::PresenceFailed { chat, generation } => {
+                if generation == self.bot_generation {
+                    self.presence_subscribed.remove(&chat);
+                }
+            }
             Command::RestoreMessage {
                 chat,
                 id,
@@ -3518,18 +3535,33 @@ impl Worker {
             // Force group metadata when opening a group.
             self.request_group_info(&chat, false);
         }
-        if before.is_none()
-            && ChatKind::from_id(&chat) == ChatKind::Direct
-            && chat != self.me()
-            && self.presence_subscribed.insert(chat.clone())
-            && let (Some(client), Some(jid)) = (self.client.clone(), Self::jid_of(&chat))
-        {
-            tokio::spawn(async move {
-                if let Err(error) = client.presence().subscribe(jid).await {
-                    log::debug!("presence not subscribed: {error}");
-                }
-            });
+        if before.is_none() && ChatKind::from_id(&chat) == ChatKind::Direct && chat != self.me() {
+            self.presence_wanted = Some(chat.clone());
+            self.subscribe_presence(&chat);
         }
+    }
+
+    /// Subscribes to a direct chat's presence once per connected client.
+    /// whatsapp-rust renews only subscriptions it sent, so one asked for while
+    /// connecting, or that failed, is sent again on the next connection.
+    fn subscribe_presence(&mut self, chat: &ChatId) {
+        if !matches!(self.status, LinkStatus::Connected) || self.presence_subscribed.contains(chat)
+        {
+            return;
+        }
+        let (Some(client), Some(jid)) = (self.client.clone(), Self::jid_of(chat)) else {
+            return;
+        };
+        self.presence_subscribed.insert(chat.clone());
+        let chat = chat.clone();
+        let generation = self.bot_generation;
+        let commands = self.commands.clone();
+        tokio::spawn(async move {
+            if let Err(error) = client.presence().subscribe(jid).await {
+                log::debug!("presence not subscribed: {error}");
+                let _ = commands.send(Command::PresenceFailed { chat, generation });
+            }
+        });
     }
 
     fn load_window_around(&self, chat: ChatId, id: String) {
@@ -6838,6 +6870,7 @@ mod receipt_tests {
             group_info_tries: HashMap::new(),
             group_info_retry: Vec::new(),
             presence_subscribed: HashSet::new(),
+            presence_wanted: None,
             pending_older: HashMap::new(),
             local_revokes: HashSet::new(),
             older_warned: HashSet::new(),
@@ -7043,6 +7076,37 @@ mod receipt_tests {
                 assert_eq!(worker.pairing_phone.as_deref(), Some("synthetic-phone"));
             }
         }
+    }
+
+    #[tokio::test]
+    async fn presence_is_marked_subscribed_only_once_sent_and_until_it_fails() {
+        let (mut worker, _events, _inbox, _wa) = worker();
+        // No client yet: nothing is sent, so nothing is marked.
+        worker
+            .handle_command(Command::LoadChat {
+                chat: PEER.into(),
+                before: None,
+            })
+            .await;
+        assert!(worker.presence_subscribed.is_empty());
+        assert_eq!(worker.presence_wanted.as_deref(), Some(PEER));
+
+        worker.presence_subscribed.insert(PEER.into());
+        // A failure from an earlier client does not touch the current one.
+        worker
+            .handle_command(Command::PresenceFailed {
+                chat: PEER.into(),
+                generation: worker.bot_generation.wrapping_sub(1),
+            })
+            .await;
+        assert!(worker.presence_subscribed.contains(PEER));
+        worker
+            .handle_command(Command::PresenceFailed {
+                chat: PEER.into(),
+                generation: worker.bot_generation,
+            })
+            .await;
+        assert!(worker.presence_subscribed.is_empty());
     }
 
     #[tokio::test]

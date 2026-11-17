@@ -155,6 +155,12 @@ pub enum Command {
         chat: ChatId,
         error: String,
     },
+    /// Internal result for a presence subscription that was not sent.
+    PresenceFailed {
+        chat: ChatId,
+        /// The bot generation the subscription was sent on.
+        generation: u64,
+    },
     /// Internal group-metadata failure.
     GroupInfoFailed {
         chat: ChatId,
