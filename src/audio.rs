@@ -10,7 +10,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use rodio::Source;
-use rodio::buffer::SamplesBuffer;
 
 use crate::backend::Waker;
 use crate::voice;
@@ -50,7 +49,8 @@ impl Status {
     };
 }
 
-type Decoded = Arc<Mutex<Option<Result<Vec<f32>, String>>>>;
+/// Decoded samples with their generated waveform.
+type Decoded = Arc<Mutex<Option<Result<(Vec<f32>, Vec<u8>), String>>>>;
 
 type Output = (rodio::MixerDeviceSink, rodio::Player);
 
@@ -204,13 +204,11 @@ impl Player {
         });
         if let Some(result) = decoded {
             let Decoding { message, start, .. } = self.decoding.take().expect("just seen");
-            let samples = result?;
+            let (samples, bars) = result?;
             if samples.is_empty() {
                 return Err("The clip is empty".to_owned());
             }
-            self.bars
-                .entry(message.clone())
-                .or_insert_with(|| voice::waveform(&samples));
+            self.bars.entry(message.clone()).or_insert(bars);
             self.loaded = Some(Loaded {
                 message,
                 samples: Arc::new(samples),
@@ -245,7 +243,11 @@ impl Player {
         let spawned = std::thread::Builder::new()
             .name("voice-decode".to_owned())
             .spawn(move || {
-                let result = decode_file(&path);
+                // The waveform is computed here, off the interface thread.
+                let result = decode_file(&path).map(|samples| {
+                    let bars = voice::waveform(&samples);
+                    (samples, bars)
+                });
                 *thread_slot.lock().unwrap_or_else(|p| p.into_inner()) = Some(result);
                 waker.wake();
             });
@@ -273,16 +275,61 @@ impl Player {
         }
         let (_, sink) = self.output.as_ref().expect("just opened");
         sink.clear();
-        sink.append(SamplesBuffer::new(
-            mono(),
-            rate(),
-            samples[offset..].to_vec(),
-        ));
+        sink.append(SharedSamples {
+            samples,
+            start: offset,
+            next: offset,
+        });
         sink.play();
         loaded.base = clip_length(offset);
         loaded.paused = false;
         loaded.done = false;
         Ok(())
+    }
+}
+
+/// Plays a decoded clip from an offset without copying its samples.
+struct SharedSamples {
+    samples: Arc<Vec<f32>>,
+    /// First sample played.
+    start: usize,
+    next: usize,
+}
+
+impl Iterator for SharedSamples {
+    type Item = f32;
+
+    fn next(&mut self) -> Option<f32> {
+        let sample = *self.samples.get(self.next)?;
+        self.next += 1;
+        Some(sample)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.samples.len().saturating_sub(self.next);
+        (remaining, Some(remaining))
+    }
+}
+
+impl Source for SharedSamples {
+    fn current_span_len(&self) -> Option<usize> {
+        if self.next >= self.samples.len() {
+            Some(0)
+        } else {
+            Some(self.samples.len() - self.start)
+        }
+    }
+
+    fn channels(&self) -> NonZero<u16> {
+        mono()
+    }
+
+    fn sample_rate(&self) -> NonZero<u32> {
+        rate()
+    }
+
+    fn total_duration(&self) -> Option<Duration> {
+        Some(clip_length(self.samples.len().saturating_sub(self.start)))
     }
 }
 
@@ -503,6 +550,53 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
 
+    #[test]
+    fn decoding_computes_the_waveform_off_the_interface_thread() {
+        let path = std::env::temp_dir().join(format!("whatsapp-bars-{}.ogg", std::process::id()));
+        let tone: Vec<f32> = (0..voice::RATE as usize / 2)
+            .map(|n| (n as f32 * 0.05).sin() * 0.3)
+            .collect();
+        std::fs::write(&path, voice::encode(&tone).expect("encodes")).expect("written");
+        let mut player = Player::new(Waker::default());
+        player.open_output = || Err("No sound output: test".to_owned());
+        player.toggle("clip", &path).expect("starts decoding");
+        let slot = Arc::clone(&player.decoding.as_ref().expect("decoding").slot);
+        let started = Instant::now();
+        while slot.lock().unwrap_or_else(|p| p.into_inner()).is_none() {
+            assert!(started.elapsed() < Duration::from_secs(10), "never decoded");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        if let Some(Ok((samples, bars))) = slot.lock().unwrap_or_else(|p| p.into_inner()).as_ref() {
+            assert_eq!(bars, &voice::waveform(samples));
+        } else {
+            panic!("the clip did not decode");
+        }
+        assert!(player.poll().is_err(), "no output device in this test");
+        assert_eq!(player.bars("clip").map(<[u8]>::len), Some(voice::BARS));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn shared_samples_play_from_the_offset_without_copying() {
+        let data = Arc::new((0..10).map(|n| n as f32).collect::<Vec<_>>());
+        let source = SharedSamples {
+            samples: Arc::clone(&data),
+            start: 4,
+            next: 4,
+        };
+        assert_eq!(Arc::strong_count(&data), 2);
+        assert_eq!(source.channels(), mono());
+        assert_eq!(source.sample_rate(), rate());
+        assert_eq!(source.total_duration(), Some(clip_length(6)));
+        assert_eq!(source.current_span_len(), Some(6));
+        assert_eq!(source.size_hint(), (6, Some(6)));
+        let mut source = source;
+        let played: Vec<f32> = source.by_ref().collect();
+        assert_eq!(played, vec![4.0, 5.0, 6.0, 7.0, 8.0, 9.0]);
+        assert_eq!(source.current_span_len(), Some(0));
+        assert_eq!(source.total_duration(), Some(clip_length(6)));
+    }
+
     use super::*;
 
     #[test]
@@ -522,7 +616,10 @@ mod tests {
         player.decoding = Some(Decoding {
             message: "m".into(),
             start: 0.0,
-            slot: Arc::new(Mutex::new(Some(Ok(vec![0.0; 4_800])))),
+            slot: Arc::new(Mutex::new(Some(Ok((
+                vec![0.0; 4_800],
+                vec![0; voice::BARS],
+            ))))),
         });
         assert!(player.poll().is_err());
         assert!(!player.is_playing());
