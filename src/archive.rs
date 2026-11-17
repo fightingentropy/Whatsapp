@@ -1295,6 +1295,19 @@ impl Archive {
         Ok(changed > 0)
     }
 
+    /// The phone-number form of a privacy id whose mapping is known.
+    fn phone_identity(&self, id: &str) -> Result<String> {
+        let Some(lid) = id.strip_suffix("@lid") else {
+            return Ok(id.to_owned());
+        };
+        let pn: Option<String> = self
+            .connection
+            .prepare_cached("SELECT pn FROM lids WHERE lid = ?1")?
+            .query_row([lid], |row| row.get(0))
+            .optional()?;
+        Ok(pn.map_or_else(|| id.to_owned(), |pn| format!("{pn}@s.whatsapp.net")))
+    }
+
     /// Upserts a reaction, or removes it when the emoji is empty.
     pub fn set_reaction(
         &self,
@@ -1307,12 +1320,27 @@ impl Archive {
         let Some(mut message) = self.message(chat, id)? else {
             return Ok(None);
         };
+        // A reaction stored under a privacy id belongs to the same person once
+        // its phone number is known, so it is replaced rather than repeated.
+        let sender = if from_me {
+            sender.to_owned()
+        } else {
+            self.phone_identity(sender)?
+        };
+        for reaction in &mut message.reactions {
+            if !reaction.from_me {
+                reaction.sender = self.phone_identity(&reaction.sender)?;
+            }
+        }
+        let mut seen = std::collections::HashSet::new();
+        message.reactions.reverse();
         message
             .reactions
-            .retain(|reaction| reaction.sender != sender);
+            .retain(|reaction| reaction.sender != sender && seen.insert(reaction.sender.clone()));
+        message.reactions.reverse();
         if !emoji.is_empty() {
             message.reactions.push(crate::model::Reaction {
-                sender: sender.to_owned(),
+                sender,
                 from_me,
                 emoji: emoji.to_owned(),
             });
@@ -1736,6 +1764,50 @@ mod tests {
                 [],
             )
             .unwrap();
+    }
+
+    #[test]
+    fn a_reaction_replaces_the_same_persons_privacy_id_reaction() {
+        let archive = Archive::in_memory().unwrap();
+        let group = "123-456@g.us";
+        archive.ensure_chat(group, "Group").unwrap();
+        archive
+            .insert_message(&message(group, "m", 10, false), None)
+            .unwrap();
+        archive
+            .set_reaction(group, "m", "111@lid", false, "+1")
+            .unwrap();
+        archive
+            .set_reaction(group, "m", "333@s.whatsapp.net", false, "wow")
+            .unwrap();
+        archive.put_lid("111", "222").unwrap();
+        let updated = archive
+            .set_reaction(group, "m", "222@s.whatsapp.net", false, "heart")
+            .unwrap()
+            .unwrap();
+        let reactions = |message: &Message| {
+            message
+                .reactions
+                .iter()
+                .map(|reaction| (reaction.sender.clone(), reaction.emoji.clone()))
+                .collect::<Vec<_>>()
+        };
+        let pair = |sender: &str, emoji: &str| (sender.to_owned(), emoji.to_owned());
+        let expected = [
+            pair("333@s.whatsapp.net", "wow"),
+            pair("222@s.whatsapp.net", "heart"),
+        ];
+        assert_eq!(reactions(&updated), expected);
+        assert_eq!(
+            reactions(&archive.message(group, "m").unwrap().unwrap()),
+            expected
+        );
+        // Removing it by either identity leaves the other person's reaction.
+        let removed = archive
+            .set_reaction(group, "m", "111@lid", false, "")
+            .unwrap()
+            .unwrap();
+        assert_eq!(reactions(&removed), [pair("333@s.whatsapp.net", "wow")]);
     }
 
     #[test]
