@@ -970,6 +970,10 @@ impl Worker {
         if force {
             self.group_info_requested.remove(id);
         } else {
+            // Already asked: skip the archive read the insert below would discard.
+            if self.group_info_requested.contains(id) {
+                return;
+            }
             let known = self.archive.chat(id).ok().flatten().is_some_and(|chat| {
                 chat.name != fallback_name(id) && !chat.participants.is_empty()
             });
@@ -6669,6 +6673,14 @@ mod receipt_tests {
         worker.request_group_info("2-2@g.us", false);
         worker.request_group_info("1-1@g.us", false);
         assert_eq!(worker.group_info_queue.len(), 2, "asked once each");
+        // A group already asked about is not queued again, even if still unnamed.
+        worker
+            .archive
+            .ensure_chat("3-3@g.us", "Group")
+            .expect("chat");
+        worker.group_info_requested.insert("3-3@g.us".into());
+        worker.request_group_info("3-3@g.us", false);
+        assert_eq!(worker.group_info_queue.len(), 2, "already asked");
         // Forced requests go to the front.
         worker.request_group_info("1-1@g.us", true);
         assert_eq!(
