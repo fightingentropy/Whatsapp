@@ -1,4 +1,5 @@
 import AVFoundation
+import Observation
 import SwiftUI
 
 // Audio route negotiation can block. Keep it off SwiftUI's main actor and
@@ -34,26 +35,29 @@ private final class PreparedAudio: @unchecked Sendable {
     init(url: URL) throws { player = try AVAudioPlayer(contentsOf: url); player.prepareToPlay() }
 }
 
-@MainActor
-final class NativeAudio: NSObject, ObservableObject, AVAudioPlayerDelegate {
-    @Published var playingID: String?
-    @Published var position = 0.0
-    @Published var duration = 0.0
-    @Published var isRecording = false
-    @Published var hasRecording = false
-    @Published var recordingChat: String?
-    private(set) var recordingID: UUID?
-    var quotedMessageID: String?
-    @Published var recordingDuration = 0.0
-    @Published var levels: [Double] = []
-    @Published var error: String?
-    private var player: AVAudioPlayer?
-    private var recorder: AVAudioRecorder?
-    private var recordingURL: URL?
-    private var pcmURL: URL?
-    private var timer: Timer?
-    private var requestingPermission = false
-    private var audioLease: UUID?
+/// Property-scoped observation: the 10 Hz position and level updates only
+/// invalidate the views that read them, not the composer or every voice row.
+@MainActor @Observable
+final class NativeAudio: NSObject, AVAudioPlayerDelegate {
+    var playingID: String?
+    var position = 0.0
+    var duration = 0.0
+    private(set) var isPlaying = false
+    var isRecording = false
+    var hasRecording = false
+    var recordingChat: String?
+    @ObservationIgnored private(set) var recordingID: UUID?
+    @ObservationIgnored var quotedMessageID: String?
+    var recordingDuration = 0.0
+    var levels: [Double] = []
+    var error: String?
+    @ObservationIgnored private var player: AVAudioPlayer?
+    @ObservationIgnored private var recorder: AVAudioRecorder?
+    @ObservationIgnored private var recordingURL: URL?
+    @ObservationIgnored private var pcmURL: URL?
+    @ObservationIgnored private var timer: Timer?
+    @ObservationIgnored private var requestingPermission = false
+    @ObservationIgnored private var audioLease: UUID?
 
     func play(url: URL, id: String) async throws -> Bool {
         guard !hasRecording else { return false }
@@ -65,7 +69,7 @@ final class NativeAudio: NSObject, ObservableObject, AVAudioPlayerDelegate {
                 guard audioLease == token, self.player === player else { AudioSessionControl.release(token); return false }
                 player.play(); startTimer()
             }
-            objectWillChange.send()
+            isPlaying = player.isPlaying
             return player.isPlaying
         }
         stopPlayback()
@@ -77,16 +81,15 @@ final class NativeAudio: NSObject, ObservableObject, AVAudioPlayerDelegate {
         let player = prepared.player
         player.delegate = self
         guard player.play() else { throw CocoaError(.fileReadUnknown) }
-        self.player = player; playingID = id; duration = player.duration; position = 0
+        self.player = player; playingID = id; duration = player.duration; position = 0; isPlaying = true
         startTimer()
         return true
     }
 
-    var isPlaying: Bool { player?.isPlaying == true }
     func seek(_ seconds: Double) { player?.currentTime = max(0, min(duration, seconds)); position = player?.currentTime ?? 0 }
 
     func stopPlayback() {
-        player?.stop(); player = nil; playingID = nil; position = 0; duration = 0
+        player?.stop(); player = nil; playingID = nil; position = 0; duration = 0; isPlaying = false
         if !isRecording { timer?.invalidate(); timer = nil; AudioSessionControl.release(audioLease); audioLease = nil }
     }
 
@@ -124,12 +127,16 @@ final class NativeAudio: NSObject, ObservableObject, AVAudioPlayerDelegate {
             Task { @MainActor in
                 guard let self else { return }
                 if let recorder = self.recorder, self.isRecording {
-                    self.recordingDuration = max(self.recordingDuration, recorder.currentTime)
+                    if recorder.currentTime > self.recordingDuration { self.recordingDuration = recorder.currentTime }
                     recorder.updateMeters()
-                    self.levels.append(pow(10, Double(recorder.averagePower(forChannel: 0)) / 20))
-                    self.levels = Array(self.levels.suffix(64))
+                    let level = pow(10, Double(recorder.averagePower(forChannel: 0)) / 20)
+                    self.levels = Array((self.levels + [level]).suffix(64))
                     if !recorder.isRecording { self.pauseForBackground() }
-                } else if let player = self.player { self.position = player.currentTime }
+                } else if let player = self.player {
+                    if self.position != player.currentTime { self.position = player.currentTime }
+                    // An interruption can pause the player without a delegate callback.
+                    if self.isPlaying != player.isPlaying { self.isPlaying = player.isPlaying }
+                }
             }
         }
     }
@@ -140,6 +147,7 @@ final class NativeAudio: NSObject, ObservableObject, AVAudioPlayerDelegate {
             recorder?.stop(); isRecording = false
         }
         player?.pause(); timer?.invalidate(); timer = nil
+        if isPlaying { isPlaying = false }
         AudioSessionControl.release(audioLease); audioLease = nil
     }
 
@@ -193,7 +201,7 @@ final class NativeAudio: NSObject, ObservableObject, AVAudioPlayerDelegate {
 struct VoicePlaybackView: View {
     let message: Message
     @Environment(ChatStore.self) private var store
-    @ObservedObject var audio: NativeAudio
+    let audio: NativeAudio
     var body: some View {
         VStack(spacing: 6) {
             HStack {

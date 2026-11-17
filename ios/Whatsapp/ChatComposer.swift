@@ -4,7 +4,7 @@ import SwiftUI
 struct ChatComposer: View {
     let chatID: String
     @Binding var draft: String
-    @ObservedObject var audio: NativeAudio
+    let audio: NativeAudio
     @Environment(ChatStore.self) private var store
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -260,13 +260,7 @@ struct ChatComposer: View {
     private var recordingControls: some View {
         HStack {
             Button(role: .destructive) { audio.discardRecording() } label: { Image(systemName: "trash").frame(width: 40, height: 44) }.accessibilityLabel("Discard recording").disabled(store.voiceSending)
-            Circle().fill(audio.isRecording ? .red : .secondary).frame(width: 8, height: 8)
-            Text(Duration.seconds(audio.recordingDuration).formatted(.time(pattern: .minuteSecond))).monospacedDigit()
-            HStack(spacing: 2) {
-                ForEach(Array(audio.levels.suffix(30).enumerated()), id: \.offset) { _, level in
-                    Capsule().fill(Color.accentColor).frame(width: 3, height: max(3, level * 32))
-                }
-            }.frame(maxWidth: .infinity)
+            RecordingMeter(audio: audio)
             Button {
                 sending = true
                 store.sendVoice { _ in sending = false }
@@ -301,5 +295,19 @@ struct ChatComposer: View {
             } catch { store.error = "Could not import these files. Files must be under 100 MB." }
             importing = false
         }
+    }
+}
+
+/// Reads the 10 Hz recording values, so only this row redraws while recording.
+private struct RecordingMeter: View {
+    let audio: NativeAudio
+    var body: some View {
+        Circle().fill(audio.isRecording ? .red : .secondary).frame(width: 8, height: 8)
+        Text(Duration.seconds(audio.recordingDuration).formatted(.time(pattern: .minuteSecond))).monospacedDigit()
+        HStack(spacing: 2) {
+            ForEach(Array(audio.levels.suffix(30).enumerated()), id: \.offset) { _, level in
+                Capsule().fill(Color.accentColor).frame(width: 3, height: max(3, level * 32))
+            }
+        }.frame(maxWidth: .infinity)
     }
 }

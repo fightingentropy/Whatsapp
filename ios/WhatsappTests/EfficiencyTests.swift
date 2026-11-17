@@ -197,6 +197,18 @@ final class EfficiencyTests: XCTestCase {
         XCTAssertTrue(changed.value)
     }
 
+    func testAudioTicksOnlyInvalidateReadersOfPositionAndLevels() {
+        let audio = NativeAudio()
+        let composer = ChangeFlag(), meter = ChangeFlag()
+        withObservationTracking { _ = audio.hasRecording; _ = audio.recordingChat; _ = audio.playingID; _ = audio.isPlaying } onChange: { composer.set() }
+        withObservationTracking { _ = audio.levels; _ = audio.recordingDuration } onChange: { meter.set() }
+        audio.position = 1; audio.levels = [0.5]; audio.recordingDuration = 1
+        XCTAssertFalse(composer.value, "Playback and recording ticks do not redraw the composer or other rows")
+        XCTAssertTrue(meter.value)
+        audio.playingID = "voice"
+        XCTAssertTrue(composer.value)
+    }
+
     func testCachedAvatarCanBeRequestedOffline() {
         let (store, engine) = fixture(); store.status = "connecting"
         store.avatar("a@lid")
