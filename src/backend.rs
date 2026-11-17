@@ -608,7 +608,7 @@ impl Waker {
     }
 
     /// Wakes for worker events. A burst of them (for example a reconnect
-    /// catch-up) draws at most one frame per [`EVENT_BATCH`] instead of
+    /// catch-up) draws at most one frame per `EVENT_BATCH` instead of
     /// back-to-back frames, since repaints are not vsync-limited. Input still
     /// repaints at once.
     pub fn wake_batched(&self) {
