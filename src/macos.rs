@@ -139,16 +139,15 @@ pub fn activate() {
     app.activateIgnoringOtherApps(true);
 }
 
-/// Whether the app's window is minimized to the Dock. egui-winit reads this
+/// Whether the app's window is out of sight although it exists: minimized
+/// to the Dock, or hidden with the app (Cmd+H). egui-winit reads the former
 /// only when a window is created on macOS, so ask AppKit instead.
 pub fn window_minimized() -> bool {
     let Some(main) = objc2::MainThreadMarker::new() else {
         return false;
     };
-    NSApplication::sharedApplication(main)
-        .windows()
-        .iter()
-        .any(|window| window.isMiniaturized())
+    let app = NSApplication::sharedApplication(main);
+    app.isHidden() || app.windows().iter().any(|window| window.isMiniaturized())
 }
 
 /// Releases the closed window's context, with its fonts and image caches.
