@@ -1565,6 +1565,8 @@ impl App {
         if self.open_chat.as_deref() != Some(id.as_str()) {
             self.stop_video();
             self.chat_search.close();
+            // An anchor names a message of the previous chat.
+            self.scroll_anchor = None;
             if let Some(previous) = self.open_chat.take() {
                 if let Some(conversation) = self.conversations.get_mut(&previous) {
                     // Its view may have added row measurements since the last visit.
@@ -1985,6 +1987,7 @@ impl App {
                 self.reply_to = None;
                 self.emoji_start = None;
                 self.mention_start = None;
+                self.scroll_anchor = None;
             }
             Action::SendText {
                 chat,
@@ -4035,6 +4038,31 @@ mod tests {
             app.backend.take_demo_commands().as_slice(),
             [Command::SearchChat { .. }]
         ));
+    }
+
+    #[test]
+    fn switching_chats_drops_the_previous_chats_scroll_anchor() {
+        let mut app = app();
+        let ctx = egui::Context::default();
+        app.link = LinkStatus::Connected;
+        let first = "first@s.whatsapp.net";
+        let second = "second@s.whatsapp.net";
+        app.chats.push(Chat::new(first.into(), "First".into()));
+        app.chats.push(Chat::new(second.into(), "Second".into()));
+        app.apply(Action::OpenChat(first.into()), &ctx);
+        let conversation = app.conversations.get_mut(first).unwrap();
+        conversation.merge(vec![message(first, "oldest", 1)], false);
+        conversation.loading_initial = false;
+        conversation.complete = true;
+        app.fetch_older(first);
+        assert_eq!(app.scroll_anchor.as_deref(), Some("oldest"));
+
+        app.apply(Action::OpenChat(second.into()), &ctx);
+        assert!(app.scroll_anchor.is_none());
+
+        app.scroll_anchor = Some("oldest".into());
+        app.apply(Action::CloseChat, &ctx);
+        assert!(app.scroll_anchor.is_none());
     }
 
     fn message(chat: &str, id: &str, timestamp: i64) -> Message {
