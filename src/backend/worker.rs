@@ -525,6 +525,10 @@ impl Worker {
     }
 
     fn load_state(&mut self) {
+        // Sends in flight when the last session ended were dropped with it.
+        if let Err(error) = self.archive.fail_interrupted_sends() {
+            log::warn!("could not mark interrupted sends as failed: {error}");
+        }
         self.me_pn = self.archive.meta("me_pn").ok().flatten();
         self.me_lid = self.archive.meta("me_lid").ok().flatten();
         self.me_name = self.archive.meta("me_name").ok().flatten();
@@ -7336,6 +7340,29 @@ mod receipt_tests {
             })
             .await;
         assert!(events.try_iter().any(|event| matches!(event, Event::Messages { chat, messages, .. } if chat == PEER && messages.len() == 2)));
+    }
+
+    #[test]
+    fn startup_fails_sends_the_previous_session_left_pending() {
+        let (mut worker, events, _inbox, _wa) = worker();
+        worker.archive.ensure_chat(PEER, "Peer").unwrap();
+        let pending = Message {
+            status: Delivery::Pending,
+            ..own_message("m1", 10)
+        };
+        worker
+            .archive
+            .insert_message(&pending, Some(b"keys"))
+            .unwrap();
+        worker.load_state();
+        assert_eq!(
+            worker.archive.message(PEER, "m1").unwrap().unwrap().status,
+            Delivery::Failed
+        );
+        assert!(events.try_iter().any(|event| matches!(
+            event,
+            Event::Chats(chats) if chats.iter().any(|chat| chat.id == PEER)
+        )));
     }
 
     #[test]

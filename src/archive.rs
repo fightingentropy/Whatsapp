@@ -1177,7 +1177,8 @@ impl Archive {
     }
 
     /// Advances delivery state, except that `Failed` may replace it. Stores the
-    /// first timestamp for each delivery stage.
+    /// first timestamp for each delivery stage. A delivery or read receipt for
+    /// a failed message proves it went out, so it replaces `Failed`.
     pub fn set_status(&self, chat: &str, id: &str, status: Delivery, at: i64) -> Result<bool> {
         let rank = status_rank(status);
         let changed = if status == Delivery::Failed {
@@ -1189,7 +1190,7 @@ impl Archive {
             self.connection.execute(
                 &format!(
                     "UPDATE messages SET status = ?3, {column} = COALESCE({column}, ?4)
-                     WHERE chat = ?1 AND id = ?2 AND status < ?3"
+                     WHERE chat = ?1 AND id = ?2 AND (status < ?3 OR status = 6)"
                 ),
                 params![chat, id, rank, at],
             )?
@@ -1200,6 +1201,19 @@ impl Archive {
             )?
         };
         Ok(changed > 0)
+    }
+
+    /// Marks outgoing messages that were still being sent when the previous
+    /// session ended as failed, so they can be retried. Their send tasks did
+    /// not survive the restart.
+    pub fn fail_interrupted_sends(&self) -> Result<usize> {
+        self.connection.execute(
+            "UPDATE messages SET status = ?2 WHERE from_me = 1 AND status = ?1",
+            params![
+                status_rank(Delivery::Pending),
+                status_rank(Delivery::Failed)
+            ],
+        )
     }
 
     /// Only an explicit retry can move an outgoing failure back to pending.
@@ -2230,6 +2244,45 @@ mod tests {
             ]
         );
         assert_eq!(messages[0].read_at, Some(400));
+    }
+
+    #[test]
+    fn interrupted_sends_fail_and_a_later_receipt_still_counts() {
+        let archive = Archive::in_memory().unwrap();
+        archive.ensure_chat("chat", "Test").unwrap();
+        // `message(.., true)` is a pending outgoing row.
+        archive
+            .insert_message(&message("chat", "pending", 10, true), Some(b"keys"))
+            .unwrap();
+        archive
+            .insert_message(&message("chat", "stalled", 11, true), Some(b"keys"))
+            .unwrap();
+        let mut sent = message("chat", "sent", 12, true);
+        sent.status = Delivery::Sent;
+        archive.insert_message(&sent, None).unwrap();
+        archive
+            .insert_message(&message("chat", "incoming", 13, false), None)
+            .unwrap();
+        assert_eq!(archive.fail_interrupted_sends().unwrap(), 2);
+        let status = |id: &str| archive.message("chat", id).unwrap().unwrap().status;
+        assert_eq!(status("pending"), Delivery::Failed);
+        assert_eq!(status("sent"), Delivery::Sent);
+        assert_eq!(status("incoming"), Delivery::None);
+        // A read of a later message proves nothing about a failed one...
+        archive
+            .advance_statuses("chat", 20, Delivery::Read, 30)
+            .unwrap();
+        assert_eq!(status("pending"), Delivery::Failed);
+        // ...but a receipt naming it does.
+        assert!(
+            archive
+                .set_status("chat", "pending", Delivery::Delivered, 31)
+                .unwrap()
+        );
+        assert_eq!(status("pending"), Delivery::Delivered);
+        // An explicit retry still sends the other one again.
+        assert!(archive.retry_failed("chat", "stalled").unwrap());
+        assert_eq!(status("stalled"), Delivery::Pending);
     }
 
     #[test]
