@@ -3,7 +3,7 @@ use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, mpsc};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
@@ -15,54 +15,111 @@ struct Job {
     request: String,
     source: PathBuf,
     cache: PathBuf,
+    cancel: Arc<AtomicBool>,
 }
 
+/// One conversion runs and only the latest request waits: a newer tap
+/// supersedes the waiting job and cancels the running one.
+#[derive(Default)]
+struct Slot {
+    pending: Option<Job>,
+    running: Option<Arc<AtomicBool>>,
+    stopped: bool,
+}
+
+type Wake = Arc<Mutex<Option<extern "C" fn()>>>;
+
 pub(super) struct AudioJobs {
-    sender: mpsc::SyncSender<Job>,
+    shared: Arc<(Mutex<Slot>, Condvar)>,
+    output: mpsc::Sender<Value>,
     results: mpsc::Receiver<Value>,
-    cancelled: Arc<AtomicBool>,
-    wake: Arc<Mutex<Option<extern "C" fn()>>>,
+    wake: Wake,
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+fn signal(wake: &Wake) {
+    // Held while calling, so Drop cannot return while a callback is running.
+    if let Some(wake) = *lock(wake) {
+        wake();
+    }
 }
 
 impl AudioJobs {
     pub(super) fn new(callback: Option<extern "C" fn()>) -> Self {
-        let (sender, receiver) = mpsc::sync_channel::<Job>(1);
+        let shared = Arc::new((Mutex::new(Slot::default()), Condvar::new()));
         let (output, results) = mpsc::channel();
-        let cancelled = Arc::new(AtomicBool::new(false));
         let wake = Arc::new(Mutex::new(callback));
-        let stopped = cancelled.clone();
-        let signal = wake.clone();
+        let worker = shared.clone();
+        let sender = output.clone();
+        let wakeup = wake.clone();
         std::thread::spawn(move || {
-            while let Ok(job) = receiver.recv() {
-                if stopped.load(Ordering::Acquire) {
-                    break;
+            let (slot, ready) = &*worker;
+            loop {
+                let job = {
+                    let mut state = lock(slot);
+                    loop {
+                        if state.stopped {
+                            return;
+                        }
+                        if let Some(job) = state.pending.take() {
+                            state.running = Some(job.cancel.clone());
+                            break job;
+                        }
+                        state = ready.wait(state).unwrap_or_else(|p| p.into_inner());
+                    }
+                };
+                // A cancelled conversion fails and removes its own partial file.
+                let path = convert(&job.source, &job.cache, &job.cancel).ok();
+                {
+                    let mut state = lock(slot);
+                    state.running = None;
+                    if state.stopped {
+                        return;
+                    }
                 }
-                let path = convert(&job.source, &job.cache, &stopped).ok();
-                if stopped.load(Ordering::Acquire) {
-                    break;
-                }
-                let _ = output.send(json!({"type":"audio","id":job.request,"path":path}));
-                if let Some(wake) = *signal.lock().unwrap_or_else(|p| p.into_inner()) {
-                    wake();
-                }
+                let _ = sender.send(json!({"type":"audio","id":job.request,"path":path}));
+                signal(&wakeup);
             }
         });
         Self {
-            sender,
+            shared,
+            output,
             results,
-            cancelled,
             wake,
         }
     }
 
+    /// Accepts every request while running. A superseded waiting request
+    /// is answered at once without a file, so its callback is released.
     pub(super) fn submit(&self, request: String, source: PathBuf, cache: PathBuf) -> bool {
-        self.sender
-            .try_send(Job {
+        let (slot, ready) = &*self.shared;
+        let superseded = {
+            let mut state = lock(slot);
+            if state.stopped {
+                return false;
+            }
+            if let Some(running) = &state.running {
+                running.store(true, Ordering::Release);
+            }
+            let previous = state.pending.replace(Job {
                 request,
                 source,
                 cache,
-            })
-            .is_ok()
+                cancel: Arc::new(AtomicBool::new(false)),
+            });
+            ready.notify_one();
+            previous
+        };
+        if let Some(job) = superseded {
+            let _ = self
+                .output
+                .send(json!({"type":"audio","id":job.request,"path":Value::Null}));
+            signal(&self.wake);
+        }
+        true
     }
 
     pub(super) fn poll(&self) -> Vec<Value> {
@@ -72,9 +129,18 @@ impl AudioJobs {
 
 impl Drop for AudioJobs {
     fn drop(&mut self) {
-        self.cancelled.store(true, Ordering::Release);
+        let (slot, ready) = &*self.shared;
+        {
+            let mut state = lock(slot);
+            state.stopped = true;
+            state.pending = None;
+            if let Some(running) = &state.running {
+                running.store(true, Ordering::Release);
+            }
+        }
+        ready.notify_all();
         // No callback may outlive wa_stop, even if a decoder is being cancelled.
-        *self.wake.lock().unwrap_or_else(|p| p.into_inner()) = None;
+        *lock(&self.wake) = None;
     }
 }
 
@@ -230,6 +296,43 @@ mod tests {
                 .count(),
             16
         );
+    }
+
+    #[test]
+    fn rapid_requests_are_all_answered_and_the_latest_is_converted() {
+        let root = tempfile::tempdir().unwrap();
+        let cache = root.path().join("preview");
+        let clips: Vec<_> = [8 * 48_000, 48_000, 24_000]
+            .into_iter()
+            .enumerate()
+            .map(|(index, samples)| {
+                let source = root.path().join(format!("voice-{index}.ogg"));
+                fs::write(&source, crate::voice::encode(&vec![0.2; samples]).unwrap()).unwrap();
+                source
+            })
+            .collect();
+        let jobs = AudioJobs::new(None);
+        for (index, source) in clips.iter().enumerate() {
+            assert!(jobs.submit(format!("request-{index}"), source.clone(), cache.clone()));
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut results = Vec::new();
+        while results.len() < 3 && std::time::Instant::now() < deadline {
+            results.extend(jobs.poll());
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let mut ids: Vec<_> = results
+            .iter()
+            .map(|value| value["id"].as_str().unwrap().to_owned())
+            .collect();
+        ids.sort();
+        assert_eq!(ids, ["request-0", "request-1", "request-2"]);
+        let latest = results
+            .iter()
+            .find(|value| value["id"] == "request-2")
+            .unwrap();
+        let wave = fs::read(latest["path"].as_str().unwrap()).unwrap();
+        assert_eq!(&wave[..4], b"RIFF");
     }
 
     #[test]
