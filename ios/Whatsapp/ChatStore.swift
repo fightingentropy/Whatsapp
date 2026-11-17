@@ -537,7 +537,9 @@ final class ChatStore {
                 if status == "failed" { error = event.detail ?? "Could not connect to WhatsApp." }
             case "me": accountName = event.name ?? "Your account"; accountID = event.id; accountAbout = event.about
             case "chats":
-                for chat in event.chats ?? [] {
+                // The worker re-emits unchanged rows (such as a read echo);
+                // skip them so the chat list is not rebuilt for nothing.
+                for chat in event.chats ?? [] where chatsByID[chat.id] != chat {
                     chatUpdates[chat.id] = chat
                     chatsByID[chat.id] = chat
                     let state = identity(chat.id)
@@ -565,7 +567,10 @@ final class ChatStore {
                     resolveJump()
                 }
                 trimConversation(towardOlder: event.older == true)
-                markRead()
+                // Opening already marked the chat read. Pages and our own sends
+                // need no new read unless something is still unread.
+                if (event.requested != true && event.older != true && incoming.contains(where: { !$0.fromMe }))
+                    || (currentChat?.unread ?? 0) > 0 { markRead() }
             case "around":
                 guard event.chat.map(canonical) == selectedChat else { continue }
                 messages = event.messages ?? []; loading = false; loadingNewer = false

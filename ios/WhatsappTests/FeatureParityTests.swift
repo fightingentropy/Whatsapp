@@ -1,4 +1,5 @@
 import XCTest
+import Observation
 @testable import Whatsapp
 
 @MainActor
@@ -65,6 +66,39 @@ final class FeatureParityTests: XCTestCase {
         store.sendText("Edited content") { XCTAssertFalse($0) }
         XCTAssertEqual(store.editing?.id, message.id)
         XCTAssertEqual(store.draftBeforeEditing, "Original unsent draft")
+    }
+
+    func testPagesAndUnchangedChatsDoNotRepeatReadsOrRebuildTheList() {
+        let (store, engine, _) = fixture()
+        func chats(unread: Int, preview: String = "") -> CoreEvent {
+            var event = CoreEvent(type: "chats"); var chat = store.chats[0]
+            chat.unread = unread; chat.preview = preview; event.chats = [chat]; return event
+        }
+        func messages(_ id: String, requested: Bool, fromMe: Bool = false) -> CoreEvent {
+            var event = CoreEvent(type: "messages"); event.chat = "fixture@g.us"; event.requested = requested; event.complete = false
+            event.messages = [ChatStore.sampleMessage(id: id, chat: "fixture@g.us", text: "Hello", fromMe: fromMe, time: 10)]
+            return event
+        }
+        func reads() -> Int { engine.commands.filter { $0["type"] as? String == "read" }.count }
+        store.apply([chats(unread: 0)]); engine.commands = []
+        store.apply([messages("page", requested: true)])
+        XCTAssertEqual(reads(), 0, "Opening already marked the chat read")
+        store.apply([messages("own", requested: false, fromMe: true)])
+        XCTAssertEqual(reads(), 0)
+        store.apply([messages("incoming", requested: false)])
+        XCTAssertEqual(reads(), 1)
+        store.apply([chats(unread: 2)]); engine.commands = []
+        store.apply([messages("older", requested: true)])
+        XCTAssertEqual(reads(), 1, "Unread messages are still read")
+
+        let unchanged = ReadChange(), changed = ReadChange()
+        withObservationTracking { _ = store.chats } onChange: { unchanged.set() }
+        store.apply([chats(unread: 2)])
+        XCTAssertFalse(unchanged.value)
+        withObservationTracking { _ = store.chats } onChange: { changed.set() }
+        store.apply([chats(unread: 2, preview: "New preview")])
+        XCTAssertTrue(changed.value)
+        XCTAssertEqual(store.chats[0].preview, "New preview")
     }
 
     func testReadPrivacyIsResolvedForTheTargetChat() {
@@ -241,6 +275,13 @@ final class FeatureParityTests: XCTestCase {
         XCTAssertEqual(voice.content?.waveform, [0, 64, 100]); XCTAssertEqual(voice.content?.seconds, 12)
         XCTAssertEqual(voice.reactionDetails?.first?.from_me, true); XCTAssertEqual(voice.readAt, 3)
     }
+}
+
+private final class ReadChange: @unchecked Sendable {
+    private let lock = NSLock()
+    private var changed = false
+    var value: Bool { lock.withLock { changed } }
+    func set() { lock.withLock { changed = true } }
 }
 
 private final class RecordingEngine: MessagingEngine {
