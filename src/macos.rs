@@ -104,8 +104,10 @@ pub fn attach(ctx: &egui::Context) {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .push(event.id.0);
-        if let Some(ctx) = &*REPAINT.lock().unwrap_or_else(|p| p.into_inner()) {
-            ctx.request_repaint();
+        match &*REPAINT.lock().unwrap_or_else(|p| p.into_inner()) {
+            Some(ctx) => ctx.request_repaint(),
+            // No window: wake the headless loop instead.
+            None => crate::background::wake(),
         }
     }));
     MENU.with_borrow_mut(|menu| {
@@ -122,6 +124,12 @@ pub fn attach(ctx: &egui::Context) {
     // Demo windows have no tray to activate the app. This also brings a newly
     // recreated window forward after a menu command while running headless.
     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+}
+
+/// Releases the closed window's context, with its fonts and image caches.
+/// The next window attaches its own; menu events meanwhile wake the headless loop.
+pub fn detach() {
+    *REPAINT.lock().unwrap_or_else(|p| p.into_inner()) = None;
 }
 
 /// A native file dialog runs a modal loop, so its text fields must receive
@@ -309,6 +317,14 @@ pub fn update_window(frame: &eframe::Frame, ctx: &egui::Context, linked: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn detach_releases_the_window_context() {
+        // `attach` returns early off the main thread, so tests never race it.
+        *REPAINT.lock().unwrap() = Some(egui::Context::default());
+        detach();
+        assert!(REPAINT.lock().unwrap().is_none());
+    }
 
     #[test]
     fn menu_uses_the_apps_close_quit_and_edit_paths() {

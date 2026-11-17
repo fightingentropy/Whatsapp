@@ -507,6 +507,8 @@ impl App {
 
     /// Updates the linked app while no window exists.
     pub fn window_gone(&mut self) {
+        #[cfg(target_os = "macos")]
+        crate::macos::detach();
         self.stop_video();
         self.window_hidden = true;
         self.window_focused = false;
