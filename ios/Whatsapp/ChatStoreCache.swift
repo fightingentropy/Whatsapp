@@ -43,18 +43,30 @@ extension ChatStore {
     }
 
     func trimConversation(towardOlder: Bool) {
-        guard !isDemo, !selectionActive, pendingJump == nil, reply == nil, editing == nil,
-              !messages.contains(where: { $0.status == "pending" || $0.mediaState == "downloading" }) else { return }
+        guard !isDemo, !selectionActive, pendingJump == nil else { return }
         let anchor = scrollTarget ?? visibleMessageIDs.first
         let bounds = ConversationWindow.bounds(messages, anchor: anchor, towardOlder: towardOlder)
         guard bounds.count < messages.count else { return }
-        // Never trim any visible row, even during a fast gesture.
-        let retainedIDs = Set(messages[bounds].map(\.id))
-        guard visibleMessageIDs.allSatisfy(retainedIDs.contains) else { return }
-        if bounds.lowerBound > 0 { archiveComplete = false }
-        if bounds.upperBound < messages.count { newerComplete = false }
-        if let anchor, retainedIDs.contains(anchor) { restoredAnchor = anchor }
-        messages = Array(messages[bounds])
+        // Widen the window to keep visible rows (even during a fast gesture),
+        // the message being edited, downloads and recent sends. Archived
+        // history can stay "pending" forever, so only recent sends count.
+        // The reply quote is held by value and needs no row.
+        let now = Date().timeIntervalSince1970
+        var protected = Set(visibleMessageIDs)
+        if let id = editing?.id { protected.insert(id) }
+        let kept = messages.indices.filter { index in
+            let message = messages[index]
+            return protected.contains(message.id) || message.mediaState == "downloading"
+                || (message.fromMe && message.status == "pending" && now - message.timestamp < 600)
+        }
+        let lower = min(bounds.lowerBound, kept.first ?? bounds.lowerBound)
+        let upper = max(bounds.upperBound, (kept.last ?? bounds.upperBound - 1) + 1)
+        guard upper - lower < messages.count else { return }
+        let retained = lower..<upper
+        if retained.lowerBound > 0 { archiveComplete = false }
+        if retained.upperBound < messages.count { newerComplete = false }
+        if let anchor, messages[retained].contains(where: { $0.id == anchor }) { restoredAnchor = anchor }
+        messages = Array(messages[retained])
     }
 
     func loadNewer() {

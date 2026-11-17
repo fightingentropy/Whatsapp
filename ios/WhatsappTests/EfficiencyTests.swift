@@ -156,9 +156,35 @@ final class EfficiencyTests: XCTestCase {
         let (store, _) = fixture(); store.messages = (0..<900).map { message($0) }
         store.selectionActive = true; store.trimConversation(towardOlder: false)
         XCTAssertEqual(store.messages.count, 900)
-        store.selectionActive = false; store.reply = store.messages[0]
-        store.trimConversation(towardOlder: false); XCTAssertEqual(store.messages.count, 900)
-        store.reply = nil; store.trimConversation(towardOlder: false)
+        store.selectionActive = false; let quote = store.messages[0]; store.reply = quote
+        store.trimConversation(towardOlder: false)
+        XCTAssertLessThanOrEqual(store.messages.count, ConversationWindow.countLimit, "A quote is kept by value")
+        XCTAssertEqual(store.reply, quote)
+    }
+
+    func testInFlightRowsAreRetainedWithoutDisablingTrim() {
+        let (store, _) = fixture()
+        func pending(_ n: Int, time: Double) -> Message {
+            ChatStore.sampleMessage(id: String(format: "%05d", n), chat: "a@lid", text: "Fixture", fromMe: true, time: time, status: "pending")
+        }
+        store.messages = (0..<900).map { message($0) }; store.messages[200].mediaState = "downloading"
+        store.trimConversation(towardOlder: false)
+        XCTAssertEqual(store.messages.first?.id, "00200", "The window widens to the download")
+        XCTAssertEqual(store.messages.last?.id, "00899"); XCTAssertFalse(store.archiveComplete)
+
+        store.messages = (0..<900).map { message($0) }; store.messages[1] = pending(1, time: 1)
+        store.trimConversation(towardOlder: false)
+        XCTAssertLessThanOrEqual(store.messages.count, ConversationWindow.countLimit, "Archived pending history does not block trimming")
+
+        store.messages = (0..<900).map { message($0) }
+        store.messages[100] = pending(100, time: Date().timeIntervalSince1970 - 5)
+        store.trimConversation(towardOlder: false)
+        XCTAssertEqual(store.messages.first?.id, "00100", "A recent send stays in the window")
+
+        store.messages = (0..<900).map { message($0) }; store.editing = store.messages[10]
+        store.trimConversation(towardOlder: false)
+        XCTAssertEqual(store.messages.first?.id, "00010", "The edited message stays in the window")
+        store.editing = nil; store.trimConversation(towardOlder: false)
         XCTAssertLessThanOrEqual(store.messages.count, ConversationWindow.countLimit)
     }
 
