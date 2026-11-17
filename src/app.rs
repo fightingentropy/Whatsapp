@@ -4264,6 +4264,7 @@ mod tests {
             sender: chat.into(),
             from_me: false,
             emoji: "👍".into(),
+            sent_at: 0,
         });
         let mut unloaded = message(chat, "b", 2);
         unloaded.status = Delivery::Delivered;

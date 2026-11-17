@@ -405,7 +405,8 @@ struct ParsedMessage {
     content: Content,
     status: Delivery,
     quoted: Option<Quoted>,
-    reactions: Vec<(Option<String>, bool, String)>,
+    /// Reactor, whether it is ours, the emoji and when it was sent (ms, or zero).
+    reactions: Vec<(Option<String>, bool, String, i64)>,
     mentions: Vec<String>,
     forwarded: bool,
     thumbnail: Option<Vec<u8>>,
@@ -1950,6 +1951,7 @@ impl Worker {
             &reaction.sender,
             reaction.from_me,
             &reaction.body,
+            reaction.sent_at,
         ) {
             Ok(Some(mut updated)) => {
                 self.polish_mentions(&mut updated);
@@ -2269,7 +2271,7 @@ impl Worker {
                 let reactions = message
                     .reactions
                     .into_iter()
-                    .map(|(who, from_me, emoji)| Reaction {
+                    .map(|(who, from_me, emoji, sent_at)| Reaction {
                         sender: if from_me {
                             self.me()
                         } else {
@@ -2279,6 +2281,7 @@ impl Worker {
                         },
                         from_me,
                         emoji,
+                        sent_at,
                     })
                     .collect();
                 let quoted = message.quoted.map(|quoted| {
@@ -4887,7 +4890,8 @@ impl Worker {
             return;
         };
         let me = self.me();
-        if let Ok(Some(mut updated)) = self.archive.set_reaction(&chat, &id, &me, true, &emoji) {
+        // No send time: our clock must not outrank a later change from the phone.
+        if let Ok(Some(mut updated)) = self.archive.set_reaction(&chat, &id, &me, true, &emoji, 0) {
             self.polish_mentions(&mut updated);
             self.emit(Event::MessageUpdated(Box::new(updated)));
         }
@@ -6428,7 +6432,12 @@ fn parse_conversation(conversation: wa::Conversation) -> ParsedChat {
                 let key = reaction.key.as_option();
                 let from_me = key.and_then(|key| key.from_me).unwrap_or(false);
                 let who = key.and_then(|key| key.participant.clone());
-                Some((who, from_me, text))
+                Some((
+                    who,
+                    from_me,
+                    text,
+                    reaction.sender_timestamp_ms.unwrap_or_default(),
+                ))
             })
             .collect();
         messages.push(ParsedMessage {
@@ -6918,6 +6927,7 @@ mod tests {
                 sender: "two@s.whatsapp.net".into(),
                 from_me: false,
                 emoji: "👍".into(),
+                sent_at: 0,
             }],
             edited: true,
             mentions: Vec::new(),
@@ -8942,6 +8952,7 @@ mod receipt_tests {
             sender: PEER.into(),
             from_me: false,
             emoji: "👍".into(),
+            sent_at: 0,
         });
         worker.store_history_batch(&mut vec![(row, vec![])]);
         assert_eq!(unread(&worker), 1, "newer arrivals remain unread");
@@ -9329,6 +9340,45 @@ mod receipt_tests {
         // The startup sweep fails Pending rows and offers Retry; the phone's
         // own queued message must not be resent from here.
         assert_eq!(status, Delivery::Sent);
+    }
+
+    #[test]
+    fn history_reactions_carry_when_they_were_sent() {
+        let reactions = parse_conversation(wa::Conversation {
+            id: PEER.into(),
+            messages: vec![wa::HistorySyncMsg {
+                message: MessageField::some(wa::WebMessageInfo {
+                    key: MessageField::some(wa::MessageKey {
+                        id: Some("reacted".into()),
+                        from_me: Some(true),
+                        ..Default::default()
+                    }),
+                    message: MessageField::some(wa::Message {
+                        conversation: Some("synthetic".into()),
+                        ..Default::default()
+                    }),
+                    reactions: vec![wa::Reaction {
+                        key: MessageField::some(wa::MessageKey {
+                            from_me: Some(false),
+                            ..Default::default()
+                        }),
+                        text: Some("+1".into()),
+                        sender_timestamp_ms: Some(1_750_000_000_123),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        })
+        .messages
+        .remove(0)
+        .reactions;
+        assert_eq!(
+            reactions,
+            [(None, false, "+1".to_owned(), 1_750_000_000_123)]
+        );
     }
 
     #[test]

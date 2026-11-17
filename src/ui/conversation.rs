@@ -4147,6 +4147,7 @@ mod reaction_tests {
             sender: if from_me { "me" } else { "them" }.into(),
             from_me,
             emoji: emoji.into(),
+            sent_at: 0,
         }
     }
 

@@ -675,7 +675,12 @@ impl Archive {
                     THEN messages.status ELSE excluded.status END,
                 quoted = COALESCE(excluded.quoted, quoted),
                 reactions = (SELECT json_group_array(json(value)) FROM (
-                    SELECT value FROM json_each(messages.reactions)
+                    SELECT COALESCE((SELECT source.value FROM json_each(excluded.reactions) source
+                        WHERE json_extract(source.value, '$.sender') = json_extract(kept.value, '$.sender')
+                          AND COALESCE(json_extract(source.value, '$.sent_at'), 0)
+                            > COALESCE(json_extract(kept.value, '$.sent_at'), 0)
+                        LIMIT 1), kept.value) AS value
+                    FROM json_each(messages.reactions) kept
                     UNION ALL SELECT value FROM json_each(excluded.reactions) source
                     WHERE NOT EXISTS (SELECT 1 FROM json_each(messages.reactions) kept
                         WHERE json_extract(kept.value, '$.sender') = json_extract(source.value, '$.sender')))),
@@ -1326,7 +1331,9 @@ impl Archive {
         Ok(pn.map_or_else(|| id.to_owned(), |pn| format!("{pn}@s.whatsapp.net")))
     }
 
-    /// Upserts a reaction, or removes it when the emoji is empty.
+    /// Upserts a reaction, or removes it when the emoji is empty. `sent_at` is
+    /// when the reactor sent it, in milliseconds (zero when unknown); a change
+    /// older than the reaction already stored for that person is ignored.
     pub fn set_reaction(
         &self,
         chat: &str,
@@ -1334,6 +1341,7 @@ impl Archive {
         sender: &str,
         from_me: bool,
         emoji: &str,
+        sent_at: i64,
     ) -> Result<Option<Message>> {
         let Some(mut message) = self.message(chat, id)? else {
             return Ok(None);
@@ -1350,6 +1358,14 @@ impl Archive {
                 reaction.sender = self.phone_identity(&reaction.sender)?;
             }
         }
+        if sent_at > 0
+            && message
+                .reactions
+                .iter()
+                .any(|reaction| reaction.sender == sender && reaction.sent_at > sent_at)
+        {
+            return Ok(Some(message));
+        }
         let mut seen = std::collections::HashSet::new();
         message.reactions.reverse();
         message
@@ -1361,6 +1377,7 @@ impl Archive {
                 sender,
                 from_me,
                 emoji: emoji.to_owned(),
+                sent_at,
             });
         }
         self.connection.execute(
@@ -1793,14 +1810,14 @@ mod tests {
             .insert_message(&message(group, "m", 10, false), None)
             .unwrap();
         archive
-            .set_reaction(group, "m", "111@lid", false, "+1")
+            .set_reaction(group, "m", "111@lid", false, "+1", 0)
             .unwrap();
         archive
-            .set_reaction(group, "m", "333@s.whatsapp.net", false, "wow")
+            .set_reaction(group, "m", "333@s.whatsapp.net", false, "wow", 0)
             .unwrap();
         archive.put_lid("111", "222").unwrap();
         let updated = archive
-            .set_reaction(group, "m", "222@s.whatsapp.net", false, "heart")
+            .set_reaction(group, "m", "222@s.whatsapp.net", false, "heart", 0)
             .unwrap()
             .unwrap();
         let reactions = |message: &Message| {
@@ -1822,7 +1839,7 @@ mod tests {
         );
         // Removing it by either identity leaves the other person's reaction.
         let removed = archive
-            .set_reaction(group, "m", "111@lid", false, "")
+            .set_reaction(group, "m", "111@lid", false, "", 0)
             .unwrap()
             .unwrap();
         assert_eq!(reactions(&removed), [pair("333@s.whatsapp.net", "wow")]);
@@ -1876,10 +1893,10 @@ mod tests {
         };
         archive.insert_message(&stub, None).unwrap();
         archive
-            .set_reaction("chat", "stub", "a@s.whatsapp.net", false, "+1")
+            .set_reaction("chat", "stub", "a@s.whatsapp.net", false, "+1", 0)
             .unwrap();
         archive
-            .set_reaction("chat", "stub", "b@s.whatsapp.net", false, "heart")
+            .set_reaction("chat", "stub", "b@s.whatsapp.net", false, "heart", 0)
             .unwrap();
         let mut real = message("chat", "stub", 30, false);
         archive.insert_message(&real, Some(b"keys")).unwrap();
@@ -1906,6 +1923,7 @@ mod tests {
                 sender: sender.into(),
                 from_me: false,
                 emoji: "older".into(),
+                sent_at: 0,
             })
             .into();
         archive.insert_message(&real, None).unwrap();
@@ -1917,6 +1935,91 @@ mod tests {
                 pair("c@s.whatsapp.net", "older")
             ]
         );
+    }
+
+    #[test]
+    fn the_newer_of_two_reactions_by_one_person_wins() {
+        let archive = Archive::in_memory().unwrap();
+        archive.ensure_chat("chat", "Test").unwrap();
+        let reacted = |pairs: &[(&str, &str, i64)]| {
+            let mut row = message("chat", "m", 10, false);
+            row.reactions = pairs
+                .iter()
+                .map(|(sender, emoji, sent_at)| crate::model::Reaction {
+                    sender: (*sender).into(),
+                    from_me: false,
+                    emoji: (*emoji).into(),
+                    sent_at: *sent_at,
+                })
+                .collect();
+            row
+        };
+        let stored = || {
+            archive
+                .message("chat", "m")
+                .unwrap()
+                .unwrap()
+                .reactions
+                .into_iter()
+                .map(|reaction| (reaction.sender, reaction.emoji, reaction.sent_at))
+                .collect::<Vec<_>>()
+        };
+        let row = |sender: &str, emoji: &str, sent_at: i64| {
+            (sender.to_owned(), emoji.to_owned(), sent_at)
+        };
+        // "a" has a dated reaction, "b" one from before send times were kept.
+        archive
+            .insert_message(&reacted(&[("a", "+1", 2000), ("b", "old", 0)]), None)
+            .unwrap();
+
+        // A replay with a newer reaction corrects the stored one; a dated one
+        // replaces an undated one; a new person is added.
+        archive
+            .insert_message(
+                &reacted(&[("a", "heart", 3000), ("b", "wow", 500), ("c", "new", 100)]),
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            stored(),
+            [
+                row("a", "heart", 3000),
+                row("b", "wow", 500),
+                row("c", "new", 100)
+            ]
+        );
+
+        // An older snapshot, or one without send times, changes nothing, and a
+        // re-filed message with no reactions keeps them all.
+        archive
+            .insert_message(&reacted(&[("a", "stale", 2500), ("b", "undated", 0)]), None)
+            .unwrap();
+        archive.insert_message(&reacted(&[]), None).unwrap();
+        assert_eq!(
+            stored(),
+            [
+                row("a", "heart", 3000),
+                row("b", "wow", 500),
+                row("c", "new", 100)
+            ]
+        );
+
+        // A live change or removal older than the stored reaction is ignored;
+        // a newer one applies.
+        archive
+            .set_reaction("chat", "m", "a", false, "late", 2900)
+            .unwrap();
+        archive
+            .set_reaction("chat", "m", "a", false, "", 2900)
+            .unwrap();
+        assert_eq!(stored()[0], row("a", "heart", 3000));
+        archive
+            .set_reaction("chat", "m", "c", false, "", 200)
+            .unwrap();
+        archive
+            .set_reaction("chat", "m", "a", false, "fire", 4000)
+            .unwrap();
+        assert_eq!(stored(), [row("b", "wow", 500), row("a", "fire", 4000)]);
     }
 
     #[test]
@@ -2471,16 +2574,16 @@ mod tests {
             .insert_message(&message(chat, "m1", 100, false), None)
             .expect("insert");
         archive
-            .set_reaction(chat, "m1", chat, false, "👍")
+            .set_reaction(chat, "m1", chat, false, "👍", 0)
             .expect("react");
         let updated = archive
-            .set_reaction(chat, "m1", chat, false, "❤️")
+            .set_reaction(chat, "m1", chat, false, "❤️", 0)
             .expect("react")
             .expect("exists");
         assert_eq!(updated.reactions.len(), 1);
         assert_eq!(updated.reactions[0].emoji, "❤️");
         let removed = archive
-            .set_reaction(chat, "m1", chat, false, "")
+            .set_reaction(chat, "m1", chat, false, "", 0)
             .expect("react")
             .expect("exists");
         assert!(removed.reactions.is_empty());

@@ -238,6 +238,7 @@ mod tests {
             sender: "one@s.whatsapp.net".into(),
             from_me: false,
             emoji: "👍".into(),
+            sent_at: 0,
         });
         archive
             .insert_message(&duplicate, Some(b"shared attachment keys"))

@@ -508,11 +508,13 @@ pub fn populate(app: &mut App) {
                 sender: ME.into(),
                 from_me: true,
                 emoji: "❤️".into(),
+                sent_at: 0,
             });
             row.reactions.push(Reaction {
                 sender: ada.into(),
                 from_me: false,
                 emoji: "😂".into(),
+                sent_at: 0,
             });
             row
         },
@@ -731,11 +733,13 @@ pub fn populate(app: &mut App) {
                 sender: jonas.0.into(),
                 from_me: false,
                 emoji: "🔥".into(),
+                sent_at: 0,
             });
             row.reactions.push(Reaction {
                 sender: ME.into(),
                 from_me: true,
                 emoji: "🔥".into(),
+                sent_at: 0,
             });
             row
         },

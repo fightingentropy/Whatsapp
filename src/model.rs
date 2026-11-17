@@ -202,6 +202,14 @@ pub struct Reaction {
     pub sender: String,
     pub from_me: bool,
     pub emoji: String,
+    /// When the reactor sent it, in milliseconds; zero when unknown. The
+    /// newer of two reactions by one person wins.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub sent_at: i64,
+}
+
+fn is_zero(value: &i64) -> bool {
+    *value == 0
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
