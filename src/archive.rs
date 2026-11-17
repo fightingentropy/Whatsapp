@@ -657,6 +657,11 @@ impl Archive {
              ON CONFLICT(chat, id) DO UPDATE SET
                 sender_name = COALESCE(excluded.sender_name, sender_name),
                 content = CASE
+                    WHEN json_extract(messages.content, '$.kind') = 'revoked'
+                    THEN messages.content
+                    WHEN json_extract(excluded.content, '$.kind') = 'revoked'
+                    THEN excluded.content
+                    WHEN messages.edited > excluded.edited THEN messages.content
                     WHEN json_extract(excluded.content, '$.kind') = json_extract(messages.content, '$.kind')
                      AND json_extract(excluded.content, '$.media.path') IS NULL
                      AND json_extract(messages.content, '$.media.path') IS NOT NULL
@@ -669,11 +674,16 @@ impl Archive {
                 status = CASE WHEN excluded.status != 6 AND messages.status > excluded.status
                     THEN messages.status ELSE excluded.status END,
                 quoted = COALESCE(excluded.quoted, quoted),
-                reactions = excluded.reactions,
-                edited = excluded.edited,
+                reactions = (SELECT json_group_array(json(value)) FROM (
+                    SELECT value FROM json_each(messages.reactions)
+                    UNION ALL SELECT value FROM json_each(excluded.reactions) source
+                    WHERE NOT EXISTS (SELECT 1 FROM json_each(messages.reactions) kept
+                        WHERE json_extract(kept.value, '$.sender') = json_extract(source.value, '$.sender')))),
+                edited = MAX(messages.edited, excluded.edited),
                 raw = COALESCE(excluded.raw, raw),
                 thumbnail = COALESCE(excluded.thumbnail, thumbnail),
-                mentions = excluded.mentions,
+                mentions = CASE WHEN messages.edited > excluded.edited
+                    THEN messages.mentions ELSE excluded.mentions END,
                 forwarded = excluded.forwarded,
                 delivered_at = COALESCE(delivered_at, excluded.delivered_at),
                 read_at = COALESCE(read_at, excluded.read_at)",
@@ -1700,13 +1710,20 @@ mod tests {
             .unwrap();
         assert!(archive.search_messages("original", 10).unwrap().is_empty());
         assert_eq!(archive.search_messages("updated", 10).unwrap().len(), 1);
-        row.content = Content::text("replayed text");
+        // A replay of the original keeps the newer edit.
         archive.insert_message(&row, None).unwrap();
-        assert!(archive.search_messages("updated", 10).unwrap().is_empty());
+        assert_eq!(archive.search_messages("updated", 10).unwrap().len(), 1);
         assert_eq!(
             archive.raw("chat", "one").unwrap(),
             Some(b"attachment keys".to_vec())
         );
+        // A replay of an unedited row replaces its indexed body.
+        archive.delete_message("chat", "one").unwrap();
+        archive.insert_message(&row, None).unwrap();
+        row.content = Content::text("replayed text");
+        archive.insert_message(&row, None).unwrap();
+        assert!(archive.search_messages("original", 10).unwrap().is_empty());
+        assert_eq!(archive.search_messages("replayed", 10).unwrap().len(), 1);
         archive.delete_message("chat", "one").unwrap();
         assert!(archive.search_messages("replayed", 10).unwrap().is_empty());
         archive.insert_message(&row, None).unwrap();
@@ -1719,6 +1736,97 @@ mod tests {
                 [],
             )
             .unwrap();
+    }
+
+    #[test]
+    fn refiling_a_message_keeps_deletes_edits_and_reactions() {
+        let archive = Archive::in_memory().unwrap();
+        archive.ensure_chat("chat", "Test").unwrap();
+        let original = message("chat", "deleted", 10, false);
+        archive.insert_message(&original, None).unwrap();
+        archive
+            .set_content("chat", "deleted", &Content::Revoked, false)
+            .unwrap();
+        archive.insert_message(&original, None).unwrap();
+        assert_eq!(
+            archive.message("chat", "deleted").unwrap().unwrap().content,
+            Content::Revoked
+        );
+
+        // An edit and its mentions survive a replay of the original.
+        let original = message("chat", "edited", 20, false);
+        archive.insert_message(&original, None).unwrap();
+        let mentions = vec![crate::model::MentionRef {
+            user: "123".into(),
+            id: "123@s.whatsapp.net".into(),
+        }];
+        archive
+            .set_edited_text("chat", "edited", &Content::text("fixed @123"), &mentions)
+            .unwrap();
+        archive.insert_message(&original, None).unwrap();
+        let saved = archive.message("chat", "edited").unwrap().unwrap();
+        assert_eq!(saved.content, Content::text("fixed @123"));
+        assert!(saved.edited);
+        assert_eq!(saved.mentions, mentions);
+        // A delete still wins over an edit.
+        let deleted = Message {
+            content: Content::Revoked,
+            ..original
+        };
+        archive.insert_message(&deleted, None).unwrap();
+        assert_eq!(
+            archive.message("chat", "edited").unwrap().unwrap().content,
+            Content::Revoked
+        );
+
+        // Reactions on a stand-in survive its decryption; new senders merge.
+        let mut stub = message("chat", "stub", 30, false);
+        stub.content = Content::Unsupported {
+            what: "waiting".into(),
+        };
+        archive.insert_message(&stub, None).unwrap();
+        archive
+            .set_reaction("chat", "stub", "a@s.whatsapp.net", false, "+1")
+            .unwrap();
+        archive
+            .set_reaction("chat", "stub", "b@s.whatsapp.net", false, "heart")
+            .unwrap();
+        let mut real = message("chat", "stub", 30, false);
+        archive.insert_message(&real, Some(b"keys")).unwrap();
+        let saved = archive.message("chat", "stub").unwrap().unwrap();
+        assert_eq!(saved.content, real.content);
+        assert!(!saved.edited);
+        let reactions = |message: Message| {
+            message
+                .reactions
+                .into_iter()
+                .map(|reaction| (reaction.sender, reaction.emoji))
+                .collect::<Vec<_>>()
+        };
+        let pair = |sender: &str, emoji: &str| (sender.to_owned(), emoji.to_owned());
+        assert_eq!(
+            reactions(saved),
+            [
+                pair("a@s.whatsapp.net", "+1"),
+                pair("b@s.whatsapp.net", "heart")
+            ]
+        );
+        real.reactions = ["a@s.whatsapp.net", "c@s.whatsapp.net"]
+            .map(|sender| crate::model::Reaction {
+                sender: sender.into(),
+                from_me: false,
+                emoji: "older".into(),
+            })
+            .into();
+        archive.insert_message(&real, None).unwrap();
+        assert_eq!(
+            reactions(archive.message("chat", "stub").unwrap().unwrap()),
+            [
+                pair("a@s.whatsapp.net", "+1"),
+                pair("b@s.whatsapp.net", "heart"),
+                pair("c@s.whatsapp.net", "older")
+            ]
+        );
     }
 
     #[test]

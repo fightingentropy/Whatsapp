@@ -8511,6 +8511,27 @@ mod receipt_tests {
     }
 
     #[test]
+    fn a_reaction_on_a_waiting_message_survives_its_decryption() {
+        let (mut worker, _events, _inbox, _wa) = worker();
+        worker.ingest_undecryptable(&view_once_info("late", false), false);
+        worker.file_reaction(WaitingReaction::new(
+            PEER,
+            "late",
+            PEER,
+            false,
+            "+1".into(),
+            1,
+        ));
+        let mut message = incoming("late", 0);
+        message.content = Content::text("decrypted");
+        worker.store_message(message, Some(b"keys".to_vec()), None);
+        let stored = worker.archive.message(PEER, "late").unwrap().unwrap();
+        assert_eq!(stored.content, Content::text("decrypted"));
+        assert_eq!(stored.reactions.len(), 1);
+        assert_eq!(stored.reactions[0].emoji, "+1");
+    }
+
+    #[test]
     fn view_once_stubs_are_filed_and_opened_by_played_receipts() {
         let (mut worker, _events, _inbox, _wa) = worker();
         let unopened = Some(Content::ViewOnce {
