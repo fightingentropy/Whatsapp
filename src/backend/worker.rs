@@ -2764,7 +2764,7 @@ impl Worker {
                 to_phone,
             } => {
                 let Some(client) = self.client.clone() else {
-                    self.emit(Event::Error("Not connected to WhatsApp".to_owned()));
+                    self.emit(Event::ContactFailed("Not connected to WhatsApp".to_owned()));
                     return;
                 };
                 let commands = self.commands.clone();
@@ -2795,7 +2795,7 @@ impl Worker {
                 registered,
             } => {
                 if !registered {
-                    self.emit(Event::Error(format!(
+                    self.emit(Event::ContactFailed(format!(
                         "{} is not on WhatsApp",
                         crate::util::phone(&phone)
                     )));
@@ -2815,16 +2815,21 @@ impl Worker {
                     name: full_name,
                 });
             }
-            Command::StickerPackImported { result } => match result {
-                Ok(name) => {
-                    self.emit_stickers();
-                    self.emit(Event::Info(format!("Added sticker pack \"{name}\"")));
-                }
-                Err(error) if error.is_empty() => self.emit_stickers(),
-                Err(error) => {
-                    self.emit(Event::Error(format!("Could not add sticker pack: {error}")))
-                }
-            },
+            Command::StickerPackImported { result } => {
+                let error = match result {
+                    Ok(name) => {
+                        self.emit_stickers();
+                        self.emit(Event::Info(format!("Added sticker pack \"{name}\"")));
+                        None
+                    }
+                    Err(error) if error.is_empty() => {
+                        self.emit_stickers();
+                        None
+                    }
+                    Err(error) => Some(format!("Could not add sticker pack: {error}")),
+                };
+                self.emit(Event::StickerImportFinished { error });
+            }
             Command::DeleteStickerPack { dir } => {
                 let root = self.packs_dir();
                 if dir.starts_with(&root) && dir != root && std::fs::remove_dir_all(&dir).is_ok() {

@@ -560,6 +560,12 @@ pub enum Event {
         id: String,
         name: Option<String>,
     },
+    /// Number lookup failed; ends the New contact dialog's busy state.
+    ContactFailed(String),
+    /// A sticker pack import ended; `error` is None on success or cancel.
+    StickerImportFinished {
+        error: Option<String>,
+    },
     /// Informational toast message.
     Info(String),
     /// A newer release than this build exists.

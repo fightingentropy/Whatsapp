@@ -696,7 +696,11 @@ fn event_json(event: Event) -> Option<Value> {
         Event::OlderFetched { chat, more } => json!({"type":"older","chat":chat,"more":more}),
         Event::ReceiptsPrivacy { disabled } => json!({"type":"privacy","disabled":disabled}),
         Event::Info(detail) => json!({"type":"info","detail":detail}),
-        Event::Error(detail) => json!({"type":"error","detail":detail}),
+        Event::Error(detail)
+        | Event::ContactFailed(detail)
+        | Event::StickerImportFinished {
+            error: Some(detail),
+        } => json!({"type":"error","detail":detail}),
         // Native iOS does not expose the desktop picker, updater or notifications.
         _ => return None,
     })
@@ -1201,6 +1205,19 @@ mod tests {
         );
         assert_eq!(event["requested"], false);
         assert_eq!(event["complete"], false);
+    }
+
+    #[test]
+    fn busy_state_failures_reach_the_phone_as_errors() {
+        let failed = event_json(Event::ContactFailed("Not connected".into())).unwrap();
+        assert_eq!(failed["type"], "error");
+        assert_eq!(failed["detail"], "Not connected");
+        let import = event_json(Event::StickerImportFinished {
+            error: Some("Could not add sticker pack: bad".into()),
+        })
+        .unwrap();
+        assert_eq!(import["type"], "error");
+        assert!(event_json(Event::StickerImportFinished { error: None }).is_none());
     }
 
     #[test]

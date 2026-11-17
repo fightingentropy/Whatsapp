@@ -1308,7 +1308,6 @@ impl App {
                     self.sticker_packs = packs;
                     self.stickers = recent;
                     self.stickers_pending = false;
-                    self.sticker_import_pending = false;
                 }
                 Event::MessageDeleted { chat, id } => {
                     if self.chat_search.chat.as_ref() == Some(&chat) {
@@ -1376,11 +1375,17 @@ impl App {
                     }
                     self.update = Some(notice);
                 }
-                Event::Error(message) => {
-                    self.sticker_import_pending = false;
+                Event::ContactFailed(message) => {
                     self.new_contact_pending = false;
                     self.toast_error(message);
                 }
+                Event::StickerImportFinished { error } => {
+                    self.sticker_import_pending = false;
+                    if let Some(error) = error {
+                        self.toast_error(error);
+                    }
+                }
+                Event::Error(message) => self.toast_error(message),
             }
         }
     }
@@ -4549,6 +4554,33 @@ mod tests {
         app.stage_files(vec![PathBuf::from("/tmp/a.txt")]);
         assert!(app.reply_to.is_none());
         assert_eq!(app.pending.len(), 1);
+    }
+
+    #[test]
+    fn only_their_own_results_end_contact_and_sticker_import_waits() {
+        let root = std::env::temp_dir().join(format!("whatsapp-app-{}", std::process::id()));
+        let (mut app, events) = App::headless(AppDirs::under(&root), Settings::default());
+        app.new_contact_pending = true;
+        app.sticker_import_pending = true;
+        events.send(Event::Error("unrelated".into())).unwrap();
+        events
+            .send(Event::Stickers {
+                saved: Vec::new(),
+                packs: Vec::new(),
+                recent: Vec::new(),
+            })
+            .unwrap();
+        app.handle_events();
+        assert!(app.new_contact_pending);
+        assert!(app.sticker_import_pending);
+
+        events.send(Event::ContactFailed("x".into())).unwrap();
+        events
+            .send(Event::StickerImportFinished { error: None })
+            .unwrap();
+        app.handle_events();
+        assert!(!app.new_contact_pending);
+        assert!(!app.sticker_import_pending);
     }
 
     #[test]
