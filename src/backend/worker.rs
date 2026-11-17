@@ -831,6 +831,10 @@ impl Worker {
             .drain()
             .map(|(chat, id)| (if chat == from { into.clone() } else { chat }, id))
             .collect();
+        // Sends queued under the alias still order the merged chat's next send.
+        if let Some(tail) = self.send_tails.remove(&from) {
+            self.send_tails.entry(into.clone()).or_insert(tail);
+        }
         self.sticker_cursor = None;
         self.downloads.rekey(&from, &into);
         self.sticker_download_failed = self
@@ -1478,6 +1482,7 @@ impl Worker {
         self.pending_older.clear();
         self.pending_avatars.clear();
         self.local_revokes.clear();
+        self.send_tails.clear();
         self.older_warned.clear();
         self.me_pn = None;
         self.me_lid = None;
@@ -4339,7 +4344,11 @@ impl Worker {
         }
         let message = outgoing_text(text, None, &mentions);
         let commands = self.commands.clone();
+        // An edit of a message still queued to send must follow it.
+        let (sent_before, done) = self.chain_send(&chat);
         tokio::spawn(async move {
+            let _done = done;
+            wait_for_previous_send(sent_before).await;
             if let Err(error) = client.edit_message(jid, id.clone(), message).await {
                 let error = format!("Could not send the edit: {error}");
                 let _ = commands.send(match restore {
@@ -4377,7 +4386,12 @@ impl Worker {
             self.emit_chat(&chat);
         }
         let commands = self.commands.clone();
+        // A delete of a message still queued to send must follow it, or the
+        // recipients drop the delete and then receive the message.
+        let (sent_before, done) = self.chain_send(&chat);
         tokio::spawn(async move {
+            let _done = done;
+            wait_for_previous_send(sent_before).await;
             if let Err(error) = client
                 .revoke_message(jid, id.clone(), RevokeType::Sender)
                 .await
@@ -4906,6 +4920,15 @@ async fn publish_in_order(
 /// How long a send waits for the previous send to the same chat.
 const SEND_PATIENCE: Duration = Duration::from_secs(30);
 
+/// Waits for the send queued before this one in the chat. A finished, failed
+/// or dropped predecessor releases it; a stuck one stops holding the chat
+/// after a while.
+async fn wait_for_previous_send(previous: Option<oneshot::Receiver<()>>) {
+    if let Some(previous) = previous {
+        let _ = tokio::time::timeout(SEND_PATIENCE, previous).await;
+    }
+}
+
 async fn send_outgoing(
     client: Arc<Client>,
     commands: mpsc::UnboundedSender<Command>,
@@ -4915,11 +4938,7 @@ async fn send_outgoing(
     message: wa::Message,
     mut state: SendState,
 ) {
-    if let Some(previous) = state.previous.take() {
-        // A finished, failed or dropped predecessor releases this send; a
-        // stuck one stops holding the chat after a while.
-        let _ = tokio::time::timeout(SEND_PATIENCE, previous).await;
-    }
+    wait_for_previous_send(state.previous.take()).await;
     let result = async {
         // Group settings are separate from the library's slim routing cache.
         // A fresh query also repairs existing chats whose timers older builds
@@ -7558,6 +7577,26 @@ mod receipt_tests {
         drop(second_done);
         assert!(
             tokio::time::timeout(Duration::from_secs(1), third_wait.unwrap())
+                .await
+                .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_send_queued_under_an_alias_still_orders_the_merged_chat() {
+        let (mut worker, _events, _inbox, _wa) = worker();
+        let (_, queued_done) = worker.chain_send(PEER_LID);
+        worker.learn_lid("167650256810092", "4917663430455");
+        let (wait, _done) = worker.chain_send(PEER);
+        let mut wait = wait.expect("the alias's queued send is still ahead");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), &mut wait)
+                .await
+                .is_err()
+        );
+        drop(queued_done);
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), wait)
                 .await
                 .is_ok()
         );
