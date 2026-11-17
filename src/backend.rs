@@ -363,6 +363,8 @@ pub enum Command {
         id: String,
         full: bool,
         path: Option<PathBuf>,
+        /// False when a refresh downloaded the picture already on disk.
+        changed: bool,
     },
     /// Internal retryable profile-picture failure.
     AvatarFailed {

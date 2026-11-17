@@ -3143,8 +3143,18 @@ impl Worker {
                     self.emit_stickers();
                 }
             }
-            Command::AvatarFetched { id, full, path } => {
+            Command::AvatarFetched {
+                id,
+                full,
+                path,
+                changed,
+            } => {
                 self.pending_avatars.remove(&(id.clone(), full));
+                if path.is_some() && !changed {
+                    // The refresh found the same picture, already shown from
+                    // disk; announcing it again would only reload the image.
+                    return;
+                }
                 if path.is_none() {
                     // A successful lookup with no picture is different from a
                     // failed refresh. Persist that removal so a cold launch
@@ -4095,18 +4105,22 @@ impl Worker {
     }
 
     fn fetch_avatar(&mut self, id: String, full: bool) {
-        self.fetch_avatar_attempt(id, full, 0);
+        self.fetch_avatar_attempt(id, full, 0, true);
     }
 
-    fn fetch_avatar_attempt(&mut self, id: String, full: bool, attempts: u32) {
+    /// `announce` shows the local picture first; a retry passes false because
+    /// the first attempt already did, and a repeat would reload its image.
+    fn fetch_avatar_attempt(&mut self, id: String, full: bool, attempts: u32, announce: bool) {
         let path = self.avatar_file(&id, full);
         if let Ok(metadata) = std::fs::metadata(&path) {
             // Show the local picture even when offline or while refreshing it.
-            self.emit(Event::Avatar {
-                id: id.clone(),
-                full,
-                path: (metadata.len() > 0).then_some(path.clone()),
-            });
+            if announce {
+                self.emit(Event::Avatar {
+                    id: id.clone(),
+                    full,
+                    path: (metadata.len() > 0).then_some(path.clone()),
+                });
+            }
             if metadata
                 .modified()
                 .ok()
@@ -4174,7 +4188,7 @@ impl Worker {
                     return if failed {
                         Err("lookup failed".to_owned())
                     } else {
-                        Ok(None)
+                        Ok((None, true))
                     };
                 };
                 let url = picture.url;
@@ -4185,20 +4199,21 @@ impl Worker {
                 })
                 .await
                 .map_err(|error| error.to_string())??;
-                if let Some(parent) = path.parent() {
-                    tokio::fs::create_dir_all(parent)
-                        .await
-                        .map_err(|error| error.to_string())?;
-                }
-                tokio::fs::write(&path, &bytes)
+                let target = path.clone();
+                let changed = tokio::task::spawn_blocking(move || store_avatar(&target, &bytes))
                     .await
-                    .map_err(|error| error.to_string())?;
-                Ok::<Option<PathBuf>, String>(Some(path.clone()))
+                    .map_err(|error| error.to_string())??;
+                Ok::<(Option<PathBuf>, bool), String>((Some(path.clone()), changed))
             }
             .await;
             match fetched {
-                Ok(path) => {
-                    let _ = commands.send(Command::AvatarFetched { id, full, path });
+                Ok((path, changed)) => {
+                    let _ = commands.send(Command::AvatarFetched {
+                        id,
+                        full,
+                        path,
+                        changed,
+                    });
                 }
                 Err(error) => {
                     log::debug!("no picture for {id} yet: {error}");
@@ -4231,7 +4246,7 @@ impl Worker {
             .collect();
         for ((id, full), attempts) in due {
             self.pending_avatars.remove(&(id.clone(), full));
-            self.fetch_avatar_attempt(id, full, attempts);
+            self.fetch_avatar_attempt(id, full, attempts, false);
         }
     }
 
@@ -5687,6 +5702,37 @@ async fn prepare_animation(
 /// lookup asks once; a thumbnail lookup falls back to the full picture.
 fn picture_preview_modes(full: bool) -> &'static [bool] {
     if full { &[false] } else { &[true, false] }
+}
+
+/// Saves a downloaded profile picture through a sibling file renamed over the
+/// old one, so a reader never sees it half-written. Identical bytes only
+/// renew the file's age. Returns whether the picture changed.
+fn store_avatar(path: &Path, bytes: &[u8]) -> Result<bool, String> {
+    use std::io::Write;
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    if std::fs::read(path).is_ok_and(|existing| existing == bytes) {
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .and_then(|file| file.set_modified(std::time::SystemTime::now()))
+            .map_err(|error| error.to_string())?;
+        return Ok(false);
+    }
+    let parent = path.parent().ok_or("Missing avatar directory")?;
+    std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    let staging = parent.join(format!(
+        ".avatar-{}-{}.part",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let written = std::fs::File::create_new(&staging)
+        .and_then(|mut file| file.write_all(bytes))
+        .and_then(|()| std::fs::rename(&staging, path));
+    if let Err(error) = written {
+        let _ = std::fs::remove_file(&staging);
+        return Err(error.to_string());
+    }
+    Ok(true)
 }
 
 /// Longest a plain HTTP fetch (avatars, GIF search and sending) may take.
@@ -7167,6 +7213,63 @@ mod receipt_tests {
         assert!(events.try_iter().next().is_none());
     }
 
+    #[test]
+    fn avatar_is_replaced_atomically_and_unchanged_bytes_only_renew_its_age() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("avatars").join("peer.jpg");
+        assert_eq!(store_avatar(&path, b"first"), Ok(true));
+        assert_eq!(std::fs::read(&path).unwrap(), b"first");
+        let old = std::time::SystemTime::now() - Duration::from_secs(3 * 24 * 60 * 60);
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        assert_eq!(store_avatar(&path, b"first"), Ok(false));
+        assert_eq!(std::fs::read(&path).unwrap(), b"first");
+        assert!(std::fs::metadata(&path).unwrap().modified().unwrap() > old);
+        assert_eq!(store_avatar(&path, b"second"), Ok(true));
+        assert_eq!(std::fs::read(&path).unwrap(), b"second");
+        let names: Vec<_> = std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(names, ["peer.jpg"]);
+    }
+
+    #[tokio::test]
+    async fn unchanged_avatar_refresh_is_not_announced_again() {
+        let (mut worker, events, _inbox, _wa) = worker();
+        let root = tempfile::tempdir().unwrap();
+        worker.dirs = AppDirs::under(root.path());
+        let path = worker.avatar_file(PEER, false);
+        worker
+            .pending_avatars
+            .insert((PEER.into(), false), AvatarRetry::Pending(1));
+        worker
+            .handle_command(Command::AvatarFetched {
+                id: PEER.into(),
+                full: false,
+                path: Some(path.clone()),
+                changed: false,
+            })
+            .await;
+        assert!(worker.pending_avatars.is_empty());
+        assert!(events.try_iter().next().is_none());
+        worker
+            .handle_command(Command::AvatarFetched {
+                id: PEER.into(),
+                full: false,
+                path: Some(path.clone()),
+                changed: true,
+            })
+            .await;
+        assert!(events.try_iter().any(
+            |event| matches!(event, Event::Avatar { path: Some(found), .. } if found == path)
+        ));
+    }
+
     #[tokio::test]
     async fn successful_avatar_removal_cannot_restore_an_old_picture_on_relaunch() {
         let (mut worker, events, _inbox, _wa) = worker();
@@ -7183,6 +7286,7 @@ mod receipt_tests {
                 id: PEER.into(),
                 full: false,
                 path: None,
+                changed: true,
             })
             .await;
         assert_eq!(std::fs::metadata(&path).unwrap().len(), 0);

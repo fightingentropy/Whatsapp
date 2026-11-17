@@ -1186,12 +1186,17 @@ impl App {
                     self.presence.insert(id, Presence { online, last_seen });
                 }
                 Event::Avatar { id, full, path } => {
-                    if full {
+                    let previous = if full {
                         self.avatar_full_requests.remove(&id);
-                        self.avatars_full.insert(id, path);
+                        self.avatars_full.insert(id, path)
                     } else {
                         self.avatar_requests.remove(&id);
-                        self.avatars.insert(id, path);
+                        self.avatars.insert(id, path)
+                    };
+                    // Pictures are rewritten in place: a refresh, a change or a
+                    // removal must not leave egui's decoded old image behind.
+                    if let Some(Some(old)) = previous {
+                        self.actions.push(Action::ForgetAvatar(old));
                     }
                 }
                 // Native iPhone upload tracking uses its own session/container.
@@ -2141,6 +2146,9 @@ impl App {
                 self.refocus_composer(ctx);
             }
             Action::RefreshVideoPoster(path) => ctx.forget_image(&crate::video_poster::uri(&path)),
+            Action::ForgetAvatar(path) => {
+                ctx.forget_image(&crate::ui::conversation::file_uri(&path));
+            }
             Action::PauseVideo { chat, message } => {
                 if self.video.for_message(&chat, &message).is_some() {
                     self.video.pause();
@@ -4496,5 +4504,35 @@ mod name_tests {
             app.message_text(&message),
             "Edited: @Ada Lovelace thanks 🙌"
         );
+    }
+
+    #[test]
+    fn replaced_or_removed_avatar_forgets_the_old_image() {
+        let root = std::env::temp_dir().join(format!("whatsapp-app-{}", std::process::id()));
+        let (mut app, events) = App::headless(AppDirs::under(&root), Settings::default());
+        let path = PathBuf::from("/tmp/avatars/peer.jpg");
+        let forgets = |app: &App| {
+            app.actions
+                .iter()
+                .filter(|action| matches!(action, Action::ForgetAvatar(old) if *old == path))
+                .count()
+        };
+        let avatar = |path: Option<PathBuf>| Event::Avatar {
+            id: "peer@s.whatsapp.net".into(),
+            full: false,
+            path,
+        };
+        events.send(avatar(Some(path.clone()))).unwrap();
+        app.handle_events();
+        assert_eq!(forgets(&app), 0, "the first picture has nothing to forget");
+        events.send(avatar(Some(path.clone()))).unwrap();
+        app.handle_events();
+        assert_eq!(forgets(&app), 1, "a rewrite of the same file reloads it");
+        events.send(avatar(None)).unwrap();
+        app.handle_events();
+        assert_eq!(forgets(&app), 2, "a removal drops the old image too");
+        events.send(avatar(Some(path.clone()))).unwrap();
+        app.handle_events();
+        assert_eq!(forgets(&app), 2);
     }
 }

@@ -573,6 +573,9 @@ pub enum Action {
     CloseVideoPreview,
     /// Discards a derived poster after its local attachment is replaced.
     RefreshVideoPoster(PathBuf),
+    /// Drops a replaced profile picture's decoded image, so the same path
+    /// shows the new picture instead of the cached old one.
+    ForgetAvatar(PathBuf),
     PauseVideo {
         chat: ChatId,
         message: String,
