@@ -427,7 +427,8 @@ fn row_scroll_offset(
 /// Search results grouped into chats, messages, and contacts.
 fn results(app: &mut App, ui: &mut egui::Ui) {
     let palette = app.palette;
-    let chats: Vec<Chat> = app.visible_chats().into_iter().cloned().collect();
+    // Indices stay valid while drawing; actions apply afterwards.
+    let chats = app.visible_chat_indices();
     let hits: Vec<Message> = app.search_hits.clone();
     let contacts: Vec<Contact> = app.matching_contacts().into_iter().cloned().collect();
     if chats.is_empty() && hits.is_empty() && contacts.is_empty() {
@@ -446,10 +447,21 @@ fn results(app: &mut App, ui: &mut egui::Ui) {
         .show(ui, |ui| {
             if !chats.is_empty() {
                 section(ui, &palette, "Chats");
-                for chat in &chats {
-                    let reveal = app.scroll_chat_into_view.as_deref() == Some(chat.id.as_str());
+                for &index in &chats {
+                    let id = &app.chats[index].id;
+                    let reveal = app.scroll_chat_into_view.as_deref() == Some(id.as_str());
+                    let size = vec2(ui.available_width(), theme::ROW_HEIGHT);
+                    if !reveal && !ui.is_rect_visible(Rect::from_min_size(ui.cursor().min, size)) {
+                        // Reserve an offscreen row's space, as `row` would,
+                        // without cloning or titling its chat.
+                        ui.push_id(("chat", id), |ui| {
+                            ui.allocate_exact_size(size, Sense::hover())
+                        });
+                        continue;
+                    }
+                    let chat = app.chats[index].clone();
                     let response = ui
-                        .push_id(("chat", &chat.id), |ui| row(app, ui, chat))
+                        .push_id(("chat", &chat.id), |ui| row(app, ui, &chat))
                         .inner;
                     if reveal {
                         response.scroll_to_me(None);
@@ -1616,6 +1628,74 @@ mod tests {
             assert_eq!(app.actions, vec![Action::OpenChat(id.into())]);
             app.actions.clear();
         }
+    }
+
+    #[test]
+    fn search_results_keep_offscreen_rows_in_place() {
+        let (mut app, ctx) = archive_list(200);
+        app.search = "chat".into();
+        let frame = |app: &mut App, events| {
+            let mut offset = 0.0;
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(360.0, 240.0))),
+                    // Half a second per frame finishes scroll animations and
+                    // is still short enough for a press and release to click.
+                    time: Some(ctx.cumulative_pass_nr() as f64 * 0.5),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    let scroll_id = ui.make_persistent_id(egui::IdSalt::new("search-results"));
+                    list(app, ui);
+                    offset = egui::scroll_area::State::load(ui.ctx(), scroll_id)
+                        .map_or(0.0, |state| state.offset.y);
+                },
+            );
+            output.textures_delta.clear();
+            (output, offset)
+        };
+        let top =
+            |output: &egui::FullOutput, label: &str| visible_text(output, label).map(|r| r.top());
+
+        let (output, offset) = frame(&mut app, vec![]);
+        assert_eq!(offset, 0.0);
+        let first = top(&output, "Chat 000").expect("first result is drawn");
+        let stride = top(&output, "Chat 001").expect("second result is drawn") - first;
+        assert!(stride >= theme::ROW_HEIGHT);
+        assert!(top(&output, "Chat 150").is_none());
+
+        app.scroll_chat_into_view = Some("150@g.us".into());
+        let mut revealed = None;
+        for _ in 0..4 {
+            let (output, offset) = frame(&mut app, vec![]);
+            if let Some(y) = top(&output, "Chat 150") {
+                revealed = Some((output, y + offset));
+            }
+        }
+        assert!(app.scroll_chat_into_view.is_none(), "reveal was consumed");
+        let (output, content_y) = revealed.expect("the revealed row is drawn");
+        assert!(
+            (content_y - (first + 150.0 * stride)).abs() < 0.5,
+            "skipped rows take exactly a row's height"
+        );
+
+        let pos = visible_text(&output, "Chat 150").unwrap().center();
+        for pressed in [true, false] {
+            frame(
+                &mut app,
+                vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+        }
+        assert_eq!(app.actions, vec![Action::OpenChat("150@g.us".into())]);
     }
 
     #[test]

@@ -996,8 +996,9 @@ impl App {
             })
             .filter(|contact| !chat_ids.contains(contact.id.as_str()))
             .collect();
-        contacts
-            .sort_by_key(|contact| contact.display_name().unwrap_or(&contact.id).to_lowercase());
+        contacts.sort_by_cached_key(|contact| {
+            contact.display_name().unwrap_or(&contact.id).to_lowercase()
+        });
         contacts.truncate(15);
         contacts
     }
