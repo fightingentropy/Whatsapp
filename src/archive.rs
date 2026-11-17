@@ -117,10 +117,32 @@ CREATE TABLE IF NOT EXISTS group_receipts (
 );
 CREATE INDEX IF NOT EXISTS messages_lid_sender ON messages (sender) WHERE sender LIKE '%@lid';
 CREATE INDEX IF NOT EXISTS group_receipts_by_recipient ON group_receipts (recipient);
+CREATE INDEX IF NOT EXISTS messages_stickers ON messages (from_me, timestamp, chat, id)
+    WHERE CASE WHEN json_valid(content) THEN json_extract(content, '$.kind') END = 'sticker';
 CREATE TRIGGER IF NOT EXISTS delete_group_receipts AFTER DELETE ON messages BEGIN
     DELETE FROM group_receipts WHERE chat = OLD.chat AND id = OLD.id;
 END;
 ";
+
+// Both sticker queries repeat the `messages_stickers` partial index's
+// condition verbatim, so SQLite reads only sticker rows instead of parsing the
+// content of every message. The json_valid guard keeps an unreadable row from
+// failing the index, and with it every insert.
+const RECENT_STICKERS: &str =
+    "SELECT json_extract(content, '$.media.path') AS path, MAX(timestamp), raw
+     FROM messages
+     WHERE CASE WHEN json_valid(content) THEN json_extract(content, '$.kind') END = 'sticker'
+       AND path IS NOT NULL
+     GROUP BY path
+     ORDER BY 2 DESC
+     LIMIT ?1";
+const MISSING_STICKERS: &str = "SELECT chat, id, from_me, timestamp FROM messages
+     WHERE CASE WHEN json_valid(content) THEN json_extract(content, '$.kind') END = 'sticker'
+       AND json_extract(content, '$.media.path') IS NULL
+       AND raw IS NOT NULL
+       AND (?2 IS NULL OR (from_me, timestamp, chat, id) < (?2, ?3, ?4, ?5))
+     ORDER BY from_me DESC, timestamp DESC, chat DESC, id DESC
+     LIMIT ?1";
 
 const CHAT_COLUMNS: &str =
     "c.id, c.name, c.kind, c.last_activity, c.unread, c.archived, c.pinned, c.muted_until,
@@ -923,14 +945,7 @@ impl Archive {
 
     /// Returns downloaded chat stickers for the picker, newest first.
     pub fn recent_stickers(&self, limit: usize) -> Result<Vec<ArchivedSticker>> {
-        let mut statement = self.connection.prepare(
-            "SELECT json_extract(content, '$.media.path') AS path, MAX(timestamp), raw
-             FROM messages
-             WHERE json_extract(content, '$.kind') = 'sticker' AND path IS NOT NULL
-             GROUP BY path
-             ORDER BY 2 DESC
-             LIMIT ?1",
-        )?;
+        let mut statement = self.connection.prepare(RECENT_STICKERS)?;
         let rows = statement.query_map(params![limit as i64], |row| {
             Ok(ArchivedSticker {
                 last_used: row.get(1)?,
@@ -959,15 +974,7 @@ impl Archive {
         limit: usize,
         after: Option<&MissingSticker>,
     ) -> Result<Vec<MissingSticker>> {
-        let mut statement = self.connection.prepare(
-            "SELECT chat, id, from_me, timestamp FROM messages
-             WHERE json_extract(content, '$.kind') = 'sticker'
-               AND json_extract(content, '$.media.path') IS NULL
-               AND raw IS NOT NULL
-               AND (?2 IS NULL OR (from_me, timestamp, chat, id) < (?2, ?3, ?4, ?5))
-             ORDER BY from_me DESC, timestamp DESC, chat DESC, id DESC
-             LIMIT ?1",
-        )?;
+        let mut statement = self.connection.prepare(MISSING_STICKERS)?;
         let rows = statement.query_map(
             params![
                 limit as i64,
@@ -2391,6 +2398,60 @@ mod sticker_tests {
         );
         // Exclude missing local files.
         assert!(archive.recent_stickers(10).expect("lists").is_empty());
+    }
+
+    #[test]
+    fn sticker_queries_use_the_sticker_index() {
+        let archive = Archive::in_memory().unwrap();
+        for sql in [RECENT_STICKERS, MISSING_STICKERS] {
+            let plan = super::tests::query_plan(&archive, sql);
+            assert!(plan.contains("messages_stickers"), "{plan}");
+        }
+    }
+
+    #[test]
+    fn indexed_sticker_queries_list_files_newest_first_beside_unreadable_rows() {
+        let archive = Archive::in_memory().unwrap();
+        let chat = "a@s.whatsapp.net";
+        archive.ensure_chat(chat, "A").unwrap();
+        archive
+            .connection
+            .execute(
+                "INSERT INTO messages (chat, id, sender, from_me, timestamp, content)
+                 VALUES (?1, 'broken', ?1, 0, 50, 'invalid json')",
+                [chat],
+            )
+            .unwrap();
+        let folder = std::env::temp_dir().join(format!(
+            "whatsapp-sticker-index-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&folder).unwrap();
+        let older = folder.join("older.webp");
+        let newer = folder.join("newer.webp");
+        for file in [&older, &newer] {
+            std::fs::write(file, b"webp").unwrap();
+        }
+        for (id, timestamp, path) in [("s1", 10, &older), ("s2", 30, &newer), ("s3", 20, &older)] {
+            let row = sticker(chat, id, timestamp, path.to_str());
+            archive.insert_message(&row, Some(b"raw")).unwrap();
+        }
+        archive
+            .insert_message(&sticker(chat, "missing", 40, None), Some(b"raw"))
+            .unwrap();
+        let recent = archive.recent_stickers(10).unwrap();
+        std::fs::remove_dir_all(&folder).unwrap();
+        assert_eq!(
+            recent
+                .iter()
+                .map(|sticker| (sticker.path.clone(), sticker.last_used))
+                .collect::<Vec<_>>(),
+            [(newer, 30), (older, 20)]
+        );
+        assert_eq!(
+            archive.stickers_without_file(10).unwrap(),
+            [(chat.to_owned(), "missing".to_owned())]
+        );
     }
 }
 
