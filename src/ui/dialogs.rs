@@ -69,18 +69,21 @@ fn forward(app: &mut App, ui: &mut egui::Ui, from_chat: &str, message: &str) {
     ui.add_space(4.0);
 
     let needle = app.forward_search.trim().to_lowercase();
-    let mut chats: Vec<_> = app
+    // Indices stay valid for this frame: actions apply after drawing. Only
+    // the rows drawn below copy anything.
+    let mut chats: Vec<usize> = app
         .chats
         .iter()
-        .filter(|chat| chat.kind != crate::model::ChatKind::Broadcast && !chat.read_only)
-        .filter(|chat| {
+        .enumerate()
+        .filter(|(_, chat)| chat.kind != crate::model::ChatKind::Broadcast && !chat.read_only)
+        .filter(|(_, chat)| {
             needle.is_empty()
                 || app.chat_title(chat).to_lowercase().contains(&needle)
                 || chat.phone().is_some_and(|phone| phone.contains(&needle))
         })
-        .cloned()
+        .map(|(index, _)| index)
         .collect();
-    chats.sort_by_key(|chat| std::cmp::Reverse(chat.last_activity));
+    chats.sort_by_key(|&index| std::cmp::Reverse(app.chats[index].last_activity));
 
     let row_height = 52.0;
     let max_height = (ui.ctx().content_rect().height() - 220.0).clamp(row_height * 3.0, 420.0);
@@ -91,8 +94,9 @@ fn forward(app: &mut App, ui: &mut egui::Ui, from_chat: &str, message: &str) {
         .auto_shrink([false, true])
         .show_rows(ui, row_height, chats.len(), |ui, range| {
             ui.spacing_mut().item_spacing.y = 0.0;
-            for chat in &chats[range] {
-                let title = app.chat_title(chat);
+            for &index in &chats[range] {
+                let title = app.chat_title(&app.chats[index]);
+                let id = app.chats[index].id.clone();
                 let (rect, response) =
                     ui.allocate_exact_size(vec2(ui.available_width(), row_height), Sense::click());
                 if ui.is_rect_visible(rect) {
@@ -103,13 +107,13 @@ fn forward(app: &mut App, ui: &mut egui::Ui, from_chat: &str, message: &str) {
                         pos2(rect.left() + 23.0, rect.center().y),
                         egui::Vec2::splat(38.0),
                     );
-                    let picture = app.avatar(&chat.id);
+                    let picture = app.avatar(&id);
                     super::widgets::paint_avatar(
                         ui,
                         &palette,
                         avatar,
                         &title,
-                        &chat.id,
+                        &id,
                         picture.as_deref(),
                     );
                     let line = super::widgets::line(
@@ -135,7 +139,7 @@ fn forward(app: &mut App, ui: &mut egui::Ui, from_chat: &str, message: &str) {
                     .on_hover_cursor(egui::CursorIcon::PointingHand)
                     .clicked()
                 {
-                    destination = Some(chat.id.clone());
+                    destination = Some(id);
                 }
             }
         });
@@ -908,6 +912,59 @@ mod tests {
             id: id.into(),
             full_name: Some(name.into()),
             push_name: None,
+        }
+    }
+
+    #[test]
+    fn forward_lists_writable_chats_newest_first_and_filters() {
+        let (mut app, ctx) = app("forward");
+        let direct = "4915112345@s.whatsapp.net";
+        for (id, name, activity) in [
+            ("1@g.us", "Older", 1),
+            ("2@g.us", "Newest", 3),
+            ("3@g.us", "Locked", 5),
+            ("x@broadcast", "Bulletin", 6),
+            (direct, "", 2),
+        ] {
+            let mut chat = Chat::new(id.into(), name.into());
+            chat.last_activity = activity;
+            chat.read_only = id == "3@g.us";
+            app.chats.push(chat);
+        }
+        let phone = crate::util::phone("4915112345");
+        app.dialog = Some(Dialog::Forward {
+            chat: "1@g.us".into(),
+            message: "m".into(),
+        });
+
+        frame(&mut app, &ctx, vec![]);
+        let output = frame(&mut app, &ctx, vec![]);
+        let newest = text_at(&output, "Newest").expect("row is drawn");
+        let middle = text_at(&output, &phone).expect("row is drawn");
+        let older = text_at(&output, "Older").expect("row is drawn");
+        assert!(newest.y < middle.y && middle.y < older.y);
+        assert!(text_at(&output, "Locked").is_none());
+        assert!(text_at(&output, "Bulletin").is_none());
+
+        click(&mut app, &ctx, newest);
+        assert_eq!(
+            app.actions,
+            vec![Action::Forward {
+                from_chat: "1@g.us".into(),
+                message: "m".into(),
+                to_chat: "2@g.us".into(),
+            }]
+        );
+        app.actions.clear();
+
+        for (query, shown) in [("old", "Older"), ("15112", phone.as_str())] {
+            app.forward_search = query.into();
+            let output = frame(&mut app, &ctx, vec![]);
+            let rows: Vec<&str> = ["Newest", "Older", phone.as_str()]
+                .into_iter()
+                .filter(|title| text_at(&output, title).is_some())
+                .collect();
+            assert_eq!(rows, vec![shown], "query {query}");
         }
     }
 
