@@ -1503,6 +1503,10 @@ impl App {
                 self.recording = None;
                 // Also ends typing state, which would otherwise keep a 1 Hz repaint.
                 self.close_open_chat();
+                // Drafts belong to the unlinked account.
+                self.drafts.clear();
+                self.draft_mentions.clear();
+                self.composer_mentions.clear();
                 self.image_preview = None;
                 self.notifications.clear_all();
                 self.chats.clear();
@@ -4357,9 +4361,14 @@ mod tests {
 
         app.open_chat = Some(fresh.into());
         app.composing = true;
+        app.composer = "typed before unlinking".into();
         app.handle_link(LinkStatus::LoggedOut);
         assert!(app.open_chat.is_none());
         assert!(!app.composing, "unlinking leaves no typing repaint behind");
+        assert!(
+            app.drafts.is_empty(),
+            "drafts do not carry over to the next linked account"
+        );
     }
 
     #[test]
