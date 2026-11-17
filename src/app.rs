@@ -2861,7 +2861,7 @@ impl App {
                     .map_or(now, |last| last + crate::updates::CHECK_INTERVAL),
             );
         }
-        if self.player.is_playing() || self.recording.is_some() {
+        if self.player.is_playing() || self.recording.as_ref().is_some_and(Recorder::is_live) {
             wait = wait.min(Duration::from_millis(40));
         }
         wait
@@ -2876,7 +2876,14 @@ impl App {
             self.recording = None;
             self.toast_error(format!("Could not record: {error}"));
         }
-        if self.player.is_playing() || self.recording.is_some() {
+        if self
+            .recording
+            .as_mut()
+            .is_some_and(Recorder::take_early_stop)
+        {
+            self.toast("Recording stopped. Send or discard it.");
+        }
+        if self.player.is_playing() || self.recording.as_ref().is_some_and(Recorder::is_live) {
             self.waker.wake_after(Duration::from_millis(40));
         }
     }
@@ -3856,6 +3863,28 @@ mod tests {
         app.last_settings_save = Instant::now() - Duration::from_secs(3);
         app.settings_dirty = true;
         assert_eq!(app.background_wait(), Duration::ZERO);
+    }
+
+    #[test]
+    fn a_recording_that_stops_on_its_own_is_kept_and_reported_once() {
+        let mut app = app();
+        app.recording = Some(Recorder::rehearsal());
+        assert!(app.background_wait() <= Duration::from_millis(40));
+        app.recording = Some(Recorder::stopped_with(vec![0.0; 96_000]));
+        app.tick_audio();
+        app.tick_audio();
+        let recording = app.recording.as_ref().expect("kept for Send or Discard");
+        assert!(!recording.is_live());
+        let stopped = app
+            .toasts
+            .iter()
+            .filter(|toast| toast.message == "Recording stopped. Send or discard it.")
+            .count();
+        assert_eq!(stopped, 1);
+        assert!(
+            app.background_wait() > Duration::from_millis(40),
+            "a stopped recording needs no fast polling"
+        );
     }
 
     #[test]

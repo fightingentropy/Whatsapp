@@ -404,6 +404,8 @@ pub struct Recorder {
     levels: Arc<Mutex<Vec<f32>>>,
     outcome: Outcome,
     thread: Option<std::thread::JoinHandle<()>>,
+    /// Whether an early stop has been reported.
+    reported: bool,
 }
 
 impl Recorder {
@@ -436,6 +438,7 @@ impl Recorder {
             levels,
             outcome,
             thread,
+            reported: false,
         }
     }
 
@@ -451,11 +454,57 @@ impl Recorder {
             levels: Arc::new(Mutex::new(levels)),
             outcome: Default::default(),
             thread: None,
+            reported: false,
         }
     }
 
+    /// Recorder that stopped on its own after capturing `samples`.
+    #[cfg(test)]
+    pub fn stopped_with(samples: Vec<f32>) -> Self {
+        Self {
+            started: Instant::now() - Duration::from_secs(30),
+            stop: Arc::new(AtomicBool::new(false)),
+            levels: Default::default(),
+            outcome: Arc::new(Mutex::new(Some(Ok(samples)))),
+            thread: None,
+            reported: false,
+        }
+    }
+
+    /// Recording length; frozen at the captured length once recording has
+    /// stopped on its own.
     pub fn elapsed(&self) -> Duration {
-        self.started.elapsed()
+        match self
+            .outcome
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+        {
+            Some(Ok(samples)) => clip_length(samples.len()),
+            _ => self.started.elapsed(),
+        }
+    }
+
+    /// Whether the microphone is still capturing.
+    pub fn is_live(&self) -> bool {
+        self.outcome
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .is_none()
+    }
+
+    /// True once when recording stopped on its own (time limit or a lost
+    /// device) while the take is still waiting to be sent or discarded.
+    pub fn take_early_stop(&mut self) -> bool {
+        if self.reported {
+            return false;
+        }
+        let stopped = matches!(
+            *self.outcome.lock().unwrap_or_else(|p| p.into_inner()),
+            Some(Ok(_))
+        );
+        self.reported = stopped;
+        stopped
     }
 
     pub fn levels(&self) -> Vec<f32> {
@@ -635,6 +684,21 @@ mod tests {
         assert!(player.decoding.is_none());
         assert!(!player.is_playing());
         assert_eq!(player.status("m").state, State::Idle);
+    }
+
+    #[test]
+    fn a_recorder_that_stopped_on_its_own_freezes_and_reports_once() {
+        let mut recorder = Recorder::stopped_with(vec![0.0; 96_000]);
+        assert_eq!(recorder.elapsed(), Duration::from_secs(2));
+        assert!(!recorder.is_live());
+        assert!(recorder.take_early_stop());
+        assert!(!recorder.take_early_stop());
+        assert_eq!(recorder.finish().map(|samples| samples.len()), Ok(96_000));
+
+        let mut rehearsal = Recorder::rehearsal();
+        assert!(rehearsal.is_live());
+        assert!(!rehearsal.take_early_stop());
+        assert!(rehearsal.elapsed() >= Duration::from_millis(4_500));
     }
 
     /// Plays a one-second test tone:
