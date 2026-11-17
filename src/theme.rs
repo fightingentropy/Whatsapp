@@ -306,7 +306,7 @@ fn install_fonts(ctx: &egui::Context) {
 
     // Append system fallbacks after Inter and emoji fonts.
     for font in crate::system_fonts::fallbacks() {
-        let mut data = FontData::from_static(&font.bytes);
+        let mut data = FontData::from_static(font.bytes);
         data.index = font.index;
         fonts.font_data.insert(font.name.clone(), Arc::new(data));
         for family in fonts.families.values_mut() {

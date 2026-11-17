@@ -26,7 +26,7 @@ pub const PLACEHOLDER: char = '\u{2B1B}';
 const TEXTURE_WIDTH: u32 = 72;
 
 struct Font {
-    bytes: Vec<u8>,
+    bytes: &'static [u8],
     index: u32,
     /// Maps a glyph sequence to its ligature glyph.
     ligatures: HashMap<Vec<u32>, u32>,
@@ -56,14 +56,15 @@ fn font() -> Option<&'static Font> {
 
 fn load() -> Option<Font> {
     if let Some((path, index)) = find()
-        && let Ok(bytes) = std::fs::read(&path)
+        // A rejected font stays mapped or leaked; it is loaded once per process.
+        && let Ok(bytes) = crate::system_fonts::static_font_bytes(&path)
         && let Some(font) = load_bytes(bytes, index, &path.display().to_string())
     {
         return Some(font);
     }
     #[cfg(any(feature = "bundled-emoji", test))]
     {
-        load_bytes(BUNDLED.to_vec(), 0, "bundled Noto Color Emoji")
+        load_bytes(BUNDLED, 0, "bundled Noto Color Emoji")
     }
     #[cfg(not(any(feature = "bundled-emoji", test)))]
     {
@@ -71,8 +72,8 @@ fn load() -> Option<Font> {
     }
 }
 
-fn load_bytes(bytes: Vec<u8>, index: u32, source: &str) -> Option<Font> {
-    let font = FontRef::from_index(&bytes, index).ok()?;
+fn load_bytes(bytes: &'static [u8], index: u32, source: &str) -> Option<Font> {
+    let font = FontRef::from_index(bytes, index).ok()?;
     if font.bitmap_strikes().is_empty() {
         log::info!("{source} has no bitmap emoji");
         return None;
@@ -198,7 +199,7 @@ fn add_ligatures(map: &mut HashMap<Vec<u32>, u32>, subtable: &LigatureSubstForma
 
 impl Font {
     fn font_ref(&self) -> Option<FontRef<'_>> {
-        FontRef::from_index(&self.bytes, self.index).ok()
+        FontRef::from_index(self.bytes, self.index).ok()
     }
 
     /// Resolves a sequence to its final glyph through font ligatures.
@@ -510,7 +511,7 @@ mod tests {
 
     #[test]
     fn the_bundled_font_renders_colour_emoji() {
-        let font = load_bytes(BUNDLED.to_vec(), 0, "test font").expect("bundled font");
+        let font = load_bytes(BUNDLED, 0, "test font").expect("bundled font");
         let font_ref = font.font_ref().expect("font face");
         let glyph = font
             .glyph(&font_ref, &['\u{1F600}'])
@@ -523,6 +524,24 @@ mod tests {
                 .iter()
                 .any(|pixel| { pixel.a() > 0 && pixel.r() != pixel.g() && pixel.g() != pixel.b() })
         );
+    }
+
+    #[test]
+    fn the_mapped_system_font_renders_colour_emoji() {
+        let path = std::path::Path::new("/System/Library/Fonts/Apple Color Emoji.ttc");
+        if !path.is_file() {
+            return;
+        }
+        let bytes = crate::system_fonts::static_font_bytes(path).expect("mapped emoji font");
+        let font = load_bytes(bytes, 0, "test font").expect("system emoji font");
+        let font_ref = font.font_ref().expect("font face");
+        // A flag resolves through the mapped font's ligature table.
+        assert!(font.glyph(&font_ref, &['\u{1F1E9}', '\u{1F1EA}']).is_some());
+        let glyph = font
+            .glyph(&font_ref, &['\u{1F600}'])
+            .expect("grinning face glyph");
+        let image = font.image(&font_ref, glyph).expect("colour bitmap");
+        assert!(image.pixels.iter().any(|pixel| pixel.a() > 0));
     }
 
     #[test]

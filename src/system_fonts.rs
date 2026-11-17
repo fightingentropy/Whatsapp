@@ -5,14 +5,14 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 
 use skrifa::MetadataProvider as _;
 
 /// Registered fallback name, font bytes, and face index.
 pub struct Fallback {
     pub name: String,
-    pub bytes: Arc<[u8]>,
+    pub bytes: &'static [u8],
     pub index: u32,
 }
 
@@ -116,7 +116,7 @@ fn load() -> Vec<Fallback> {
     // Read and register a face only once when it covers several scripts.
     let mut fonts: Vec<Fallback> = Vec::new();
     let mut taken: Vec<(PathBuf, u32)> = Vec::new();
-    let mut files = BTreeMap::<PathBuf, Arc<[u8]>>::new();
+    let mut files = BTreeMap::<PathBuf, &'static [u8]>::new();
     for (script, _, _) in FALLBACK_SCRIPTS {
         let Some(candidate) = best.get(script) else {
             log::debug!("no fallback face covers {script}");
@@ -128,10 +128,10 @@ fn load() -> Vec<Fallback> {
         // Several regional faces can share a large TTC file. Own its bytes
         // once, even when different face indices are selected for scripts.
         let bytes = match files.entry(candidate.path.clone()) {
-            std::collections::btree_map::Entry::Occupied(entry) => Arc::clone(entry.get()),
+            std::collections::btree_map::Entry::Occupied(entry) => *entry.get(),
             std::collections::btree_map::Entry::Vacant(entry) => {
-                match std::fs::read(&candidate.path) {
-                    Ok(bytes) => Arc::clone(entry.insert(Arc::from(bytes))),
+                match static_font_bytes(&candidate.path) {
+                    Ok(bytes) => *entry.insert(bytes),
                     Err(error) => {
                         log::warn!("cannot read {}: {error}", candidate.path.display());
                         continue;
@@ -152,6 +152,27 @@ fn load() -> Vec<Fallback> {
         });
     }
     fonts
+}
+
+/// Font bytes kept for the rest of the process.
+///
+/// Fonts on macOS's sealed system volume are memory-mapped, so their pages stay
+/// clean and file-backed: the kernel can drop them under memory pressure and
+/// fault them back in. Other fonts can be replaced or truncated by the user,
+/// which would fault a mapping, so they are read into memory instead.
+///
+/// Both are leaked deliberately: callers keep each result in a process-wide
+/// `OnceLock` and hand it to egui as `FontData::from_static`.
+pub(crate) fn static_font_bytes(path: &Path) -> std::io::Result<&'static [u8]> {
+    if cfg!(target_os = "macos") && path.starts_with("/System/Library/Fonts") {
+        let file = std::fs::File::open(path)?;
+        // Safety: the read-only system volume cannot be modified or truncated
+        // while the process runs, and the mapping is never unmapped.
+        let map = unsafe { memmap2::Mmap::map(&file) }?;
+        let map: &'static memmap2::Mmap = Box::leak(Box::new(map));
+        return Ok(&map[..]);
+    }
+    Ok(Box::leak(std::fs::read(path)?.into_boxed_slice()))
 }
 
 /// Scans font files below `dir` and keeps the best face per script.
@@ -409,6 +430,36 @@ mod tests {
         assert!(is_font_file(Path::new("/x/PingFang.otf")));
         assert!(!is_font_file(Path::new("/x/fonts.dir")));
         assert!(!is_font_file(Path::new("/x/README")));
+    }
+
+    #[test]
+    fn font_files_outside_the_system_volume_are_read() {
+        let dir = tempfile::tempdir().expect("temporary directory");
+        let path = dir.path().join("Inter.ttf");
+        let original = include_bytes!("../assets/fonts/InterVariable.ttf");
+        std::fs::write(&path, original).expect("font file");
+        let bytes = static_font_bytes(&path).expect("font bytes");
+        // The copy stays valid after the file is gone: it was not mapped.
+        std::fs::remove_file(&path).expect("remove font file");
+        assert_eq!(bytes, &original[..]);
+        let font = skrifa::FontRef::new(bytes).expect("font face");
+        assert!(font.charmap().map('A').is_some());
+    }
+
+    #[test]
+    fn system_fonts_are_mapped_with_working_glyph_lookups() {
+        let path = Path::new("/System/Library/Fonts/SFNS.ttf");
+        if !path.is_file() {
+            return;
+        }
+        let bytes = static_font_bytes(path).expect("mapped font");
+        assert_eq!(bytes, std::fs::read(path).expect("font file").as_slice());
+        let font = skrifa::FontRef::new(bytes).expect("font face");
+        let glyph = font.charmap().map('A').expect("glyph for A");
+        assert!(font.outline_glyphs().get(glyph).is_some());
+        // egui borrows the mapping rather than copying it.
+        let data = egui::FontData::from_static(bytes);
+        assert!(matches!(data.font, std::borrow::Cow::Borrowed(_)));
     }
 
     #[test]
