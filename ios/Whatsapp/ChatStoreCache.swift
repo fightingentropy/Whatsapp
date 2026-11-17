@@ -61,7 +61,29 @@ extension ChatStore {
         guard let selectedChat, let last = messages.last, !newerComplete, !loading,
               !loadingNewer, !fetchingPhone, !isDemo else { return }
         loadingNewer = true
-        engine.send(["type": "newer", "chat": selectedChat, "after": [Int64(last.timestamp), last.id]])
+        requestPage(["type": "newer", "chat": selectedChat, "after": [Int64(last.timestamp), last.id]])
+    }
+
+    /// Sends a load/around/newer command. The worker answers each accepted one
+    /// with exactly one `messages` (requested), `around`, `newer` or
+    /// `load_failed` event, in order; the phone `older` fetch is not a page.
+    func requestPage(_ command: [String: Any]) {
+        let ticket = UUID()
+        pageReplies.append((ticket, true))
+        engine.send(command) { [weak self] accepted in
+            if !accepted { self?.pageReplies.removeAll { $0.id == ticket } }
+        }
+    }
+
+    /// Late replies to these requests belong to a window that no longer exists.
+    func abandonPageReplies() {
+        for index in pageReplies.indices { pageReplies[index].live = false }
+    }
+
+    /// Whether the next page reply belongs to the current window. Without an
+    /// outstanding request (synthetic fixtures), a reply is accepted.
+    func consumePageReply() -> Bool {
+        pageReplies.isEmpty ? true : pageReplies.removeFirst().live
     }
 
     func loadLatest() {
@@ -71,6 +93,6 @@ extension ChatStore {
         recentConversations.remove(selectedChat)
         messages = []; visibleMessageIDs = []; visibleMessageFrames = [:]; messageViewport = .zero; newerComplete = true; archiveComplete = false
         loading = true; restoredAnchor = nil
-        engine.send(["type": "load", "chat": selectedChat])
+        requestPage(["type": "load", "chat": selectedChat])
     }
 }

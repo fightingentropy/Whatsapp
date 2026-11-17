@@ -66,7 +66,7 @@ extension ChatStore {
         } else if !jumpRequested, let chat = selectedChat, !isDemo {
             jumpRequested = true
             loading = true
-            engine.send(["type": "around", "chat": chat, "id": id])
+            requestPage(["type": "around", "chat": chat, "id": id])
         } else {
             pendingJump = nil
             pendingJumpChat = nil

@@ -85,6 +85,73 @@ final class EfficiencyTests: XCTestCase {
         XCTAssertLessThanOrEqual(store.messages.count, ConversationWindow.countLimit)
     }
 
+    private func page(_ range: Range<Int>, chat: String = "a@lid", older: Bool = false) -> CoreEvent {
+        var event = CoreEvent(type: "messages"); event.chat = chat; event.requested = true; event.older = older
+        event.messages = range.map { message($0, chat: chat) }; event.complete = false
+        return event
+    }
+
+    func testStaleOlderPageFromEarlierVisitCannotJoinReopenedWindow() {
+        let (store, engine) = fixture()
+        store.messages = (100..<280).map { message($0) }; store.archiveComplete = false
+        store.loadOlder()
+        XCTAssertEqual(engine.commands.last?["type"] as? String, "load")
+        store.close("a@lid"); store.open("a@lid")
+        XCTAssertTrue(store.loading)
+        store.apply([page(40..<100, older: true)])
+        XCTAssertTrue(store.messages.isEmpty, "The earlier visit's page is discarded")
+        XCTAssertTrue(store.loading)
+        store.apply([page(220..<280)])
+        XCTAssertEqual(store.messages.map(\.id), (220..<280).map { String(format: "%05d", $0) })
+        XCTAssertFalse(store.loading)
+    }
+
+    func testStaleJumpWindowIsIgnoredAndJumpIsRetriedOnReopen() {
+        let (store, engine) = fixture()
+        store.jump(to: "09000")
+        XCTAssertEqual(engine.commands.last?["type"] as? String, "around")
+        store.close("a@lid"); store.open("a@lid")
+        var stale = CoreEvent(type: "around"); stale.chat = "a@lid"; stale.messages = (8970..<9030).map { message($0) }
+        stale.complete = false; stale.more = true
+        store.apply([stale])
+        XCTAssertTrue(store.messages.isEmpty); XCTAssertTrue(store.loading); XCTAssertNil(store.scrollTarget)
+        let arounds = engine.commands.filter { $0["type"] as? String == "around" }.count
+        store.apply([page(0..<60)])
+        XCTAssertEqual(store.messages.count, 60)
+        XCTAssertEqual(engine.commands.filter { $0["type"] as? String == "around" }.count, arounds + 1, "The jump is requested again")
+        XCTAssertNil(store.error)
+    }
+
+    func testMergingOpenOlderWindowReloadsAroundVisibleRow() {
+        let (store, engine) = fixture()
+        store.newerComplete = false; store.visibleMessageIDs = ["00050"]
+        store.loadOlder()
+        var merged = CoreEvent(type: "merged"); merged.from = "a@lid"; merged.into = "555@s.whatsapp.net"
+        store.apply([merged])
+        XCTAssertEqual(store.selectedChat, "555@s.whatsapp.net")
+        XCTAssertTrue(store.messages.isEmpty); XCTAssertTrue(store.loading)
+        XCTAssertEqual(engine.commands.last?["type"] as? String, "around")
+        XCTAssertEqual(engine.commands.last?["chat"] as? String, "555@s.whatsapp.net")
+        XCTAssertEqual(engine.commands.last?["id"] as? String, "00050")
+        XCTAssertEqual(store.restoredAnchor, "00050")
+        store.apply([page(0..<60, chat: "555@s.whatsapp.net", older: true)])
+        XCTAssertTrue(store.messages.isEmpty, "A page requested before the merge is discarded")
+        var around = CoreEvent(type: "around"); around.chat = "555@s.whatsapp.net"; around.complete = false; around.more = true
+        around.messages = (20..<80).map { message($0, chat: "555@s.whatsapp.net") }
+        store.apply([around])
+        XCTAssertEqual(store.messages.count, 60); XCTAssertFalse(store.loading); XCTAssertFalse(store.newerComplete)
+    }
+
+    func testRejectedPageRequestLeavesNoTicket() {
+        let (store, engine) = fixture()
+        engine.accept = false
+        store.loadOlder()
+        XCTAssertTrue(store.pageReplies.isEmpty)
+        engine.accept = true; store.loading = false
+        store.apply([page(0..<60)])
+        XCTAssertEqual(store.messages.count, 60)
+    }
+
     func testSelectionAndQuotedMessagesProtectRowsFromEviction() {
         let (store, _) = fixture(); store.messages = (0..<900).map { message($0) }
         store.selectionActive = true; store.trimConversation(towardOlder: false)
@@ -218,9 +285,10 @@ private final class CacheEngine: MessagingEngine {
     var onEvents: (([CoreEvent]) -> Void)?
     var onError: ((String) -> Void)?
     var commands: [[String: Any]] = []
+    var accept = true
     var loads: Int { commands.filter { $0["type"] as? String == "load" }.count }
     func start(root: URL) {}
     func drain() {}
     func stop(completion: @escaping () -> Void) { completion() }
-    func send(_ command: [String: Any], completion: ((Bool) -> Void)?) { commands.append(command); completion?(true) }
+    func send(_ command: [String: Any], completion: ((Bool) -> Void)?) { commands.append(command); completion?(accept) }
 }

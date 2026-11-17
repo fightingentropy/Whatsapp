@@ -65,6 +65,10 @@ final class ChatStore {
     @ObservationIgnored var messageViewport = CGRect.zero
     @ObservationIgnored var selectionActive = false
     @ObservationIgnored var loadLatestAfterPage = false
+    /// One ticket per accepted load/around/newer command, in send order. The
+    /// worker answers each with exactly one page reply, in FIFO order; tickets
+    /// abandoned by a visit boundary or merge discard their late reply.
+    @ObservationIgnored var pageReplies: [(id: UUID, live: Bool)] = []
     @ObservationIgnored var recentConversations = ConversationCache()
     @ObservationIgnored var phoneHistory: [String: (complete: Bool, retryAfter: Date)] = [:]
     var gifQuery = ""
@@ -153,6 +157,7 @@ final class ChatStore {
             self?.diagnostics.record(.engineError)
             self?.error = $0; self?.status = "failed"
             self?.loading = false; self?.fetchingPhone = false
+            self?.pageReplies.removeAll()
             if let self, let id = self.uploadingAttachment { self.failAttachment(id, error: "Connection interrupted. Check this chat before retrying.") }
         }
         observer = NotificationCenter.default.addObserver(forName: .coreEventsReady, object: nil, queue: .main) { [weak self] _ in
@@ -180,12 +185,14 @@ final class ChatStore {
             recentConversations.removeAll()
             requestedAvatars.removeAll()
             engine.start(root: root)
+            // The stopped worker can never answer its outstanding page requests.
+            pageReplies.removeAll()
             if let selectedChat {
                 loading = true
                 if !newerComplete, let anchor = visibleMessageIDs.first ?? messages.first?.id {
                     restoredAnchor = anchor
-                    engine.send(["type": "around", "chat": selectedChat, "id": anchor])
-                } else { engine.send(["type": "load", "chat": selectedChat]) }
+                    requestPage(["type": "around", "chat": selectedChat, "id": anchor])
+                } else { requestPage(["type": "load", "chat": selectedChat]) }
             }
         } catch { self.error = "Could not create private storage on this iPhone." }
     }
@@ -299,8 +306,11 @@ final class ChatStore {
         video.stop()
         audioRequest = UUID()
         if let current = selectedChat { rememberConversation(current) }
+        // Replies still owed to an earlier visit must not join this window.
+        abandonPageReplies()
         selectedChat = chat
-        if pendingJumpChat != chat { pendingJump = nil; pendingJumpChat = nil }
+        // An abandoned jump request is retried for this visit.
+        if pendingJumpChat != chat { pendingJump = nil; pendingJumpChat = nil } else { jumpRequested = false }
         messages = []
         reply = nil
         editing = nil
@@ -319,7 +329,7 @@ final class ChatStore {
             resolveJump()
         } else {
             loading = true
-            engine.send(["type": "load", "chat": chat])
+            requestPage(["type": "load", "chat": chat])
         }
         markRead()
     }
@@ -329,6 +339,7 @@ final class ChatStore {
         if isDemo { demoConversations[canonical(chat)] = messages }
         else { rememberConversation(canonical(chat)) }
         selectedChat = nil
+        abandonPageReplies()
         loadLatestAfterPage = false
         audioRequest = UUID()
         stopComposing(chat: canonical(chat))
@@ -347,10 +358,10 @@ final class ChatStore {
         guard let selectedChat, !loading, !loadingNewer, !fetchingPhone, !isDemo else { return }
         if !archiveComplete, let first = messages.first {
             loading = true
-            engine.send(["type": "load", "chat": selectedChat, "before": [Int64(first.timestamp), first.id]])
+            requestPage(["type": "load", "chat": selectedChat, "before": [Int64(first.timestamp), first.id]])
         } else if !archiveComplete {
             loading = true
-            engine.send(["type": "load", "chat": selectedChat])
+            requestPage(["type": "load", "chat": selectedChat])
         } else if connected && !phoneComplete && Date() >= phoneRetryAfter {
             fetchingPhone = true
             phoneRetryAfter = Date().addingTimeInterval(30)
@@ -469,6 +480,10 @@ final class ChatStore {
                let id = (event.chat ?? event.message?.chat).map(canonical), id != selectedChat {
                 recentConversations.remove(id)
             }
+            // Every page reply takes its ticket, whichever chat it is for.
+            if (event.type == "messages" && event.requested == true) || ["around", "newer", "load_failed"].contains(event.type) {
+                guard consumePageReply() else { continue }
+            }
             switch event.type {
             case "link":
                 // A code queued before shutdown no longer belongs to a live
@@ -583,11 +598,27 @@ final class ChatStore {
                 if pendingJumpChat == from { pendingJumpChat = into }
                 if selectedChat == from {
                     selectedChat = into
-                    messages = messages.map { var message = $0; message.chat = into; return message }
                     if var quote = reply { quote.chat = into; reply = quote }
                     if var edited = editing { edited.chat = into; editing = edited }
-                    loading = true
-                    engine.send(["type": "load", "chat": into])
+                    if isDemo {
+                        messages = messages.map { var message = $0; message.chat = into; return message }
+                    } else {
+                        // The merged chat can hold rows on either side of this window.
+                        // Reload it around the same row (the worker kept its id)
+                        // rather than joining the latest page across a gap.
+                        abandonPageReplies()
+                        let anchor = newerComplete ? nil : (visibleMessageIDs.first ?? messages.first?.id)
+                        messages = []; visibleMessageIDs = []; visibleMessageFrames = [:]; messageViewport = .zero
+                        archiveComplete = false; loadingNewer = false; loadLatestAfterPage = false; jumpRequested = false
+                        loading = true
+                        if let anchor {
+                            restoredAnchor = anchor
+                            requestPage(["type": "around", "chat": into, "id": anchor])
+                        } else {
+                            newerComplete = true; restoredAnchor = nil
+                            requestPage(["type": "load", "chat": into])
+                        }
+                    }
                 }
             case "deleted":
                 if event.chat.map(canonical) == selectedChat { messages.removeAll { $0.id == event.id } }
