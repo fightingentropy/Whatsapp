@@ -20,7 +20,7 @@ use whatsapp_rust::prelude::{
 };
 use whatsapp_rust::send::RevokeType;
 use whatsapp_rust::types::events as wa_events;
-use whatsapp_rust::types::message::{MessageInfo, MessageSource};
+use whatsapp_rust::types::message::{EditAttribute, MessageInfo, MessageSource};
 use whatsapp_rust::types::presence::{ChatPresence, ReceiptType};
 use whatsapp_rust::upload::UploadOptions;
 use whatsapp_rust::wacore::download::Downloadable;
@@ -1660,6 +1660,23 @@ impl Worker {
                 return;
             };
             use wa::message::protocol_message::Type;
+            let revoke = protocol.r#type == Some(Type::REVOKE);
+            if revoke || protocol.r#type == Some(Type::MESSAGE_EDIT) {
+                let Ok(Some(existing)) = self.archive.message(&chat, &target) else {
+                    return;
+                };
+                let author = self.canonical_str(&existing.sender);
+                let change = ProtocolChange {
+                    from_me,
+                    sender: &sender,
+                    revoke,
+                    admin_revoke: info.edit == EditAttribute::AdminRevoke,
+                };
+                if !change.may_modify(&existing, &author) {
+                    log::debug!("ignored a protocol change from a non-author");
+                    return;
+                }
+            }
             match protocol.r#type {
                 Some(Type::REVOKE) => {
                     self.local_revokes.remove(&(chat.clone(), target.clone()));
@@ -4838,6 +4855,33 @@ async fn send_outgoing(
     });
 }
 
+/// An incoming edit or delete-for-everyone, checked against the row it names.
+/// whatsapp-rust does not attribute these, and the archive is the only copy.
+struct ProtocolChange<'a> {
+    from_me: bool,
+    /// Canonical sender of the protocol message.
+    sender: &'a str,
+    revoke: bool,
+    /// The stanza's `edit="8"`: a group admin deleting someone else's message.
+    admin_revoke: bool,
+}
+
+impl ProtocolChange<'_> {
+    /// Only the author edits. The author, any of our own devices (which may
+    /// act as a group admin) or a group admin deletes. `author` is the row's
+    /// canonical sender; our own rows are matched by `from_me`, since our
+    /// own id may be a phone number or a privacy id.
+    fn may_modify(&self, existing: &Message, author: &str) -> bool {
+        let by_author = existing.from_me == self.from_me && (self.from_me || author == self.sender);
+        if !self.revoke {
+            return by_author && !matches!(existing.content, Content::Revoked);
+        }
+        by_author
+            || self.from_me
+            || (self.admin_revoke && ChatKind::from_id(&existing.chat) == ChatKind::Group)
+    }
+}
+
 fn forwarded_row(
     mut source: Message,
     chat: ChatId,
@@ -7118,27 +7162,14 @@ mod receipt_tests {
             .set_content(PEER, "m1", &Content::Revoked, false)
             .unwrap();
         worker.local_revokes.insert((PEER.into(), "m1".into()));
-        // Another device's genuine revoke arrives while ours is in flight.
-        worker.ingest(
-            &Arc::new(wa::Message {
-                protocol_message: MessageField::some(wa::message::ProtocolMessage {
-                    r#type: Some(wa::message::protocol_message::Type::REVOKE),
-                    key: MessageField::some(wa::MessageKey {
-                        id: Some("m1".into()),
-                        ..Default::default()
-                    }),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            }),
-            &MessageInfo {
-                source: MessageSource {
-                    chat: PEER.parse().unwrap(),
-                    sender: PEER.parse().unwrap(),
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
+        // Another device of ours deletes it while our own delete is in flight.
+        receive_protocol(
+            &mut worker,
+            PEER,
+            ME,
+            true,
+            EditAttribute::SenderRevoke,
+            revoke("m1"),
         );
         worker
             .handle_command(Command::RestoreMessage {
@@ -7263,29 +7294,197 @@ mod receipt_tests {
     }
 
     fn receive_edit(worker: &mut Worker, chat: &str, id: &str, edited: wa::Message) {
+        receive_protocol(
+            worker,
+            chat,
+            PEER,
+            false,
+            EditAttribute::MessageEdit,
+            edit(id, edited),
+        );
+    }
+
+    fn revoke(id: &str) -> wa::message::ProtocolMessage {
+        wa::message::ProtocolMessage {
+            r#type: Some(wa::message::protocol_message::Type::REVOKE),
+            key: MessageField::some(wa::MessageKey {
+                id: Some(id.into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn edit(id: &str, edited: wa::Message) -> wa::message::ProtocolMessage {
+        wa::message::ProtocolMessage {
+            r#type: Some(wa::message::protocol_message::Type::MESSAGE_EDIT),
+            edited_message: MessageField::some(edited),
+            ..revoke(id)
+        }
+    }
+
+    fn receive_protocol(
+        worker: &mut Worker,
+        chat: &str,
+        sender: &str,
+        is_from_me: bool,
+        edit: EditAttribute,
+        protocol: wa::message::ProtocolMessage,
+    ) {
         worker.ingest(
             &Arc::new(wa::Message {
-                protocol_message: MessageField::some(wa::message::ProtocolMessage {
-                    r#type: Some(wa::message::protocol_message::Type::MESSAGE_EDIT),
-                    key: MessageField::some(wa::MessageKey {
-                        id: Some(id.into()),
-                        ..Default::default()
-                    }),
-                    edited_message: MessageField::some(edited),
-                    ..Default::default()
-                }),
+                protocol_message: MessageField::some(protocol),
                 ..Default::default()
             }),
             &MessageInfo {
                 source: MessageSource {
                     chat: chat.parse().unwrap(),
-                    sender: PEER.parse().unwrap(),
+                    sender: sender.parse().unwrap(),
+                    is_from_me,
                     is_group: chat.ends_with("@g.us"),
                     ..Default::default()
                 },
+                edit,
                 ..Default::default()
             },
         );
+    }
+
+    #[test]
+    fn only_the_author_edits_and_only_the_author_or_an_admin_deletes() {
+        const OTHER: &str = "4915550002222@s.whatsapp.net";
+        let (mut worker, events, _inbox, _wa) = worker();
+        let text = |body: &str| wa::Message {
+            conversation: Some(body.into()),
+            ..Default::default()
+        };
+        let content = |worker: &Worker, chat: &str, id: &str| {
+            let row = worker.archive.message(chat, id).unwrap().unwrap();
+            (row.content, row.edited)
+        };
+        worker.archive.ensure_chat(PEER, "Peer").unwrap();
+        worker
+            .archive
+            .insert_message(&own_message("mine", 10), None)
+            .unwrap();
+        worker
+            .archive
+            .insert_message(&incoming("theirs", 20), None)
+            .unwrap();
+        // The other party cannot rewrite or delete our message.
+        receive_protocol(
+            &mut worker,
+            PEER,
+            PEER,
+            false,
+            EditAttribute::MessageEdit,
+            edit("mine", text("forged")),
+        );
+        receive_protocol(
+            &mut worker,
+            PEER,
+            PEER,
+            false,
+            EditAttribute::AdminRevoke,
+            revoke("mine"),
+        );
+        assert_eq!(content(&worker, PEER, "mine"), (Content::text("hi"), false));
+        assert!(
+            !events
+                .try_iter()
+                .any(|event| matches!(event, Event::MessageUpdated(_)))
+        );
+        // Nor can our own devices edit theirs, but the author can.
+        receive_protocol(
+            &mut worker,
+            PEER,
+            ME,
+            true,
+            EditAttribute::MessageEdit,
+            edit("theirs", text("forged")),
+        );
+        assert_eq!(
+            content(&worker, PEER, "theirs"),
+            (Content::text("hi"), false)
+        );
+        receive_protocol(
+            &mut worker,
+            PEER,
+            PEER,
+            false,
+            EditAttribute::MessageEdit,
+            edit("theirs", text("fixed")),
+        );
+        assert_eq!(
+            content(&worker, PEER, "theirs"),
+            (Content::text("fixed"), true)
+        );
+
+        let group = "123-456@g.us";
+        worker.archive.ensure_chat(group, "Group").unwrap();
+        for id in ["a", "b", "c", "d"] {
+            let row = Message {
+                chat: group.into(),
+                sender: OTHER.into(),
+                ..incoming(id, 30)
+            };
+            worker.archive.insert_message(&row, None).unwrap();
+        }
+        receive_protocol(
+            &mut worker,
+            group,
+            PEER,
+            false,
+            EditAttribute::MessageEdit,
+            edit("a", text("forged")),
+        );
+        receive_protocol(
+            &mut worker,
+            group,
+            PEER,
+            false,
+            EditAttribute::SenderRevoke,
+            revoke("a"),
+        );
+        assert_eq!(content(&worker, group, "a"), (Content::text("hi"), false));
+        // An admin's delete, ours from another device, and the author's own.
+        receive_protocol(
+            &mut worker,
+            group,
+            PEER,
+            false,
+            EditAttribute::AdminRevoke,
+            revoke("b"),
+        );
+        receive_protocol(
+            &mut worker,
+            group,
+            ME,
+            true,
+            EditAttribute::AdminRevoke,
+            revoke("c"),
+        );
+        receive_protocol(
+            &mut worker,
+            group,
+            OTHER,
+            false,
+            EditAttribute::SenderRevoke,
+            revoke("d"),
+        );
+        for id in ["b", "c", "d"] {
+            assert_eq!(content(&worker, group, id).0, Content::Revoked);
+        }
+        // A deleted message cannot be edited back.
+        receive_protocol(
+            &mut worker,
+            group,
+            OTHER,
+            false,
+            EditAttribute::MessageEdit,
+            edit("d", text("back")),
+        );
+        assert_eq!(content(&worker, group, "d").0, Content::Revoked);
     }
 
     #[test]
