@@ -166,6 +166,15 @@ fn sticker_hash(sha256: Option<&[u8]>, enc_sha256: Option<&[u8]>) -> Option<Stri
     Some(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
+/// The 5 s housekeeping tick. After the loop was busy, fire one late tick
+/// and space the next 5 s after it, instead of tokio's default burst of
+/// every missed tick, which would send queued group queries back to back.
+fn worker_tick() -> tokio::time::Interval {
+    let mut tick = tokio::time::interval(Duration::from_secs(5));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    tick
+}
+
 pub async fn run(
     dirs: AppDirs,
     events: std::sync::mpsc::Sender<Event>,
@@ -240,7 +249,7 @@ pub async fn run(
     worker.backfill();
     worker.start_bot().await;
     let mut wa_events = wa_events;
-    let mut tick = tokio::time::interval(Duration::from_secs(5));
+    let mut tick = worker_tick();
     loop {
         let deadline = worker.sync_deadline;
         tokio::select! {
@@ -6656,6 +6665,14 @@ mod receipt_tests {
     const ME: &str = "15550001111@s.whatsapp.net";
     const PEER: &str = "4917663430455@s.whatsapp.net";
     const PEER_LID: &str = "167650256810092@lid";
+
+    #[tokio::test]
+    async fn worker_tick_does_not_burst_after_a_stall() {
+        assert_eq!(
+            worker_tick().missed_tick_behavior(),
+            tokio::time::MissedTickBehavior::Delay
+        );
+    }
 
     /// Creates a test worker with an in-memory archive and open channels.
     #[test]
