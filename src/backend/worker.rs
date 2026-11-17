@@ -248,6 +248,7 @@ pub async fn run(
         stickers_requested: false,
         sticker_failed: HashSet::new(),
         sticker_download_failed: HashSet::new(),
+        sticker_download_expired: HashSet::new(),
         sticker_fetches: HashSet::new(),
         sticker_downloads: HashSet::new(),
         read_syncs: HashMap::new(),
@@ -354,6 +355,10 @@ struct Worker {
     stickers_requested: bool,
     sticker_failed: HashSet<String>,
     sticker_download_failed: HashSet<(ChatId, String)>,
+    /// Picker downloads gone from WhatsApp's servers. Unlike other failures,
+    /// opening the picker does not retry them, which would ask the phone to
+    /// re-upload every expired sticker again.
+    sticker_download_expired: HashSet<(ChatId, String)>,
     /// Active recent-sticker downloads by hash.
     sticker_fetches: HashSet<String>,
     /// Active chat-sticker downloads by chat and message id.
@@ -830,6 +835,11 @@ impl Worker {
         self.downloads.rekey(&from, &into);
         self.sticker_download_failed = self
             .sticker_download_failed
+            .drain()
+            .map(|(chat, id)| (if chat == from { into.clone() } else { chat }, id))
+            .collect();
+        self.sticker_download_expired = self
+            .sticker_download_expired
             .drain()
             .map(|(chat, id)| (if chat == from { into.clone() } else { chat }, id))
             .collect();
@@ -1451,6 +1461,7 @@ impl Worker {
         self.stickers_requested = false;
         self.sticker_failed.clear();
         self.sticker_download_failed.clear();
+        self.sticker_download_expired.clear();
         self.sticker_fetches.clear();
         self.sticker_downloads.clear();
         self.sticker_pace = Default::default();
@@ -3114,6 +3125,9 @@ impl Worker {
                     if sticker_pace::rate_limited(error) {
                         self.sticker_pace.limited(Instant::now());
                         self.sticker_cursor = None;
+                    } else if error == downloads::EXPIRED_NOTICE {
+                        self.sticker_download_expired
+                            .insert((chat.clone(), id.clone()));
                     } else {
                         self.sticker_download_failed
                             .insert((chat.clone(), id.clone()));
@@ -3918,9 +3932,9 @@ impl Worker {
                     }
                     self.sticker_cursor = Some(row.clone());
                     let (chat, id) = (row.chat, row.id);
-                    if !self
-                        .sticker_download_failed
-                        .contains(&(chat.clone(), id.clone()))
+                    let key = (chat.clone(), id.clone());
+                    if !self.sticker_download_failed.contains(&key)
+                        && !self.sticker_download_expired.contains(&key)
                         && self.sticker_downloads.insert((chat.clone(), id.clone()))
                     {
                         if self.download(chat.clone(), id.clone()) {
@@ -6960,6 +6974,7 @@ mod receipt_tests {
             stickers_requested: false,
             sticker_failed: HashSet::new(),
             sticker_download_failed: HashSet::new(),
+            sticker_download_expired: HashSet::new(),
             sticker_fetches: HashSet::new(),
             sticker_downloads: HashSet::new(),
             read_syncs: HashMap::new(),
@@ -7069,6 +7084,36 @@ mod receipt_tests {
         assert!(events.try_iter().any(
             |event| matches!(event, Event::Avatar { path: Some(found), .. } if found == path)
         ));
+    }
+
+    #[tokio::test]
+    async fn opening_the_picker_retries_failed_stickers_but_not_expired_ones() {
+        let (mut worker, _events, _inbox, _wa) = worker();
+        for (id, error) in [
+            ("expired", downloads::EXPIRED_NOTICE),
+            ("failed", "connection reset"),
+        ] {
+            worker.stickers_requested = true;
+            worker.sticker_downloads.insert((PEER.into(), id.into()));
+            let token = worker.downloads.admit(PEER, id).unwrap().unwrap();
+            worker
+                .handle_command(Command::Downloaded {
+                    chat: PEER.into(),
+                    id: id.into(),
+                    token,
+                    result: Err(error.into()),
+                })
+                .await;
+        }
+        let expired = (PEER.to_owned(), "expired".to_owned());
+        let failed = (PEER.to_owned(), "failed".to_owned());
+        assert!(worker.sticker_download_expired.contains(&expired));
+        assert!(!worker.sticker_download_failed.contains(&expired));
+        assert!(worker.sticker_download_failed.contains(&failed));
+        assert!(!worker.sticker_download_expired.contains(&failed));
+        worker.handle_command(Command::RecentStickers).await;
+        assert!(worker.sticker_download_failed.is_empty());
+        assert!(worker.sticker_download_expired.contains(&expired));
     }
 
     #[tokio::test]
