@@ -59,6 +59,9 @@ targets:
           UIApplicationSupportsMultipleScenes: false
         UILaunchScreen: {}
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        # Background App Refresh catch-up (BackgroundRefresh.identifier).
+        UIBackgroundModes: [fetch]
+        BGTaskSchedulerPermittedIdentifiers: [org.erlin.whatsapp.ios.refresh]
     scheme:
       testTargets: [WhatsappTests, WhatsappUITests]
       gatherCoverageData: true
