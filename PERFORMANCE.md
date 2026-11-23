@@ -3,6 +3,33 @@
 The project is now named **Whatsapp**. Historical runs below retain the name,
 commit and artifact paths used at measurement time.
 
+## Metal as the default renderer: 23 November 2026
+
+The desktop build now draws with Metal by default; `--renderer open-gl` selects
+OpenGL in the same binary. On the Apple M4 Pro, macOS 27.2.1, pinned Rust 1.98.0,
+release/M1 baseline (`--features demo,metal`), one binary ran the offline chat
+with each renderer in four alternating fresh processes. After 20 seconds to
+settle, `scripts/process-usage.py` sampled 15 seconds; memory is the median of
+each run's samples, then the median across runs:
+
+| Idle, same chat | OpenGL | Metal |
+|---|---|---|
+| Physical footprint | 225 MiB | **169 MiB** (about 25% lower) |
+| Resident memory | 228 MiB | **208 MiB** |
+| CPU (one core) | 0.09% | 0.07% |
+| Interrupt wakeups | 0.5/s | 0.3/s |
+
+One run of each renderer caught extra activity (1–3% CPU and a footprint near
+360 MiB); medians keep those runs rather than discarding them. The continuous
+repaint stress test (`--demo-benchmark`, 240 frames, two alternating runs)
+showed similar CPU time per frame (median 0.29–0.47 ms OpenGL, 0.39–0.43 ms
+Metal). Metal's frame intervals had periodic 8–10 ms gaps that OpenGL's did not:
+that test submits frames far faster than the display refreshes, which exhausts
+the drawable queue; the application itself only repaints on events. GPU time and
+energy were not measured, and these are offline demo windows, not a linked
+account. Raw figures are in
+[the renderer measurement file](benchmarks/apple-silicon-renderer-2026-11-23.json).
+
 ## Idle conversation repainting: 20 September 2026
 
 Keeping a conversation at its newest message repeatedly requested scrolling

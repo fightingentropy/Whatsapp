@@ -16,8 +16,9 @@ const DEFAULT_LOG_FILTER: &str = "warn,whatsapp=info,whatsapp_rust=warn";
 struct Cli {
     #[command(subcommand)]
     command: Option<whatsapp::agent::CliCommand>,
-    /// Native rendering backend (Metal requires a build with --features metal).
-    #[arg(long, value_enum, default_value = "open-gl")]
+    /// Native rendering backend: Metal in a build with --features metal,
+    /// otherwise OpenGL. `open-gl` stays available in either build.
+    #[arg(long, value_enum, default_value_t)]
     renderer: whatsapp::renderer::Backend,
     /// Log more from the WhatsApp library.
     #[arg(short, long)]

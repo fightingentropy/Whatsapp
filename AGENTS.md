@@ -189,9 +189,10 @@ and archive. This is an explicit additional target; keep the Mac build intact.
   galleys have no paint meshes and must never render visible text. Preserve the
   first visible row when earlier content changes height. Never truncate the rows
   supplied to egui during cross-message selection or copy.
-- `src/renderer.rs` configures the native renderer. OpenGL remains the default;
-  `--features metal` adds a Metal-only wgpu backend selected with `--renderer metal`.
-  Keep the OpenGL option for comparison/recovery. Both are event-driven; the
+- `src/renderer.rs` configures the native renderer. The `metal` feature is on by
+  default and makes a Metal-only wgpu backend the default renderer;
+  `--renderer open-gl` (and `--no-default-features`) keep OpenGL for
+  comparison/recovery. Keep both. Both are event-driven; the
   offline demo benchmark measures CPU frame time, not GPU time or battery life.
 - `src/video.rs` plays one ordinary video through AVFoundation on the main thread.
   Audio and seeking share its native clock; egui draws one current texture bounded

@@ -1,13 +1,16 @@
 //! Renderer selection shared by the native app and its offline measurements.
 
-/// Native rendering backend. OpenGL stays available for comparison/recovery.
+/// Native rendering backend. A build with the `metal` feature draws with Metal
+/// unless `--renderer open-gl` asks for OpenGL, which stays for comparison and
+/// recovery; other builds have only OpenGL.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
 pub enum Backend {
-    /// Existing OpenGL renderer.
-    #[default]
+    /// The OpenGL renderer.
+    #[cfg_attr(not(feature = "metal"), default)]
     OpenGl,
     /// Apple's Metal API through wgpu.
     #[cfg(feature = "metal")]
+    #[default]
     Metal,
 }
 
@@ -47,6 +50,14 @@ mod tests {
         Backend::OpenGl.configure(&mut options);
         assert_eq!(options.renderer, eframe::Renderer::Glow);
         assert!(!options.glow_options.vsync);
+    }
+
+    #[test]
+    fn the_default_is_metal_exactly_when_it_is_built() {
+        #[cfg(feature = "metal")]
+        assert_eq!(Backend::default(), Backend::Metal);
+        #[cfg(not(feature = "metal"))]
+        assert_eq!(Backend::default(), Backend::OpenGl);
     }
 
     #[cfg(feature = "metal")]

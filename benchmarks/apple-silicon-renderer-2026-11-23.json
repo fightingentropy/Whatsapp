@@ -1,0 +1,133 @@
+{
+  "date": "2026-11-23",
+  "commit_base": "46607af",
+  "build": "cargo build --locked --release --features demo,metal (M1 baseline)",
+  "machine": "Apple M4 Pro",
+  "macos": "27.2.1",
+  "idle": {
+    "method": "--demo --demo-page chat per renderer, 20 s settle, scripts/process-usage.py 15 s; four alternating fresh-process runs; memory is the median of each run's samples",
+    "runs": [
+      {
+        "run": "metal-1",
+        "cpu_percent_one_core": 0.001,
+        "interrupt_wakeups_per_s": 0.33,
+        "physical_footprint_mib_median": 158.8,
+        "resident_mib_median": 211.5
+      },
+      {
+        "run": "metal-2",
+        "cpu_percent_one_core": 0.003,
+        "interrupt_wakeups_per_s": 0.33,
+        "physical_footprint_mib_median": 161.4,
+        "resident_mib_median": 203.5
+      },
+      {
+        "run": "metal-3",
+        "cpu_percent_one_core": 0.143,
+        "interrupt_wakeups_per_s": 0.33,
+        "physical_footprint_mib_median": 176.9,
+        "resident_mib_median": 212.6
+      },
+      {
+        "run": "metal-4",
+        "cpu_percent_one_core": 1.241,
+        "interrupt_wakeups_per_s": 8.66,
+        "physical_footprint_mib_median": 373.1,
+        "resident_mib_median": 204.1
+      },
+      {
+        "run": "open-gl-1",
+        "cpu_percent_one_core": 0.003,
+        "interrupt_wakeups_per_s": 0.33,
+        "physical_footprint_mib_median": 221.0,
+        "resident_mib_median": 228.2
+      },
+      {
+        "run": "open-gl-2",
+        "cpu_percent_one_core": 0.047,
+        "interrupt_wakeups_per_s": 0.6,
+        "physical_footprint_mib_median": 229.0,
+        "resident_mib_median": 228.3
+      },
+      {
+        "run": "open-gl-3",
+        "cpu_percent_one_core": 0.139,
+        "interrupt_wakeups_per_s": 0.33,
+        "physical_footprint_mib_median": 220.2,
+        "resident_mib_median": 227.3
+      },
+      {
+        "run": "open-gl-4",
+        "cpu_percent_one_core": 2.777,
+        "interrupt_wakeups_per_s": 11.93,
+        "physical_footprint_mib_median": 357.0,
+        "resident_mib_median": 229.5
+      }
+    ]
+  },
+  "stress": {
+    "method": "--demo-benchmark: 2 s warmup then 240 continuously repainted frames; two alternating runs",
+    "runs": [
+      {
+        "run": "metal-1",
+        "backend": "Metal",
+        "cpu_frame_ms": {
+          "count": 240,
+          "median": 0.3900409792549908,
+          "p95": 0.5832909373566508
+        },
+        "frame_interval_ms": {
+          "count": 240,
+          "median": 1.378291,
+          "p95": 3.315917
+        },
+        "first_ui_frame_ms": 431.9
+      },
+      {
+        "run": "metal-2",
+        "backend": "Metal",
+        "cpu_frame_ms": {
+          "count": 240,
+          "median": 0.4255829844623804,
+          "p95": 0.598665967117995
+        },
+        "frame_interval_ms": {
+          "count": 240,
+          "median": 1.372916,
+          "p95": 8.8125
+        },
+        "first_ui_frame_ms": 206.9
+      },
+      {
+        "run": "open-gl-1",
+        "backend": "OpenGl",
+        "cpu_frame_ms": {
+          "count": 240,
+          "median": 0.4700419958680868,
+          "p95": 0.6306249997578561
+        },
+        "frame_interval_ms": {
+          "count": 240,
+          "median": 0.76725,
+          "p95": 2.370416
+        },
+        "first_ui_frame_ms": 241.4
+      },
+      {
+        "run": "open-gl-2",
+        "backend": "OpenGl",
+        "cpu_frame_ms": {
+          "count": 240,
+          "median": 0.2945409796666354,
+          "p95": 0.3571669803932309
+        },
+        "frame_interval_ms": {
+          "count": 240,
+          "median": 0.40325,
+          "p95": 1.094583
+        },
+        "first_ui_frame_ms": 228.1
+      }
+    ]
+  }
+}

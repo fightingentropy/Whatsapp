@@ -90,7 +90,7 @@ Build from source below; signed, notarized public downloads will appear under
   settings, messages and downloads through a one-time local migration. An
   upstream ZapFast installation's session is never adopted.
 
-An optional Metal renderer is available for comparison with OpenGL (see below).
+The window draws with Metal; OpenGL stays available with `--renderer open-gl` (see below).
 See [PERFORMANCE.md](PERFORMANCE.md) for measurements, remaining costs and validation details.
 
 ## What it does
@@ -273,15 +273,17 @@ cargo build --locked --release
 ./target/aarch64-apple-darwin/release/whatsapp
 ```
 
-To build the experimental Metal backend, add `--features metal`, then launch
-with `--renderer metal`. `--renderer open-gl` selects the existing renderer in
-the same build. OpenGL remains the default. The Metal feature enables only the
-Apple backend of wgpu. Both renderers repaint on demand.
+The default build draws with Metal (the `metal` feature, on by default), which
+used about a quarter less memory than OpenGL at idle in the measurements in
+[PERFORMANCE.md](PERFORMANCE.md). `--renderer open-gl` selects OpenGL in the same
+build for comparison or recovery; `--no-default-features` builds OpenGL only.
+The Metal feature enables only the Apple backend of wgpu. Both renderers repaint
+on demand.
 
 Offline measurements (no linked account required):
 
 ```sh
-cargo build --locked --release --features demo,metal
+cargo build --locked --release --features demo
 ./target/aarch64-apple-darwin/release/whatsapp --renderer metal --demo-benchmark /tmp/metal.json
 ./target/aarch64-apple-darwin/release/whatsapp --renderer open-gl --demo-benchmark /tmp/opengl.json
 ./target/aarch64-apple-darwin/release/whatsapp --demo --demo-page long --demo-benchmark /tmp/scroll.json --demo-benchmark-scroll

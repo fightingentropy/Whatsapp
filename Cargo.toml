@@ -155,11 +155,13 @@ tempfile = "3"
 png = "0.18"
 
 [features]
+# Metal draws the window; `--renderer open-gl` keeps OpenGL for comparison and recovery.
+default = ["metal"]
 # Sample data, layout tests, and screenshots. Not used in release builds.
 demo = []
 # Optional compatibility fallback; macOS supplies Apple Color Emoji.
 bundled-emoji = []
-# Native Metal renderer, selectable with --renderer metal.
+# Native Metal renderer (on by default; build with --no-default-features for OpenGL only).
 metal = ["eframe/wgpu_no_default_features", "dep:wgpu"]
 
 [profile.release]
