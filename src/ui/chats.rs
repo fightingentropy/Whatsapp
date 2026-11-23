@@ -512,7 +512,7 @@ fn hit_row(app: &mut App, ui: &mut egui::Ui, hit: &Message) {
     );
     if ui.is_rect_visible(rect) {
         if response.hovered() {
-            ui.painter().rect_filled(rect, 0.0, palette.surface_hover);
+            paint_row_tile(ui, rect, palette.surface_hover);
         }
         let avatar_rect =
             Rect::from_center_size(pos2(rect.left() + 38.0, rect.center().y), Vec2::splat(48.0));
@@ -578,11 +578,6 @@ fn hit_row(app: &mut App, ui: &mut egui::Ui, hit: &Message) {
             1,
         );
         words.paint(ui, pos2(x, line_y), palette.dim);
-        ui.painter().hline(
-            left..=rect.right(),
-            rect.bottom() - 0.5,
-            egui::Stroke::new(1.0, palette.outline),
-        );
     }
     let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
     if response.clicked() {
@@ -606,7 +601,7 @@ fn contact_row(app: &mut App, ui: &mut egui::Ui, contact: &Contact) {
     );
     if ui.is_rect_visible(rect) {
         if response.hovered() {
-            ui.painter().rect_filled(rect, 0.0, palette.surface_hover);
+            paint_row_tile(ui, rect, palette.surface_hover);
         }
         let avatar_rect =
             Rect::from_center_size(pos2(rect.left() + 38.0, rect.center().y), Vec2::splat(48.0));
@@ -640,11 +635,6 @@ fn contact_row(app: &mut App, ui: &mut egui::Ui, contact: &Contact) {
             );
             phone_line.paint(ui, pos2(left, rect.top() + 38.0), palette.dim);
         }
-        ui.painter().hline(
-            left..=rect.right(),
-            rect.bottom() - 0.5,
-            egui::Stroke::new(1.0, palette.outline),
-        );
     }
     let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
     if response.clicked() {
@@ -663,12 +653,12 @@ fn archive_row(app: &mut App, ui: &mut egui::Ui, count: usize) {
     );
     if ui.is_rect_visible(rect) {
         if response.hovered() {
-            ui.painter().rect_filled(rect, 0.0, palette.surface_hover);
+            paint_row_tile(ui, rect, palette.surface_hover);
         }
         let icon_rect =
             Rect::from_center_size(pos2(rect.left() + 38.0, rect.center().y), Vec2::splat(22.0));
         Icon::Archive
-            .image(palette.accent, 22.0)
+            .image(palette.secondary, 22.0)
             .paint_at(ui, icon_rect);
         ui.painter().text(
             pos2(rect.left() + 76.0, rect.center().y),
@@ -682,12 +672,7 @@ fn archive_row(app: &mut App, ui: &mut egui::Ui, count: usize) {
             egui::Align2::RIGHT_CENTER,
             count.to_string(),
             theme::regular(12.5),
-            palette.accent,
-        );
-        ui.painter().hline(
-            (rect.left() + 76.0)..=rect.right(),
-            rect.bottom() - 0.5,
-            egui::Stroke::new(1.0, palette.outline),
+            palette.secondary,
         );
     }
     if response
@@ -711,9 +696,9 @@ fn row(app: &mut App, ui: &mut egui::Ui, chat: &Chat) -> egui::Response {
     let mut full_preview: Option<(Rect, String, String)> = None;
     if ui.is_rect_visible(rect) {
         if selected {
-            ui.painter().rect_filled(rect, 0.0, palette.surface_active);
+            paint_row_tile(ui, rect, palette.surface_active);
         } else if response.hovered() {
-            ui.painter().rect_filled(rect, 0.0, palette.surface_hover);
+            paint_row_tile(ui, rect, palette.surface_hover);
         }
         let avatar_rect =
             Rect::from_center_size(pos2(rect.left() + 38.0, rect.center().y), Vec2::splat(48.0));
@@ -868,11 +853,6 @@ fn row(app: &mut App, ui: &mut egui::Ui, chat: &Chat) -> egui::Response {
             widgets::line(ui, "", theme::regular(13.0), preview_color, 1.0, 1)
         };
         preview.paint(ui, pos2(x, line_y), preview_color);
-        ui.painter().hline(
-            left..=rect.right(),
-            rect.bottom() - 0.5,
-            egui::Stroke::new(1.0, palette.outline),
-        );
     }
     let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
     if let Some((area, prefix, full)) = full_preview {
@@ -889,6 +869,14 @@ fn row(app: &mut App, ui: &mut egui::Ui, chat: &Chat) -> egui::Response {
             context_menu(app, ui, chat, &menu_palette);
         });
     response
+}
+
+/// The rounded tile behind a hovered or selected row, inset from the panel
+/// edges like the web's list rows.
+fn paint_row_tile(ui: &egui::Ui, rect: Rect, fill: egui::Color32) {
+    let tile = rect.shrink2(vec2(6.0, 1.0));
+    ui.painter()
+        .rect_filled(tile, f32::from(theme::RADIUS), fill);
 }
 
 /// The widest a chat row's full-message tooltip grows before it wraps.

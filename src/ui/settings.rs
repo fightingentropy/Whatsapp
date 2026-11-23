@@ -1,6 +1,6 @@
 //! The settings page.
 
-use egui::{CornerRadius, Frame, Margin};
+use egui::{Frame, Margin};
 
 use crate::app::App;
 use crate::model::{Action, Dialog, Page};
@@ -40,11 +40,13 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                         theme::text(ui, "Settings", theme::bold(24.0), palette.text);
                     });
                     ui.add_space(12.0);
-                    let search = ui.add(
-                        egui::TextEdit::singleline(&mut app.settings_search)
-                            .id(egui::Id::new("settings-search"))
-                            .hint_text("Search settings")
-                            .desired_width(f32::INFINITY),
+                    let search = widgets::search_field(
+                        ui,
+                        &palette,
+                        egui::Id::new("settings-search"),
+                        &mut app.settings_search,
+                        "Search settings",
+                        ui.available_width(),
                     );
                     if std::mem::take(&mut app.focus_settings_search) {
                         search.request_focus();
@@ -215,16 +217,21 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
 }
 
 fn section(ui: &mut egui::Ui, palette: &theme::Palette, label: &str) {
-    ui.add_space(10.0);
+    ui.add_space(22.0);
     Frame::new()
-        .fill(palette.panel)
-        .corner_radius(CornerRadius::same(theme::RADIUS))
-        .inner_margin(Margin::symmetric(14, 8))
+        .inner_margin(Margin::symmetric(2, 0))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            theme::text(ui, label, theme::semibold(12.5), palette.accent);
+            theme::caps(ui, label, palette.secondary);
         });
-    ui.add_space(8.0);
+    ui.add_space(6.0);
+    let rect = ui.available_rect_before_wrap();
+    ui.painter().hline(
+        rect.x_range(),
+        rect.top(),
+        egui::Stroke::new(1.0, palette.outline),
+    );
+    ui.add_space(12.0);
 }
 
 fn toggle(

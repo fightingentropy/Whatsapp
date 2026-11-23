@@ -224,7 +224,7 @@ pub fn menu_item_enabled(
 ) -> bool {
     let width = ui.available_width();
     let (rect, response) = ui.allocate_exact_size(
-        vec2(width, 28.0),
+        vec2(width, 30.0),
         if enabled {
             Sense::click()
         } else {
@@ -234,7 +234,7 @@ pub fn menu_item_enabled(
     if ui.is_rect_visible(rect) {
         if response.hovered() && enabled {
             ui.painter()
-                .rect_filled(rect, CornerRadius::same(6), palette.surface_hover);
+                .rect_filled(rect, CornerRadius::same(8), palette.surface_hover);
         }
         let color = if enabled { palette.text } else { palette.dim };
         let mut x = rect.left() + 10.0;
@@ -340,12 +340,13 @@ pub fn search_field(
     } else {
         palette.surface
     };
-    ui.painter().rect_filled(rect, height / 2.0, fill);
+    let radius = f32::from(theme::RADIUS - 2);
+    ui.painter().rect_filled(rect, radius, fill);
     if has_focus {
         ui.painter().rect_stroke(
             rect,
-            height / 2.0,
-            Stroke::new(1.5, palette.accent),
+            radius,
+            Stroke::new(1.0, palette.accent),
             egui::StrokeKind::Inside,
         );
     }
@@ -421,8 +422,18 @@ pub fn switch(ui: &mut Ui, palette: &Palette, on: &mut bool) -> egui::Response {
         ui.painter()
             .rect_filled(rect, rect.height() / 2.0, Color32::from(fill));
         let knob_x = egui::lerp(rect.left() + 11.0..=rect.right() - 11.0, t);
+        // Paper on ink when on; a light knob on the quiet track when off.
+        let off = if palette.dark {
+            palette.secondary
+        } else {
+            Color32::WHITE
+        };
+        let knob = egui::lerp(
+            egui::Rgba::from(off)..=egui::Rgba::from(palette.on_accent),
+            t,
+        );
         ui.painter()
-            .circle_filled(pos2(knob_x, rect.center().y), 8.0, Color32::WHITE);
+            .circle_filled(pos2(knob_x, rect.center().y), 8.0, Color32::from(knob));
     }
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
@@ -456,16 +467,17 @@ pub fn setting_row(
     ui.add_space(10.0);
 }
 
-/// Small pill label used for date separators and pinned markers.
+/// Small pill label used for date separators and pinned markers, in the
+/// uppercase section-label style.
 pub fn chip(ui: &mut Ui, palette: &Palette, label: &str) -> egui::Response {
-    let galley =
-        ui.painter()
-            .layout_no_wrap(label.to_owned(), theme::medium(12.0), palette.secondary);
-    let size = galley.size() + vec2(20.0, 10.0);
+    let galley = ui
+        .painter()
+        .layout_job(theme::caps_job(label, 10.5, palette.secondary));
+    let size = galley.size() + vec2(22.0, 12.0);
     let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
     if ui.is_rect_visible(rect) {
         ui.painter()
-            .rect_filled(rect, rect.height() / 2.0, palette.panel);
+            .rect_filled(rect, rect.height() / 2.0, palette.surface);
         ui.painter().galley(
             rect.center() - galley.size() / 2.0,
             galley,

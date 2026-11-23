@@ -82,7 +82,7 @@ fn empty(app: &mut App, ui: &mut egui::Ui) {
 fn header(app: &mut App, ui: &mut egui::Ui, chat: &Chat) {
     let palette = app.palette;
     let title = app.chat_title(chat);
-    egui::Panel::top("chat-header")
+    let header = egui::Panel::top("chat-header")
         .show_separator_line(false)
         .frame(
             Frame::new()
@@ -267,6 +267,13 @@ fn header(app: &mut App, ui: &mut egui::Ui, chat: &Chat) {
                 });
             });
         });
+    // A hairline where messages scroll under the header.
+    let rect = header.response.rect;
+    ui.painter().hline(
+        rect.x_range(),
+        rect.bottom() - 0.5,
+        Stroke::new(1.0, palette.outline),
+    );
 }
 
 /// Chat-header subtitle.
@@ -284,7 +291,7 @@ fn subtitle(app: &mut App, chat: &Chat) -> (String, Color32) {
         } else {
             "typing…".to_owned()
         };
-        return (text, palette.accent);
+        return (text, palette.good);
     }
     if chat.is_group() {
         let names = app.member_names(chat);
@@ -299,7 +306,7 @@ fn subtitle(app: &mut App, chat: &Chat) -> (String, Color32) {
     }
     if let Some(presence) = app.presence.get(&chat.id) {
         if presence.online {
-            return ("online".to_owned(), palette.accent);
+            return ("online".to_owned(), palette.good);
         }
         if let Some(seen) = presence.last_seen {
             return (

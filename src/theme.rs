@@ -1,7 +1,8 @@
 //! Colors, typography, icons, and base widgets.
 //!
 //! The UI uses Inter's font weights and Lucide icons. [`Palette`] holds all
-//! light and dark theme colors.
+//! light and dark theme colors: the warm paper neutrals and single ink accent
+//! of health.erlin.org, with soft tiles instead of borders.
 
 use egui::{Color32, CornerRadius, Response, Sense, Stroke, Vec2};
 
@@ -20,6 +21,8 @@ pub struct Palette {
     pub accent: Color32,
     pub accent_hover: Color32,
     pub on_accent: Color32,
+    /// In-range status, such as a contact being online.
+    pub good: Color32,
     pub danger: Color32,
     pub warning: Color32,
     pub overlay: Color32,
@@ -36,75 +39,79 @@ pub struct Palette {
 }
 
 impl Palette {
+    // Warm paper neutrals shared with health.erlin.org and erlin.org: one ink
+    // colour carries emphasis, green and red only report status.
     pub fn dark() -> Self {
         Self {
             dark: true,
-            window: Color32::from_rgb(0x12, 0x14, 0x16),
-            panel: Color32::from_rgb(0x1b, 0x1e, 0x21),
-            surface: Color32::from_rgb(0x26, 0x2a, 0x2d),
-            surface_hover: Color32::from_rgb(0x30, 0x35, 0x38),
-            surface_active: Color32::from_rgb(0x39, 0x40, 0x43),
-            outline: Color32::from_rgb(0x2c, 0x31, 0x34),
-            text: Color32::from_rgb(0xed, 0xef, 0xf0),
-            secondary: Color32::from_rgb(0x9a, 0xa3, 0xa9),
-            dim: Color32::from_rgb(0x77, 0x82, 0x89),
-            accent: Color32::from_rgb(0x46, 0xd6, 0x8a),
-            accent_hover: Color32::from_rgb(0x64, 0xe3, 0xa0),
-            on_accent: Color32::from_rgb(0x12, 0x14, 0x16),
-            danger: Color32::from_rgb(0xf1, 0x5c, 0x6d),
-            warning: Color32::from_rgb(0xff, 0xd2, 0x79),
-            overlay: Color32::from_rgb(0x26, 0x2b, 0x2e),
-            shadow: Color32::from_black_alpha(140),
-            chat: Color32::from_rgb(0x12, 0x14, 0x16),
-            bubble_in: Color32::from_rgb(0x26, 0x2a, 0x2d),
-            bubble_out: Color32::from_rgb(0x16, 0x4c, 0x3a),
-            link: Color32::from_rgb(0x53, 0xbd, 0xeb),
-            read: Color32::from_rgb(0x53, 0xbd, 0xeb),
+            window: Color32::from_rgb(0x10, 0x0e, 0x0c),
+            panel: Color32::from_rgb(0x10, 0x0e, 0x0c),
+            surface: Color32::from_rgb(0x19, 0x17, 0x14),
+            surface_hover: Color32::from_rgb(0x1e, 0x1b, 0x19),
+            surface_active: Color32::from_rgb(0x29, 0x26, 0x24),
+            outline: Color32::from_rgb(0x29, 0x26, 0x24),
+            text: Color32::from_rgb(0xf0, 0xee, 0xeb),
+            secondary: Color32::from_rgb(0x9b, 0x98, 0x93),
+            dim: Color32::from_rgb(0x89, 0x85, 0x81),
+            accent: Color32::from_rgb(0xf0, 0xee, 0xeb),
+            accent_hover: Color32::from_rgb(0xd2, 0xcf, 0xcb),
+            on_accent: Color32::from_rgb(0x10, 0x0e, 0x0c),
+            good: Color32::from_rgb(0x62, 0xd2, 0x86),
+            danger: Color32::from_rgb(0xfd, 0x74, 0x68),
+            warning: Color32::from_rgb(0xe8, 0xb4, 0x6a),
+            overlay: Color32::from_rgb(0x18, 0x15, 0x13),
+            shadow: Color32::from_black_alpha(150),
+            chat: Color32::from_rgb(0x10, 0x0e, 0x0c),
+            bubble_in: Color32::from_rgb(0x1c, 0x1a, 0x17),
+            bubble_out: Color32::from_rgb(0x2b, 0x28, 0x25),
+            link: Color32::from_rgb(0x9e, 0xc5, 0xf4),
+            read: Color32::from_rgb(0x5e, 0x9e, 0xec),
         }
     }
 
     pub fn light() -> Self {
         Self {
             dark: false,
-            window: Color32::from_rgb(0xf0, 0xf2, 0xf5),
-            panel: Color32::from_rgb(0xff, 0xff, 0xff),
-            surface: Color32::from_rgb(0xf0, 0xf2, 0xf5),
-            surface_hover: Color32::from_rgb(0xe6, 0xe9, 0xec),
-            surface_active: Color32::from_rgb(0xd9, 0xdd, 0xe1),
-            outline: Color32::from_rgb(0xe9, 0xed, 0xef),
-            text: Color32::from_rgb(0x11, 0x1b, 0x21),
-            secondary: Color32::from_rgb(0x66, 0x77, 0x81),
-            dim: Color32::from_rgb(0x8f, 0x9c, 0xa5),
-            accent: Color32::from_rgb(0x00, 0xa8, 0x84),
-            accent_hover: Color32::from_rgb(0x00, 0x8f, 0x6f),
-            on_accent: Color32::WHITE,
-            danger: Color32::from_rgb(0xea, 0x00, 0x38),
-            warning: Color32::from_rgb(0xa0, 0x6b, 0x00),
-            overlay: Color32::from_rgb(0xff, 0xff, 0xff),
-            shadow: Color32::from_black_alpha(50),
-            chat: Color32::from_rgb(0xef, 0xea, 0xe2),
-            bubble_in: Color32::from_rgb(0xff, 0xff, 0xff),
-            bubble_out: Color32::from_rgb(0xd9, 0xfd, 0xd3),
-            link: Color32::from_rgb(0x02, 0x7e, 0xb5),
-            read: Color32::from_rgb(0x53, 0xbd, 0xeb),
+            window: Color32::from_rgb(0xfb, 0xfa, 0xf7),
+            panel: Color32::from_rgb(0xfb, 0xfa, 0xf7),
+            surface: Color32::from_rgb(0xf2, 0xf0, 0xec),
+            surface_hover: Color32::from_rgb(0xef, 0xec, 0xe8),
+            surface_active: Color32::from_rgb(0xe7, 0xe4, 0xdf),
+            outline: Color32::from_rgb(0xe0, 0xdd, 0xd9),
+            text: Color32::from_rgb(0x19, 0x15, 0x12),
+            secondary: Color32::from_rgb(0x67, 0x62, 0x5d),
+            dim: Color32::from_rgb(0x75, 0x71, 0x6d),
+            accent: Color32::from_rgb(0x19, 0x15, 0x12),
+            accent_hover: Color32::from_rgb(0x3a, 0x35, 0x31),
+            on_accent: Color32::from_rgb(0xfb, 0xfa, 0xf7),
+            good: Color32::from_rgb(0x05, 0x77, 0x3b),
+            danger: Color32::from_rgb(0xcc, 0x28, 0x27),
+            warning: Color32::from_rgb(0x9a, 0x5b, 0x00),
+            overlay: Color32::from_rgb(0xfe, 0xfd, 0xfc),
+            shadow: Color32::from_rgba_unmultiplied(0x2a, 0x24, 0x1f, 56),
+            chat: Color32::from_rgb(0xfb, 0xfa, 0xf7),
+            bubble_in: Color32::from_rgb(0xf2, 0xf0, 0xec),
+            bubble_out: Color32::from_rgb(0xe7, 0xe4, 0xdf),
+            link: Color32::from_rgb(0x18, 0x4f, 0x95),
+            read: Color32::from_rgb(0x39, 0x87, 0xe5),
         }
     }
 
     /// Group-sender color derived from the avatar hue.
     pub fn sender(&self, hue: f32) -> Color32 {
         if self.dark {
-            hsl(hue, 0.6, 0.68)
+            hsl(hue, 0.42, 0.7)
         } else {
-            hsl(hue, 0.65, 0.38)
+            hsl(hue, 0.5, 0.36)
         }
     }
 
     /// Avatar background derived from the chat hue.
     pub fn avatar(&self, hue: f32) -> Color32 {
         let (saturation, lightness) = if self.dark {
-            (0.38, 0.42)
+            (0.22, 0.36)
         } else {
-            (0.45, 0.62)
+            (0.24, 0.56)
         };
         hsl(hue, saturation, lightness)
     }
@@ -133,8 +140,8 @@ fn hsl(hue: f32, saturation: f32, lightness: f32) -> Color32 {
     Color32::from_rgb(channel(r), channel(g), channel(b))
 }
 
-pub const RADIUS: u8 = 8;
-pub const RADIUS_SMALL: u8 = 4;
+pub const RADIUS: u8 = 12;
+pub const RADIUS_SMALL: u8 = 6;
 pub const ROW_HEIGHT: f32 = 68.0;
 
 const INTER_MEDIUM: &str = "inter-medium";
@@ -182,24 +189,25 @@ pub fn apply(ctx: &egui::Context, palette: &Palette) {
     visuals.override_text_color = Some(palette.text);
     visuals.weak_text_color = Some(palette.secondary);
     visuals.hyperlink_color = palette.link;
-    visuals.selection.bg_fill = palette.accent.gamma_multiply(0.35);
-    visuals.selection.stroke = Stroke::new(1.0, palette.accent);
+    // Selected text inverts to paper on ink, as on the web.
+    visuals.selection.bg_fill = palette.accent;
+    visuals.selection.stroke = Stroke::new(1.0, palette.on_accent);
     visuals.window_stroke = Stroke::new(1.0, palette.outline);
-    visuals.window_corner_radius = CornerRadius::same(RADIUS + 2);
+    visuals.window_corner_radius = CornerRadius::same(RADIUS + 6);
     visuals.menu_corner_radius = CornerRadius::same(RADIUS);
     visuals.window_shadow = egui::epaint::Shadow {
-        offset: [0, 6],
-        blur: 24,
+        offset: [0, 14],
+        blur: 44,
         spread: 0,
         color: palette.shadow,
     };
     visuals.popup_shadow = egui::epaint::Shadow {
-        offset: [0, 4],
-        blur: 16,
+        offset: [0, 8],
+        blur: 28,
         spread: 0,
         color: palette.shadow,
     };
-    let corner = CornerRadius::same(RADIUS_SMALL + 2);
+    let corner = CornerRadius::same(RADIUS - 1);
     for widget in [
         &mut visuals.widgets.inactive,
         &mut visuals.widgets.hovered,
@@ -488,11 +496,13 @@ pub fn icon_button(
     let edge = size + 12.0;
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(edge), Sense::click());
     if ui.is_rect_visible(rect) {
-        let tint = if response.hovered() || response.has_focus() {
-            hover
-        } else {
-            color
-        };
+        let lit = response.hovered() || response.has_focus();
+        if lit {
+            // A ghost button: a soft tile behind the icon, as on the web.
+            let tile = ui.visuals().widgets.hovered.weak_bg_fill;
+            ui.painter().rect_filled(rect, edge * 0.3, tile);
+        }
+        let tint = if lit { hover } else { color };
         let scale = if response.is_pointer_button_down_on() {
             0.92
         } else {
@@ -547,21 +557,21 @@ pub fn logo(ui: &egui::Ui, center: egui::Pos2, diameter: f32) {
         );
 }
 
-/// A pill-shaped text button: filled for the primary action, outlined otherwise.
+/// A text button: filled with ink for the primary action, a hairline otherwise.
 pub fn pill_button(ui: &mut egui::Ui, palette: &Palette, label: &str, primary: bool) -> Response {
-    let font = semibold(13.0);
+    let font = medium(13.5);
     let color = if primary {
         palette.on_accent
     } else {
         palette.text
     };
     let galley = ui.painter().layout_no_wrap(label.to_string(), font, color);
-    let padding = Vec2::new(18.0, 8.0);
+    let padding = Vec2::new(15.0, 9.0);
     let size = galley.size() + padding * 2.0;
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     if ui.is_rect_visible(rect) {
         let hovered = response.hovered();
-        let radius = rect.height() / 2.0;
+        let radius = f32::from(RADIUS - 1);
         if primary {
             let fill = if hovered {
                 palette.accent_hover
@@ -570,11 +580,14 @@ pub fn pill_button(ui: &mut egui::Ui, palette: &Palette, label: &str, primary: b
             };
             ui.painter().rect_filled(rect, radius, fill);
         } else {
-            let stroke_color = if hovered { palette.text } else { palette.dim };
+            if hovered {
+                ui.painter()
+                    .rect_filled(rect, radius, palette.surface_hover);
+            }
             ui.painter().rect_stroke(
                 rect,
                 radius,
-                Stroke::new(1.0, stroke_color),
+                Stroke::new(1.0, palette.outline),
                 egui::StrokeKind::Inside,
             );
         }
@@ -609,7 +622,7 @@ pub fn soft_button(
         } else {
             palette.surface
         };
-        ui.painter().rect_filled(rect, rect.height() / 2.0, fill);
+        ui.painter().rect_filled(rect, f32::from(RADIUS - 2), fill);
         let mut x = rect.left() + padding.x;
         if let Some(icon) = icon {
             let icon_rect = egui::Rect::from_center_size(
@@ -720,6 +733,30 @@ pub fn link(
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
+/// The small uppercase, letter-spaced label used for section titles.
+pub fn caps_job(text: &str, size: f32, color: Color32) -> egui::text::LayoutJob {
+    let mut job = egui::text::LayoutJob::default();
+    job.append(
+        &text.to_uppercase(),
+        0.0,
+        egui::TextFormat {
+            font_id: medium(size),
+            color,
+            extra_letter_spacing: size * 0.07,
+            ..Default::default()
+        },
+    );
+    job
+}
+
+/// A section title in [`caps_job`] style.
+pub fn caps(ui: &mut egui::Ui, text: &str, color: Color32) -> Response {
+    let galley = ui.painter().layout_job(caps_job(text, 11.0, color));
+    let (rect, response) = ui.allocate_exact_size(galley.size(), Sense::hover());
+    ui.painter().galley(rect.min, galley, color);
+    response
+}
+
 /// Native macOS layout, also selectable in offline layout previews.
 pub fn macos_chrome(ctx: &egui::Context) -> bool {
     #[cfg(any(test, feature = "demo"))]
@@ -766,6 +803,28 @@ mod tests {
             assert!(!bytes.is_empty(), "{icon:?} is empty");
             assert!(uri.ends_with(".svg"));
             assert_eq!(icon.uri(), *uri);
+        }
+    }
+
+    #[test]
+    fn ink_accent_keeps_paper_text_readable() {
+        // Badges, primary buttons and selected text draw on_accent over accent.
+        fn luminance(color: Color32) -> f32 {
+            let channel = |value: u8| {
+                let value = f32::from(value) / 255.0;
+                if value <= 0.040_45 {
+                    value / 12.92
+                } else {
+                    ((value + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * channel(color.r()) + 0.7152 * channel(color.g()) + 0.0722 * channel(color.b())
+        }
+        for palette in [Palette::light(), Palette::dark()] {
+            let (a, b) = (luminance(palette.accent), luminance(palette.on_accent));
+            let ratio = (a.max(b) + 0.05) / (a.min(b) + 0.05);
+            assert!(ratio >= 7.0, "dark={} ratio={ratio}", palette.dark);
+            assert_eq!(palette.accent, palette.text, "one ink colour");
         }
     }
 

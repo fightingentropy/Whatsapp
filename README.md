@@ -4,9 +4,10 @@
 
 A small native WhatsApp companion for **Apple Silicon Macs (M1 and newer)**.
 Built with Rust, [egui](https://github.com/emilk/egui) and
-[whatsapp-rust](https://github.com/oxidezap/whatsapp-rust). Charcoal surfaces,
-green accents, a large handset-and-chat mark on a dark Dock icon, and a dark
-theme by default.
+[whatsapp-rust](https://github.com/oxidezap/whatsapp-rust). Warm paper and
+charcoal surfaces with a single ink accent (shared with health.erlin.org), soft
+rounded tiles instead of borders, a large handset-and-chat mark on a dark Dock
+icon, and a dark theme by default.
 
 A personal **native iPhone companion** is also available in [`ios/`](ios/README.md).
 It uses SwiftUI and the same Rust messaging worker and SQLite archive. It links

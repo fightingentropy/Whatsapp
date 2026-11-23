@@ -36,7 +36,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     .layout(Layout::top_down(Align::Center)),
             );
             let shown = Frame::new()
-                .fill(palette.panel)
+                .fill(palette.overlay)
                 .stroke(Stroke::new(1.0, palette.outline))
                 .corner_radius(CornerRadius::same(theme::RADIUS + 8))
                 .inner_margin(Margin::same(32))

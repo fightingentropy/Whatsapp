@@ -220,6 +220,9 @@ pub(super) fn controls(
                 });
             }
             ui.spacing_mut().slider_width = (width - 102.0).max(16.0);
+            // The played part follows the text colour, so it stays visible on
+            // the dark overlay as well as in a bubble.
+            ui.visuals_mut().selection.bg_fill = palette.text;
             let slider = ui
                 .add_enabled(
                     active.is_some_and(|active| active.duration > 0.0 && !failed),
