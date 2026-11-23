@@ -38,10 +38,7 @@ struct WhatsappApp: App {
         WindowGroup {
             Group {
                 if store.hasSession {
-                    TabView(selection: $store.selectedTab) {
-                        ChatsView().tabItem { Label("Chats", systemImage: "bubble.left.and.bubble.right.fill") }.tag("chats")
-                        SettingsView().tabItem { Label("Settings", systemImage: "gearshape.fill") }.tag("settings")
-                    }
+                    RootTabs()
                 } else { PairingView() }
             }
             .environment(store)
@@ -60,5 +57,46 @@ struct WhatsappApp: App {
                 store.clearMemoryCaches()
             }
         }
+    }
+}
+
+/// Both pages stay alive so navigation and scroll positions survive switching,
+/// under the Rota-style glass bar. An open conversation owns the bottom edge.
+private struct RootTabs: View {
+    @Environment(ChatStore.self) private var store
+
+    var body: some View {
+        ZStack {
+            page(.chats) { ChatsView() }
+            page(.settings) { SettingsView() }
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            let conversation = store.selectedTab == AppTab.chats.rawValue && !store.navigation.isEmpty
+            VStack(spacing: 0) {
+                if !conversation {
+                    TabBarHost().transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+            }
+            .animation(.snappy(duration: 0.25), value: conversation)
+        }
+    }
+
+    private func page<V: View>(_ tab: AppTab, @ViewBuilder _ content: () -> V) -> some View {
+        let shown = store.selectedTab == tab.rawValue
+        return content()
+            .opacity(shown ? 1 : 0)
+            .allowsHitTesting(shown)
+            .accessibilityHidden(!shown)
+    }
+}
+
+/// Reads chat state on its own, so unread changes redraw only the bar.
+private struct TabBarHost: View {
+    @Environment(ChatStore.self) private var store
+
+    var body: some View {
+        @Bindable var store = store
+        let unread = store.chats.reduce(0) { $0 + ($1.unread > 0 && !$1.archived && !$1.muted ? 1 : 0) }
+        GlassTabBar(selection: $store.selectedTab, unread: unread)
     }
 }

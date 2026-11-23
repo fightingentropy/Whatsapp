@@ -169,7 +169,6 @@ struct ConversationView: View {
         }
         .sheet(isPresented: $infoPresented) { NavigationStack { ChatDetails(id: chatID).toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { infoPresented = false } } } } }
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar(.hidden, for: .tabBar)
         .quickLookPreview($previewURL)
         .onAppear {
             draftText = store.drafts[store.canonical(chatID), default: ""]

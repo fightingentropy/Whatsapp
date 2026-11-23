@@ -253,7 +253,7 @@ final class WhatsappUITests: XCTestCase {
 
     func testLightAppearanceAndLargeMessageText() {
         let app = demo()
-        app.tabBars.buttons["Settings"].tap()
+        app.buttons["tab-settings"].tap()
         capture(app, "Settings — dark appearance")
         app.buttons["Appearance"].tap()
         XCTAssertTrue(app.navigationBars["Appearance"].waitForExistence(timeout: 3))
@@ -261,7 +261,7 @@ final class WhatsappUITests: XCTestCase {
         app.buttons["Light"].tap()
         app.sliders["Message text size"].adjust(toNormalizedSliderPosition: 1)
         capture(app, "Appearance — live message preview")
-        app.tabBars.buttons["Chats"].tap()
+        app.buttons["tab-chats"].tap()
         capture(app, "Refined chat list — light appearance")
         app.buttons["chat-weekend@g.us"].tap()
         XCTAssertTrue(app.staticTexts["Sounds good"].waitForExistence(timeout: 5))
