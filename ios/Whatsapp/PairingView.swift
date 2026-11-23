@@ -11,15 +11,19 @@ struct PairingView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 28) {
                     VStack(alignment: .leading, spacing: 14) {
-                        Image("Brand").resizable().frame(width: 78, height: 78).clipShape(RoundedRectangle(cornerRadius: 20))
-                        Text("Your chats.\nOn your iPhone.").font(.largeTitle.bold())
+                        HStack(alignment: .center) {
+                            Wordmark(text: "whatsapp")
+                            Spacer()
+                            Image("Brand").resizable().frame(width: 44, height: 44).clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+                        }
+                        Text("Your chats, on your iPhone.").font(Theme.sans(22, .semibold)).foregroundStyle(Theme.fg)
                         Text("Link your existing WhatsApp account to this independent companion.")
-                            .font(.body).foregroundStyle(.secondary)
+                            .font(Theme.sans(15)).foregroundStyle(Theme.muted)
                     }
                     if let code = store.pairingCode {
-                        VStack(alignment: .leading, spacing: 18) {
-                            Text("Enter this code in WhatsApp").font(.headline)
-                            Text(code).font(.system(size: 32, weight: .semibold, design: .monospaced))
+                        Card(padding: 20) { VStack(alignment: .leading, spacing: 18) {
+                            Eyebrow("Enter this code in WhatsApp")
+                            Text(code).font(Theme.mono(32, .semibold)).foregroundStyle(Theme.fg)
                                 .tracking(3).textSelection(.enabled).accessibilityIdentifier("pairing-code")
                             Button {
                                 UIPasteboard.general.setItems([[UIPasteboard.typeAutomatic: code]], options: [
@@ -27,45 +31,47 @@ struct PairingView: View {
                                 ])
                             } label: {
                                 Label("Copy code", systemImage: "doc.on.doc")
-                            }.buttonStyle(.borderedProminent)
+                            }.buttonStyle(PillStyle())
                             Text("Switch to official WhatsApp, enter the code and approve. Return here straight after submitting it so this app can finish connecting.")
-                                .font(.subheadline).foregroundStyle(.secondary)
+                                .font(Theme.sans(14)).foregroundStyle(Theme.muted)
                             Text("iOS gives linking limited time while you switch apps. This code stops working if that time runs out.")
-                                .font(.footnote).foregroundStyle(.secondary)
-                        }
-                        .padding(20).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
+                                .font(Theme.sans(13)).foregroundStyle(Theme.muted)
+                        } }
                     } else {
-                        VStack(alignment: .leading, spacing: 14) {
+                        Card(padding: 20) { VStack(alignment: .leading, spacing: 14) {
                             if store.pairingInterrupted {
-                                Label("Linking was interrupted", systemImage: "clock.badge.exclamationmark").font(.headline)
+                                HStack(spacing: 6) { Dot(color: Theme.amber); Eyebrow("Linking was interrupted", color: Theme.amber) }
                                 Text("This app ran out of background time, so the previous code is no longer active. Request a fresh code and return here straight after submitting it in WhatsApp.")
-                                    .font(.subheadline).foregroundStyle(.secondary)
+                                    .font(Theme.sans(14)).foregroundStyle(Theme.muted)
                                     .accessibilityIdentifier("pairing-interrupted")
                             }
+                            Eyebrow("Link with phone number")
                             Text("First, open official WhatsApp → Settings → Linked Devices → Link a Device → Link with phone number instead. Then return here to get your code.")
-                                .font(.subheadline).foregroundStyle(.secondary)
-                            Text("Phone number").font(.headline)
+                                .font(Theme.sans(14)).foregroundStyle(Theme.muted)
                             TextField("Country code + phone number", text: $phone)
                                 .keyboardType(.phonePad).textContentType(.telephoneNumber)
-                                .padding(16).background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 14))
+                                .font(Theme.mono(17)).foregroundStyle(Theme.fg)
+                                .padding(.horizontal, 14).frame(height: 50)
+                                .background(Theme.bg, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(Theme.line, lineWidth: 1))
                                 .accessibilityIdentifier("pairing-phone")
                             Button { store.pair(phone: phone) } label: {
                                 HStack {
-                                    if store.pairingBusy { ProgressView().tint(.black) }
-                                    Text(store.pairingBusy ? "Getting your code…" : "Link with phone number").fontWeight(.semibold)
-                                }.frame(maxWidth: .infinity).padding(.vertical, 8)
+                                    if store.pairingBusy { ProgressView().tint(Theme.bg) }
+                                    Text(store.pairingBusy ? "Getting your code…" : "Link with phone number")
+                                }
                             }
-                            .buttonStyle(.borderedProminent).buttonBorderShape(.roundedRectangle(radius: 14))
-                            .foregroundStyle(.black).disabled(store.pairingBusy || store.status != "unlinked")
+                            .buttonStyle(PillStyle(large: true))
+                            .disabled(store.pairingBusy || store.status != "unlinked")
                             .accessibilityIdentifier("pairing-submit")
                             Text("Include the country code, for example +44. This adds a linked device; your existing account stays on your phone.")
-                                .font(.footnote).foregroundStyle(.secondary)
-                        }
+                                .font(Theme.sans(13)).foregroundStyle(Theme.muted)
+                        } }
                     }
                     if store.status == "starting" || store.status == "connecting" {
-                        HStack(spacing: 10) { ProgressView(); Text("Connecting securely…").foregroundStyle(.secondary) }
+                        HStack(spacing: 8) { Dot(color: Theme.amber); Text("Connecting securely…").font(Theme.mono(13)).foregroundStyle(Theme.muted) }
                     } else if store.status == "failed" || store.status == "disconnected" || store.status == "logged_out" {
-                        Button("Try connecting again") { store.reconnect() }
+                        Button("Try connecting again") { store.reconnect() }.buttonStyle(PillStyle(kind: .secondary))
                     }
                     if let qr = store.qr {
                         DisclosureGroup("Link using a QR code", isExpanded: $showQR) {
@@ -76,17 +82,19 @@ struct PairingView: View {
                                         .accessibilityLabel("WhatsApp linking QR code")
                                 }
                                 Text("Use the QR code when your primary WhatsApp account is on another phone.")
-                                    .font(.footnote).foregroundStyle(.secondary)
+                                    .font(Theme.sans(13)).foregroundStyle(Theme.muted)
                             }.frame(maxWidth: .infinity).padding(.top, 14)
-                        }
+                        }.tint(Theme.fg)
                     }
-                    Label("Private on your device", systemImage: "lock.shield")
-                        .font(.subheadline.weight(.medium)).foregroundStyle(.secondary)
-                    Text("Messages arrive while this app is open. Background notifications are not supported yet.")
-                        .font(.footnote).foregroundStyle(.secondary)
-                }.padding(28)
+                    VStack(alignment: .leading, spacing: 6) {
+                        Eyebrow("Private on your device")
+                        Text("Messages arrive while this app is open, and when iOS allows a background refresh.")
+                            .font(Theme.sans(13)).foregroundStyle(Theme.muted)
+                    }
+                }.padding(.horizontal, 16).padding(.top, 8).padding(.bottom, 32)
             }
-            .background(Color(.systemGroupedBackground))
+            .scrollIndicators(.hidden)
+            .background(Theme.bg.ignoresSafeArea())
             .scrollDismissesKeyboard(.interactively)
             .toolbar { ToolbarItemGroup(placement: .keyboard) { Spacer(); Button("Done") { UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil) } } }
         }

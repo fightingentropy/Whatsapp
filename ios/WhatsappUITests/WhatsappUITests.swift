@@ -49,7 +49,7 @@ final class WhatsappUITests: XCTestCase {
 
     private func demo() -> XCUIApplication {
         let app = XCUIApplication(); app.launchArguments = ["--demo"]; app.launch()
-        XCTAssertTrue(app.navigationBars["Chats"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["chats-title"].waitForExistence(timeout: 10))
         return app
     }
 
@@ -184,7 +184,7 @@ final class WhatsappUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--demo"]
         app.launch()
-        XCTAssertTrue(app.navigationBars["Chats"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["chats-title"].waitForExistence(timeout: 10))
         capture(app, "Refined chat list — dark appearance")
         app.buttons["chat-weekend@g.us"].tap()
         XCTAssertTrue(app.staticTexts["Sounds good"].waitForExistence(timeout: 5))

@@ -14,10 +14,10 @@ struct ChatDetails: View {
                 VStack(spacing: 7) {
                     AvatarView(name: chat.map(store.chatTitle) ?? store.displayName(id), url: store.avatarURL(id, full: true), group: chat?.kind == "group", size: 88)
                         .padding(.bottom, 8)
-                    Text(chat.map(store.chatTitle) ?? store.displayName(id)).font(.title2.weight(.semibold)).textSelection(.enabled)
-                    if id.hasSuffix("@s.whatsapp.net") { Text("+" + id.components(separatedBy: "@")[0]).foregroundStyle(.secondary).textSelection(.enabled) }
-                    if let chat, let status = store.presenceLabel(chat) { Text(status).font(.footnote).foregroundStyle(.secondary) }
-                    if id == store.accountID, let about = store.accountAbout { Text(about).foregroundStyle(.secondary) }
+                    Text(chat.map(store.chatTitle) ?? store.displayName(id)).font(Theme.sans(24, .bold)).tracking(-0.6).foregroundStyle(Theme.fg).textSelection(.enabled)
+                    if id.hasSuffix("@s.whatsapp.net") { Text("+" + id.components(separatedBy: "@")[0]).font(Theme.mono(14)).foregroundStyle(Theme.muted).textSelection(.enabled) }
+                    if let chat, let status = store.presenceLabel(chat) { Text(status).font(Theme.mono(12.5)).foregroundStyle(Theme.muted) }
+                    if id == store.accountID, let about = store.accountAbout { Text(about).font(Theme.sans(14)).foregroundStyle(Theme.muted) }
                 }.frame(maxWidth: .infinity).multilineTextAlignment(.center).padding(.vertical, 12)
             }.listRowBackground(Color.clear)
             if let chat {
@@ -26,9 +26,9 @@ struct ChatDetails: View {
                     Button { store.setArchived(chat) } label: { Label(chat.archived ? "Unarchive chat" : "Archive chat", systemImage: "archivebox") }
                     ChatMuteMenu(chat: chat)
                     Button { store.markChatRead(chat) } label: { Label("Mark as read", systemImage: "checkmark.bubble") }
-                }.tint(.primary)
+                } header: { Eyebrow("Chat") }.tint(Theme.fg).cardRows()
                 if chat.kind == "group" {
-                    Section("Members") {
+                    Section {
                         ForEach(chat.participants ?? [], id: \.self) { member in
                             NavigationLink { ChatDetails(id: member) } label: {
                                 HStack(spacing: 12) {
@@ -37,8 +37,8 @@ struct ChatDetails: View {
                                 }.padding(.vertical, 3)
                             }.task { store.avatar(member) }
                         }
-                        if chat.participants?.isEmpty != false { Text("Member information is still loading.").foregroundStyle(.secondary) }
-                    }
+                        if chat.participants?.isEmpty != false { Text("Member information is still loading.").foregroundStyle(Theme.muted) }
+                    } header: { Eyebrow("Members") }.cardRows()
                 }
             }
             if chat?.kind != "group" && id != store.accountID {
@@ -47,9 +47,10 @@ struct ChatDetails: View {
                         store.ensureChat(id); dismiss()
                     }
                     Button("Save contact name") { name = store.displayName(id); editingName = true }
-                }
+                } header: { Eyebrow("Contact") }.cardRows()
             }
         }
+        .themedForm()
         .navigationTitle(chat?.kind == "group" ? "Group info" : "Contact info")
         .navigationBarTitleDisplayMode(.inline)
         .task { store.fetchFullAvatar(id) }
@@ -82,21 +83,21 @@ struct NewChatView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("New conversation") {
+                Section {
                     TextField("Phone number with country code", text: $phone).keyboardType(.phonePad).accessibilityIdentifier("new-contact-phone")
                     TextField("Save name (optional)", text: $name).textContentType(.name)
                     Button { store.newContact(phone: phone, name: name) } label: {
                         if store.newContactBusy { ProgressView() } else { Text("Continue") }
                     }.disabled(store.newContactBusy || phone.isEmpty).accessibilityIdentifier("new-contact-submit")
-                }
-                Section("Contacts") {
+                } header: { Eyebrow("New conversation") }.cardRows()
+                Section {
                     ForEach(store.contacts.filter { !$0.id.hasSuffix("@g.us") }.sorted { ($0.name ?? "") < ($1.name ?? "") }, id: \.id) { contact in
                         Button(store.displayName(contact.id)) {
                             store.ensureChat(contact.id); dismiss()
                         }
                     }
-                }
-            }.navigationTitle("New chat")
+                } header: { Eyebrow("Contacts") }.cardRows()
+            }.themedForm().navigationTitle("New chat")
                 .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
                 .onChange(of: store.navigation) { _, _ in if !store.navigation.isEmpty { dismiss() } }
         }
@@ -116,12 +117,12 @@ struct MessageDetails: View {
                 if let time = message.readAt { LabeledContent("Read / played", value: Date(timeIntervalSince1970: time).formatted()) }
                 if message.forwarded == true { Label("Forwarded", systemImage: "arrowshape.turn.up.right") }
                 if message.edited { Label("Edited", systemImage: "pencil") }
-            }
+            } header: { Eyebrow("Delivery") }.cardRows()
             if let reactions = message.reactionDetails, !reactions.isEmpty {
-                Section("Reactions") { ForEach(Array(reactions.enumerated()), id: \.offset) { _, reaction in LabeledContent(store.displayName(reaction.sender), value: reaction.emoji) } }
+                Section { ForEach(Array(reactions.enumerated()), id: \.offset) { _, reaction in LabeledContent(store.displayName(reaction.sender), value: reaction.emoji) } } header: { Eyebrow("Reactions") }.cardRows()
             }
-            Section { Text(message.id).font(.caption.monospaced()).textSelection(.enabled) } header: { Text("Message ID") }
-        }.navigationTitle("Message info").navigationBarTitleDisplayMode(.inline)
+            Section { Text(message.id).font(Theme.mono(12)).foregroundStyle(Theme.muted).textSelection(.enabled) } header: { Eyebrow("Message ID") }.cardRows()
+        }.themedForm().navigationTitle("Message info").navigationBarTitleDisplayMode(.inline)
     }
 }
 
@@ -136,9 +137,10 @@ struct ForwardPicker: View {
         NavigationStack {
             List(store.chats.filter { !$0.readOnly && (query.isEmpty || $0.name.localizedStandardContains(query)) }) { chat in
                 Button { target = chat } label: {
-                    HStack { Text(chat.name).foregroundStyle(.primary); Spacer(); if target?.id == chat.id { Image(systemName: "checkmark.circle.fill") } }
-                }
+                    HStack { Text(chat.name).foregroundStyle(Theme.fg); Spacer(); if target?.id == chat.id { Image(systemName: "checkmark.circle.fill").foregroundStyle(Theme.green) } }
+                }.cardRows()
             }
+            .themedForm()
             .searchable(text: $query).navigationTitle("Forward message")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
@@ -169,8 +171,8 @@ struct ContactCard: View {
                     }
                 }
                 ForEach(contact.emailAddresses, id: \.identifier) { email in Text(email.value as String).textSelection(.enabled) }
-            } else { Text(vcard).font(.footnote).textSelection(.enabled) }
-        }.navigationTitle("Contact card")
+            } else { Text(vcard).font(Theme.mono(12)).textSelection(.enabled) }
+        }.themedForm().navigationTitle("Contact card")
             .onChange(of: store.navigation) { _, _ in dismiss() }
     }
 }

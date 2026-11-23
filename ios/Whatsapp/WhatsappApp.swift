@@ -42,7 +42,7 @@ struct WhatsappApp: App {
                 } else { PairingView() }
             }
             .environment(store)
-            .tint(.accentColor)
+            .tint(Theme.fg)
             .preferredColorScheme(store.preferences.theme == "system" ? nil : (store.preferences.theme == "light" ? .light : .dark))
             .alert("Whatsapp", isPresented: Binding(get: { store.error != nil }, set: { if !$0 && store.error != nil { store.error = nil } })) {
                 Button("OK", role: .cancel) { store.error = nil }

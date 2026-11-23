@@ -163,7 +163,7 @@ struct ChatComposer: View {
     }
 
     private func actionIcon(_ name: String) -> some View {
-        Image(systemName: name).font(.system(size: 18, weight: .medium)).foregroundStyle(.black)
+        Image(systemName: name).font(.system(size: 18, weight: .medium)).foregroundStyle(Theme.bg)
             .frame(width: 32, height: 32).background(ChatAppearance.composerAction, in: Circle())
             .frame(width: 44, height: 44).contentShape(Rectangle())
     }

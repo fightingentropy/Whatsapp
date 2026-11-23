@@ -20,35 +20,32 @@ struct ChatsView: View {
         @Bindable var store = store
         NavigationStack(path: $store.navigation) {
             List {
-                if store.isDemo || store.syncProgress != nil || (!store.connected && slowConnection) {
-                    Label(store.connectionLabel, systemImage: store.isDemo ? "eye" : "arrow.triangle.2.circlepath")
-                        .font(.caption).foregroundStyle(.secondary).padding(.vertical, 2)
-                        .listRowSeparator(.hidden)
-                }
+                header.listRowBackground(Theme.bg).listRowSeparator(.hidden)
                 if store.chats.contains(where: \.archived) && (archivedRevealed || archived || !query.isEmpty) {
                     Button { archived.toggle() } label: {
                         HStack {
                             Label(archived ? "Back to chats" : "Archived", systemImage: archived ? "bubble.left.and.bubble.right" : "archivebox")
+                                .foregroundStyle(Theme.fg)
                             Spacer()
-                            Text("\(store.chats.filter(\.archived).count)").font(.caption).foregroundStyle(.secondary)
+                            Text("\(store.chats.filter(\.archived).count)").font(Theme.mono(12)).foregroundStyle(Theme.muted)
                         }
-                    }.tint(.primary)
+                    }.listRowBackground(Theme.bg).listRowSeparatorTint(Theme.line)
                 }
                 ForEach(visible) { chat in
-                    ChatListRow(chat: chat)
+                    ChatListRow(chat: chat).listRowBackground(Theme.bg).listRowSeparatorTint(Theme.line)
                 }
                 if !query.isEmpty {
-                    Section("Messages in downloaded history") {
-                        if store.searching { ProgressView("Searching…") }
+                    Section {
+                        if store.searching { ProgressView("Searching…").listRowBackground(Theme.bg) }
                         ForEach(store.searchHits, id: \.searchIdentity) { message in
                             Button { store.navigate(to: message.chat, message: message.id) } label: {
                                 VStack(alignment: .leading, spacing: 5) {
-                                    Text(store.chatByID(message.chat)?.name ?? "Chat").font(.headline)
-                                    Text(message.text).font(.subheadline).lineLimit(3).foregroundStyle(.secondary)
+                                    Text(store.chatByID(message.chat)?.name ?? "Chat").font(Theme.sans(15, .semibold)).foregroundStyle(Theme.fg)
+                                    Text(message.text).font(Theme.sans(14)).lineLimit(3).foregroundStyle(Theme.muted)
                                 }
-                            }
+                            }.listRowBackground(Theme.bg).listRowSeparatorTint(Theme.line)
                         }
-                    }
+                    } header: { Eyebrow("Messages in downloaded history") }
                 }
             }
             .refreshable { archivedRevealed = true }
@@ -59,26 +56,64 @@ struct ChatsView: View {
                 slowConnection = true
             }
             .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .background(Theme.bg.ignoresSafeArea())
+            .scrollDismissesKeyboard(.immediately)
             .overlay {
                 if store.chatsLoaded && visible.isEmpty && store.searchHits.isEmpty && !store.searching {
                     ContentUnavailableView(query.isEmpty ? "Your chats will appear here" : "No matching chats",
                                            systemImage: "bubble.left.and.bubble.right",
                                            description: Text(query.isEmpty ? "Keep this app open while WhatsApp syncs your recent history." : "Try another name or recent message."))
+                        .foregroundStyle(Theme.muted)
                         .allowsHitTesting(false)
                 }
             }
             .navigationTitle(archived ? "Archived" : "Chats")
-            .searchable(text: $query, prompt: "Search chats and messages")
+            .toolbar(.hidden, for: .navigationBar)
             .task(id: query) {
                 store.searchQuery = query
                 if query.isEmpty { store.search(""); return }
                 do { try await Task.sleep(for: .milliseconds(180)) } catch { return }
                 store.search(query)
             }
-            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button { newChat = true } label: { Image(systemName: "square.and.pencil") }.accessibilityLabel("New chat") } }
             .sheet(isPresented: $newChat) { NewChatView() }
             .navigationDestination(for: String.self) { ConversationView(chatID: $0) }
         }
+    }
+
+    /// Rota's page header: wordmark and action, a status line, then search.
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline) {
+                Wordmark(text: archived ? "archived" : "chats").accessibilityIdentifier("chats-title")
+                Spacer()
+                Button { newChat = true } label: { Image(systemName: "square.and.pencil") }
+                    .buttonStyle(PillStyle(kind: .secondary))
+                    .accessibilityLabel("New chat")
+            }
+            if store.isDemo || store.syncProgress != nil || (!store.connected && slowConnection) {
+                HStack(spacing: 6) {
+                    Dot(color: store.isDemo ? Theme.muted : (store.syncProgress != nil ? Theme.green : Theme.amber))
+                    Text(store.connectionLabel).font(Theme.mono(12.5)).foregroundStyle(Theme.muted)
+                }
+            }
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass").font(.system(size: 14, weight: .medium)).foregroundStyle(Theme.muted)
+                TextField("Search chats and messages", text: $query)
+                    .font(Theme.sans(15)).foregroundStyle(Theme.fg)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled().submitLabel(.search)
+                    .accessibilityIdentifier("chats-search")
+                if !query.isEmpty {
+                    Button { query = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(Theme.faint) }
+                        .buttonStyle(.plain).accessibilityLabel("Clear search")
+                }
+            }
+            .padding(.horizontal, 12).frame(height: 40)
+            .background(Theme.card, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+        .textCase(nil)
+        .padding(.top, 8).padding(.bottom, 6)
+        .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
     }
 }
 
@@ -118,39 +153,41 @@ private struct ChatListRow: View {
         let typing = store.isTyping(in: chat.id)
         Button { store.navigation.append(chat.id) } label: {
             HStack(spacing: 12) {
-                AvatarView(name: title, url: store.avatarURL(chat.id), group: chat.kind == "group", size: 52)
-                VStack(alignment: .leading, spacing: 5) {
+                AvatarView(name: title, url: store.avatarURL(chat.id), group: chat.kind == "group", size: 50)
+                VStack(alignment: .leading, spacing: 4) {
                     HStack(alignment: .firstTextBaseline) {
-                        Text(title).font(.system(.body, weight: .semibold)).foregroundStyle(.primary).lineLimit(1)
+                        Text(title).font(Theme.sans(16, .semibold)).foregroundStyle(Theme.fg).lineLimit(1)
                         Spacer(minLength: 8)
                         Text(ChatDate.preview(chat.timestamp))
-                            .font(.caption2).foregroundStyle(chat.unread > 0 ? Color.accentColor : .secondary).fixedSize()
+                            .font(Theme.mono(11.5, chat.unread > 0 ? .semibold : .regular))
+                            .foregroundStyle(chat.unread > 0 ? Theme.fg : Theme.muted).fixedSize()
                     }
                     HStack(alignment: .center, spacing: 5) {
                         Text(typing ? store.presenceLabel(chat) ?? chat.preview : chat.preview.isEmpty ? "No messages yet" : chat.preview)
-                            .font(.subheadline).foregroundStyle(typing ? Color.accentColor : .secondary).lineLimit(2)
+                            .font(Theme.sans(14)).foregroundStyle(typing ? Theme.green : Theme.muted).lineLimit(2)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                        if chat.pinned { Image(systemName: "pin.fill").font(.system(size: 10)).rotationEffect(.degrees(35)).foregroundStyle(.tertiary).accessibilityLabel("Pinned") }
-                        if chat.muted { Image(systemName: "bell.slash.fill").font(.caption2).foregroundStyle(.tertiary) }
+                        if chat.pinned { Image(systemName: "pin.fill").font(.system(size: 10)).rotationEffect(.degrees(35)).foregroundStyle(Theme.faint).accessibilityLabel("Pinned") }
+                        if chat.muted { Image(systemName: "bell.slash.fill").font(.caption2).foregroundStyle(Theme.faint) }
                         if chat.unread > 0 {
-                            Text(chat.unread > 99 ? "99+" : "\(chat.unread)").font(.system(size: 11, weight: .semibold)).foregroundStyle(Color(.systemBackground))
-                                .padding(.horizontal, 5).frame(minWidth: 18, minHeight: 18).background(Color.accentColor, in: Capsule())
+                            Text(chat.unread > 99 ? "99+" : "\(chat.unread)").font(Theme.mono(11, .semibold)).foregroundStyle(Theme.bg)
+                                .padding(.horizontal, 5).frame(minWidth: 19, minHeight: 19)
+                                .background(chat.muted ? Theme.muted : Theme.fg, in: Capsule())
                                 .accessibilityLabel("\(chat.unread) unread messages")
                         }
                     }
                 }
-            }.padding(.vertical, 7).contentShape(Rectangle())
+            }.padding(.vertical, 6).contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .alignmentGuide(.listRowSeparatorLeading) { _ in 64 }
+        .alignmentGuide(.listRowSeparatorLeading) { _ in 62 }
         .task(id: store.connected) { store.avatar(chat.id) }
         .accessibilityIdentifier("chat-\(chat.id)")
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-            Button(chat.archived ? "Unarchive" : "Archive") { store.setArchived(chat) }.tint(.indigo)
-            Button(chat.pinned ? "Unpin" : "Pin") { store.setPinned(chat) }.tint(.orange)
+            Button(chat.archived ? "Unarchive" : "Archive") { store.setArchived(chat) }.tint(Theme.muted)
+            Button(chat.pinned ? "Unpin" : "Pin") { store.setPinned(chat) }.tint(Theme.amber)
         }
         .swipeActions(edge: .leading, allowsFullSwipe: false) {
-            Button("Read") { store.markChatRead(chat) }.tint(.green)
+            Button("Read") { store.markChatRead(chat) }.tint(Theme.green)
         }
         .contextMenu {
             Button(chat.pinned ? "Unpin chat" : "Pin chat") { store.setPinned(chat) }

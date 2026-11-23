@@ -1,15 +1,17 @@
 import SwiftUI
 
 enum ChatAppearance {
-    static let canvas = adaptive(light: 0xF3F3EF, dark: 0x101619)
-    static let incoming = adaptive(light: 0xFFFFFF, dark: 0x222B30)
-    static let outgoing = adaptive(light: 0xE2F2DA, dark: 0x244139)
-    static let field = adaptive(light: 0xFFFFFF, dark: 0x262D31)
-    static let composerBar = adaptive(light: 0xF7F7F7, dark: 0x111111)
-    static let composerField = adaptive(light: 0xFFFFFF, dark: 0x262626)
-    static let attachmentPanel = adaptive(light: 0xF1F1F1, dark: 0x202020)
-    static let attachmentCircle = adaptive(light: 0xE2E2E2, dark: 0x353535)
-    static let composerAction = Color(red: 0.12, green: 0.79, blue: 0.38)
+    // The shared Rota/health palette: paper canvas, card and raised bubbles,
+    // and ink for the composer's primary action.
+    static let canvas = Theme.bg
+    static let incoming = Theme.card
+    static let outgoing = Theme.raised
+    static let field = Theme.card
+    static let composerBar = Theme.bg
+    static let composerField = Theme.card
+    static let attachmentPanel = Theme.card
+    static let attachmentCircle = Theme.raised
+    static let composerAction = Theme.fg
     static let readReceipt = adaptive(light: 0x197B9C, dark: 0x7AC4DC)
     private static let senderColors = [
         adaptive(light: 0x33786C, dark: 0x8AC6B6), adaptive(light: 0x536B99, dark: 0x9CB5DD),
