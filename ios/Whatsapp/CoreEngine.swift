@@ -99,7 +99,7 @@ final class CoreEngine: MessagingEngine, @unchecked Sendable {
     /// already failed by stop().
     static func survivesStop(_ event: CoreEvent) -> Bool {
         if event.type == "messages" { return event.requested != true }
-        return !["link", "sync", "progress", "around", "newer", "load_failed", "audio"].contains(event.type)
+        return !["link", "sync", "progress", "around", "newer", "load_failed", "audio", "caught_up"].contains(event.type)
     }
 
     private func drainOnQueue() {

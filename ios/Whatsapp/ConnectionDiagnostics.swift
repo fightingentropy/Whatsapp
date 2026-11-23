@@ -19,6 +19,9 @@ final class ConnectionDiagnostics {
         case unknownLinkState = "unknown_link_state"
         case syncStarted = "sync_started"
         case syncFinished = "sync_finished"
+        case refreshStarted = "refresh_started"
+        case refreshCaughtUp = "refresh_caught_up"
+        case refreshTimedOut = "refresh_timed_out"
     }
 
     static let key = "connectionDiagnostics"

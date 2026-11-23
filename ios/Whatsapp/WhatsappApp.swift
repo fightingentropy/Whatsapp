@@ -57,6 +57,9 @@ struct WhatsappApp: App {
                 store.clearMemoryCaches()
             }
         }
+        .backgroundTask(.appRefresh(BackgroundRefresh.identifier)) { [store] in
+            await store.refreshInBackground()
+        }
     }
 }
 

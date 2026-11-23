@@ -247,6 +247,60 @@ final class PairingLifecycleTests: XCTestCase {
         store.activate()
     }
 
+    private func linkedStore() -> (ChatStore, FakeMessagingEngine, FakeBackgroundActivity) {
+        let defaults = UserDefaults(suiteName: "PairingLifecycleTests-\(UUID().uuidString)")!
+        defaults.set(true, forKey: "hasLinkedSession")
+        let engine = FakeMessagingEngine()
+        let activity = FakeBackgroundActivity()
+        return (ChatStore(defaults: defaults, engine: engine, backgroundActivity: activity), engine, activity)
+    }
+
+    func testBackgroundRefreshCatchesUpWithoutPresenceThenDisconnects() async {
+        let (store, engine, activity) = linkedStore()
+        engine.onStop = { engine.finishStop() }
+        let refresh = Task { await store.refreshInBackground() }
+        while engine.starts == 0 { await Task.yield() }
+        XCTAssertEqual(engine.presence, [false], "Contacts and the phone must not see an active device")
+        XCTAssertTrue(engine.stops.isEmpty, "Waits for the queued messages")
+        store.apply([CoreEvent(type: "caught_up")])
+        await refresh.value
+        XCTAssertEqual(engine.starts, 1)
+        XCTAssertTrue(engine.stops.isEmpty, "Stopped once caught up")
+        XCTAssertEqual(store.status, "suspended")
+        XCTAssertTrue(activity.begun.isEmpty, "Uses the refresh task's own time, not a UIKit assertion")
+    }
+
+    func testOpeningDuringBackgroundRefreshKeepsTheConnectionAndPresence() async {
+        let (store, engine, _) = linkedStore()
+        let refresh = Task { await store.refreshInBackground() }
+        while engine.starts == 0 { await Task.yield() }
+        store.activate()
+        await refresh.value
+        XCTAssertEqual(engine.starts, 1, "Reuses the refresh connection")
+        XCTAssertTrue(engine.stops.isEmpty)
+        XCTAssertEqual(engine.presence, [false, true])
+    }
+
+    func testBackgroundRefreshLeavesTheGracePeriodConnectionAlone() async {
+        let (store, engine, activity, _) = fixture()
+        store.apply([{ var event = CoreEvent(type: "link"); event.status = "connected"; return event }()])
+        store.prepareForBackground()
+        store.background()
+        await store.refreshInBackground()
+        XCTAssertEqual(engine.starts, 1)
+        XCTAssertTrue(engine.presence.isEmpty)
+        XCTAssertEqual(activity.begun.count, 1)
+        store.activate()
+    }
+
+    func testChatListShowsNoEmptyStateBeforeTheArchiveArrives() {
+        let (store, _, _, _) = fixture()
+        XCTAssertFalse(store.chatsLoaded)
+        var chats = CoreEvent(type: "chats"); chats.chats = []
+        store.apply([chats])
+        XCTAssertTrue(store.chatsLoaded)
+    }
+
     func testStorageFailureCanRetryOnNextActivation() {
         let (store, engine, _, _) = fixture()
         engine.onError?("Fixture storage failure")
@@ -261,6 +315,7 @@ private final class FakeMessagingEngine: MessagingEngine {
     var onSend: (() -> Void)?
     var onStop: (() -> Void)?
     var commands: [String] = []
+    var presence: [Bool] = []
     var stops: [() -> Void] = []
     /// Unpolled events the real engine returns from wa_stop.
     var finalEvents: [CoreEvent] = []
@@ -270,6 +325,7 @@ private final class FakeMessagingEngine: MessagingEngine {
     func send(_ command: [String: Any], completion: ((Bool) -> Void)?) {
         onSend?()
         commands.append(command["type"] as? String ?? "")
+        if command["type"] as? String == "presence", let available = command["available"] as? Bool { presence.append(available) }
         completion?(true)
     }
     func stop(completion: @escaping () -> Void) { stops.append(completion); onStop?() }

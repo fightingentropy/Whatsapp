@@ -15,7 +15,8 @@ as a separate device, with message actions, voice and attachment sending,
 archive search, contact/chat controls, rich messages, emoji/GIF/sticker pickers
 and inline native video playback. Drafts and attachment queues persist locally;
 failed uploads remain available to retry. It receives messages while connected and offers
-optional local alerts, but has no always-on background push delivery. See the
+optional local alerts, and catches up during iOS Background App Refresh when iOS
+allows it, but has no always-on background push delivery. See the
 iOS README for the supported features, mobile limits and build steps.
 
 The standalone project lives at [fightingentropy/Whatsapp](https://github.com/fightingentropy/Whatsapp).

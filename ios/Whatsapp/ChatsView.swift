@@ -6,6 +6,9 @@ struct ChatsView: View {
     @State private var archived = false
     @State private var archivedRevealed = false
     @State private var newChat = false
+    /// A reconnect that finishes quickly shows nothing; the status row
+    /// appears only when connecting takes noticeably long.
+    @State private var slowConnection = false
 
     private var visible: [Chat] {
         store.chats.filter {
@@ -17,7 +20,7 @@ struct ChatsView: View {
         @Bindable var store = store
         NavigationStack(path: $store.navigation) {
             List {
-                if store.isDemo || !store.connected || store.syncProgress != nil {
+                if store.isDemo || store.syncProgress != nil || (!store.connected && slowConnection) {
                     Label(store.connectionLabel, systemImage: store.isDemo ? "eye" : "arrow.triangle.2.circlepath")
                         .font(.caption).foregroundStyle(.secondary).padding(.vertical, 2)
                         .listRowSeparator(.hidden)
@@ -49,9 +52,15 @@ struct ChatsView: View {
                 }
             }
             .refreshable { archivedRevealed = true }
+            .task(id: store.connected) {
+                slowConnection = false
+                guard !store.connected else { return }
+                do { try await Task.sleep(for: ChatsView.connectionPatience) } catch { return }
+                slowConnection = true
+            }
             .listStyle(.plain)
             .overlay {
-                if visible.isEmpty && store.searchHits.isEmpty && !store.searching {
+                if store.chatsLoaded && visible.isEmpty && store.searchHits.isEmpty && !store.searching {
                     ContentUnavailableView(query.isEmpty ? "Your chats will appear here" : "No matching chats",
                                            systemImage: "bubble.left.and.bubble.right",
                                            description: Text(query.isEmpty ? "Keep this app open while WhatsApp syncs your recent history." : "Try another name or recent message."))
@@ -71,6 +80,11 @@ struct ChatsView: View {
             .navigationDestination(for: String.self) { ConversationView(chatID: $0) }
         }
     }
+}
+
+extension ChatsView {
+    /// Typical reconnects after reopening finish well within this.
+    static let connectionPatience: Duration = .seconds(2)
 }
 
 extension Message { var searchIdentity: String { chat + ":" + id } }

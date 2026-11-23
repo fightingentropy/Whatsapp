@@ -27,7 +27,11 @@ and archive. This is an explicit additional target; keep the Mac build intact.
   JSON must never be logged. iOS uses a separate container and linked session,
   with no Mac migration, telemetry, browser or push relay. A bounded UIKit
   background task finishes active work before stopping the connection; foreground
-  activation restarts it. Do not claim background delivery. Test with `--demo`
+  activation restarts it. A `BGAppRefreshTask` (`BackgroundRefresh`) runs only
+  when no worker is running: it connects with presence withheld
+  (`Command::Presence`), waits for `Event::CaughtUp` (the offline backlog has been
+  archived) up to 18 s, settles receipts and stops; opening the app during it keeps
+  that connection and restores presence. Do not claim background delivery. Test with `--demo`
   and fixtures, never send live messages as an automated check.
 
 - The iPhone uses Observation for property-scoped view updates. Recent chat

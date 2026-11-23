@@ -238,6 +238,7 @@ pub async fn run(
         group_info_retry: Vec::new(),
         presence_subscribed: HashSet::new(),
         presence_wanted: None,
+        presence_hidden: false,
         send_tails: HashMap::new(),
         pending_older: HashMap::new(),
         local_revokes: HashSet::new(),
@@ -339,6 +340,9 @@ struct Worker {
     presence_subscribed: HashSet<String>,
     /// The direct chat opened last, subscribed again once connected.
     presence_wanted: Option<ChatId>,
+    /// Connected without being announced as online, for the iPhone's
+    /// background refresh: contacts and the phone must not see an active device.
+    presence_hidden: bool,
     /// Completion of the latest queued send per chat; see `chain_send`.
     send_tails: HashMap<ChatId, oneshot::Receiver<()>>,
     /// Pending phone-history request time and boundary by chat.
@@ -1306,8 +1310,9 @@ impl Worker {
                 if let Some(client) = self.client.clone() {
                     let me = self.me_pn.clone().and_then(|pn| Self::jid_of(&pn));
                     let commands = self.commands.clone();
+                    let announce = !self.presence_hidden;
                     tokio::spawn(async move {
-                        if let Err(error) = client.presence().set_available().await {
+                        if announce && let Err(error) = client.presence().set_available().await {
                             log::debug!("presence not announced: {error}");
                         }
                         // whatsapp-rust also enforces the account privacy setting.
@@ -1495,7 +1500,12 @@ impl Worker {
                     about: self.me_about.clone(),
                 });
             }
-            E::OfflineSyncCompleted(_) => self.emit_chats(),
+            E::OfflineSyncCompleted(_) => {
+                // Bot events are handled in order, so every queued message
+                // before this marker has already been archived.
+                self.emit_chats();
+                self.emit(Event::CaughtUp);
+            }
             _ => {}
         }
     }
@@ -3102,6 +3112,26 @@ impl Worker {
                     client.logout().await;
                 } else {
                     self.on_logged_out().await;
+                }
+            }
+            Command::Presence { available } => {
+                self.presence_hidden = !available;
+                // Before the connection this only decides what it announces;
+                // afterwards it corrects whatever was announced.
+                if self.status == LinkStatus::Connected
+                    && let Some(client) = self.client.clone()
+                {
+                    tokio::spawn(async move {
+                        let presence = client.presence();
+                        let result = if available {
+                            presence.set_available().await
+                        } else {
+                            presence.set_unavailable().await
+                        };
+                        if let Err(error) = result {
+                            log::debug!("presence not changed: {error}");
+                        }
+                    });
                 }
             }
             Command::Reconnect => {
@@ -7274,6 +7304,7 @@ mod receipt_tests {
             group_info_retry: Vec::new(),
             presence_subscribed: HashSet::new(),
             presence_wanted: None,
+            presence_hidden: false,
             send_tails: HashMap::new(),
             pending_older: HashMap::new(),
             local_revokes: HashSet::new(),
@@ -7925,6 +7956,60 @@ mod receipt_tests {
             })
             .await;
         assert_eq!(worker.qr.as_deref(), Some("fresh-qr"));
+    }
+
+    #[tokio::test]
+    async fn presence_can_be_withheld_before_connecting_and_restored() {
+        let (mut worker, _events, _inbox, _wa) = worker();
+        assert!(!worker.presence_hidden, "announced by default");
+        worker
+            .handle_command(Command::Presence { available: false })
+            .await;
+        assert!(worker.presence_hidden);
+        worker
+            .handle_command(Command::Presence { available: true })
+            .await;
+        assert!(!worker.presence_hidden);
+    }
+
+    #[tokio::test]
+    async fn the_end_of_the_offline_backlog_reports_caught_up_after_the_chat_list() {
+        let (mut worker, events, _inbox, _wa) = worker();
+        worker.archive.ensure_chat(PEER, "Peer").unwrap();
+        while events.try_recv().is_ok() {}
+        worker
+            .handle_bot_event(BotEvent {
+                generation: worker.bot_generation,
+                event: Arc::new(wa_events::Event::OfflineSyncCompleted(
+                    wa_events::OfflineSyncCompleted::builder().count(3).build(),
+                )),
+            })
+            .await;
+        let emitted: Vec<Event> = events.try_iter().collect();
+        let chats = emitted
+            .iter()
+            .position(|event| matches!(event, Event::Chats(chats) if chats.iter().any(|chat| chat.id == PEER)))
+            .expect("the refreshed chat list");
+        let caught_up = emitted
+            .iter()
+            .position(|event| matches!(event, Event::CaughtUp))
+            .expect("caught up");
+        assert!(chats < caught_up, "the list is current before caught up");
+
+        // A stale bot's marker does not describe the current connection.
+        worker
+            .handle_bot_event(BotEvent {
+                generation: worker.bot_generation + 1,
+                event: Arc::new(wa_events::Event::OfflineSyncCompleted(
+                    wa_events::OfflineSyncCompleted::builder().count(0).build(),
+                )),
+            })
+            .await;
+        assert!(
+            !events
+                .try_iter()
+                .any(|event| matches!(event, Event::CaughtUp))
+        );
     }
 
     #[tokio::test]

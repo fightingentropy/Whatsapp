@@ -145,9 +145,17 @@ Silicon Mac to build. This is a personal-device build, not an App Store release.
 
 Messages arrive while the app is open. UIKit provides a short, bounded grace
 period for active work when leaving it; the app then stops its connection and
-reconnects when reopened. Optional local notifications work only while the
-connection is running, including that brief allowance; muted chats do not notify.
-**No push delivery or always-on background connection.** Desktop tray behavior,
+reconnects when reopened. While closed, the app also asks iOS for Background App
+Refresh: when iOS grants a slot (it decides how often, from your usage, battery
+and the Background App Refresh setting), the app connects without appearing
+online, takes the messages WhatsApp queued for it, archives them, shows the usual
+local notifications and disconnects within about 25 seconds. Opening the app then
+shows them at once, with only newer messages left to fetch. The chat list appears
+from the local archive immediately; the connection status row appears only when
+reconnecting takes more than two seconds. Optional local notifications work only
+while a connection is running; muted chats do not notify.
+**No push delivery or always-on background connection**: refreshes are
+opportunistic, so a message can still wait until the next refresh or launch. Desktop tray behavior,
 desktop window shortcuts and the Mac updater do not apply to iOS; install a new
 signed build to update this personal companion.
 Brief app switches reuse the still-running worker and visible conversation;
@@ -158,7 +166,8 @@ pairing clears its expired code and explains how to retry. The last 32 connectio
 and lifecycle stages are saved locally in app preferences for troubleshooting;
 they contain timestamps and background time only, never codes, phone numbers,
 account identifiers, messages or error payloads. They are not transmitted.
-No background audio workaround, background mode or remote notification server is used.
+No background audio workaround or remote notification server is used; the only
+background mode is `fetch`, for the refresh above.
 Removing the app removes its local history. Unlink this companion in Settings or
 from the official app's Linked Devices settings when finished using it.
 

@@ -1,3 +1,4 @@
+import BackgroundTasks
 import UIKit
 
 @MainActor
@@ -42,4 +43,28 @@ final class BackgroundActivityCompletion {
         task = .invalid
         activity.end(ending)
     }
+}
+
+/// Opportunistic catch-up while the app is closed. iOS decides when (and
+/// whether) the task runs, from usage, battery and the Background App Refresh
+/// setting; there is no push, so this narrows the gap rather than closing it.
+enum BackgroundRefresh {
+    static let identifier = "org.erlin.whatsapp.ios.refresh"
+    /// The earliest next attempt. iOS usually waits longer.
+    static let interval: TimeInterval = 15 * 60
+    /// Time to wait for the offline backlog. iOS allows about 30 seconds in
+    /// all, and stopping the worker can take eight of them.
+    static let catchUpLimit: Duration = .seconds(18)
+    /// Lets receipts for the drained backlog leave before disconnecting.
+    static let settle: Duration = .milliseconds(1500)
+
+    static func schedule(after interval: TimeInterval = interval) {
+        let request = BGAppRefreshTaskRequest(identifier: identifier)
+        request.earliestBeginDate = Date(timeIntervalSinceNow: interval)
+        // Replaces an earlier request with the same identifier. Fails in the
+        // simulator and when Background App Refresh is off; neither is an error.
+        try? BGTaskScheduler.shared.submit(request)
+    }
+
+    static func cancel() { BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: identifier) }
 }

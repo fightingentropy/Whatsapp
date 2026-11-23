@@ -1284,6 +1284,7 @@ impl App {
                     self.chat_search.accept(&chat, request, result, truncated);
                 }
                 Event::Incoming { chat, message } => self.maybe_notify(&chat, &message),
+                Event::CaughtUp => {}
                 Event::Picked { chat, paths } => {
                     if self.open_chat.as_deref() == Some(chat.as_str()) {
                         self.stage_files(paths);

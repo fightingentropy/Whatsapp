@@ -326,6 +326,11 @@ pub enum Command {
     /// Unlinks the device remotely and locally.
     Unlink,
     Reconnect,
+    /// Whether this device is announced as online. Off for the iPhone's
+    /// background refresh; on by default and whenever the app is in use.
+    Presence {
+        available: bool,
+    },
     /// Internal QR-expiry recovery, scoped to the client that ran out of codes.
     RestartPairing {
         generation: u64,
@@ -487,6 +492,10 @@ pub enum Event {
         chat: ChatId,
         paths: Vec<PathBuf>,
     },
+    /// The server finished delivering what was queued while this device was
+    /// offline, and it is all archived. The iPhone's background refresh waits
+    /// for this before disconnecting; the desktop needs no action.
+    CaughtUp,
     /// Live incoming message for desktop notification.
     Incoming {
         chat: ChatId,

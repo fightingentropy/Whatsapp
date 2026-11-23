@@ -18,6 +18,9 @@ final class ChatStore {
     var archiveComplete = false
     var phoneComplete = false
     var syncProgress: Int?
+    /// The archived chat list has arrived at least once; until then an empty
+    /// list means "not read yet", not "no chats".
+    var chatsLoaded = false
     var error: String?
     @ObservationIgnored var avatars: [String: String] = [:] { didSet { syncIdentityValues(oldValue, avatars) { $0.avatar = $1 } } }
     @ObservationIgnored var avatarRevisions: [String: String] = [:] { didSet { syncIdentityValues(oldValue, avatarRevisions) { $0.revision = $1 } } }
@@ -113,6 +116,10 @@ final class ChatStore {
     @ObservationIgnored private var backgroundTask = UIBackgroundTaskIdentifier.invalid
     @ObservationIgnored private var backgroundGeneration = 0
     @ObservationIgnored private var stoppingBackgroundTasks: [Int: BackgroundActivityCompletion] = [:]
+    /// The server has delivered everything queued while this worker was away.
+    @ObservationIgnored var caughtUp = false
+    /// A background refresh owns the running worker, connected without presence.
+    @ObservationIgnored private var refreshing = false
 
     var connected: Bool { status == "connected" }
     var canPost: Bool { (connected || isDemo) && selectedChat != nil && currentChat?.readOnly != true }
@@ -143,7 +150,7 @@ final class ChatStore {
         self.hasSession = demo || defaults.bool(forKey: "hasLinkedSession")
         self.sendReadReceipts = defaults.object(forKey: "readReceipts") as? Bool ?? true
         self.draftStorage = draftStorage
-        if demo { root = Self.demoRoot; loadDemo(); restoreDrafts(); return }
+        if demo { root = Self.demoRoot; loadDemo(); restoreDrafts(); chatsLoaded = true; return }
         if engine is CoreEngine {
             root = try? CoreEngine.storageDirectory()
             self.draftStorage = draftStorage ?? root.map { DraftStorage(root: $0) }
@@ -154,6 +161,7 @@ final class ChatStore {
         engine.onEvents = { [weak self] in self?.apply($0) }
         engine.onError = { [weak self] in
             self?.engineStarted = false
+            self?.refreshing = false
             self?.diagnostics.record(.engineError)
             self?.error = $0; self?.status = "failed"
             self?.loading = false; self?.fetchingPhone = false; self?.loadingNewer = false
@@ -174,6 +182,12 @@ final class ChatStore {
         finishBackgroundTask()
         guard !isDemo else { return }
         diagnostics.record(.foreground)
+        if refreshing {
+            // Opened during a background refresh: keep its connection, and
+            // announce this device as in use again.
+            refreshing = false
+            engine.send(["type": "presence", "available": true])
+        }
         // Inactive scenes and short app switches leave the worker running.
         // It already archives and delivers updates; reloading here repeats work
         // and flashes a spinner over a conversation that is still current.
@@ -183,6 +197,7 @@ final class ChatStore {
             guard let root else { return }
             if status == "suspended" || status == "suspending" { status = "connecting" }
             engineStarted = true
+            caughtUp = false
             recentConversations.removeAll()
             requestedAvatars.removeAll()
             engine.start(root: root)
@@ -228,6 +243,7 @@ final class ChatStore {
         // Fallback for a scene without a preceding inactive notification.
         // An unavailable assertion stops immediately rather than trusting a timer.
         if backgroundTask == .invalid { prepareForBackground() }
+        if hasSession { BackgroundRefresh.schedule() }
         diagnostics.record(.background, remaining: backgroundActivity.timeRemaining)
         checkBackgroundBudget(generation: backgroundGeneration)
     }
@@ -288,6 +304,56 @@ final class ChatStore {
             completion.end()
         } else {
             suspend(generation: generation, expired: true)
+        }
+    }
+
+    /// The system's background refresh: connect without appearing online, take
+    /// what the server queued while the app was closed (archived, with the usual
+    /// notifications), then disconnect. Opening the app meanwhile keeps the
+    /// connection. iOS decides when this runs; it is not push delivery.
+    func refreshInBackground() async {
+        guard !isDemo, hasSession else { return }
+        BackgroundRefresh.schedule()
+        // A worker still inside the UIKit grace period, or stopping, is not ours.
+        guard !foreground, !engineStarted, backgroundTask == .invalid, stoppingBackgroundTasks.isEmpty else { return }
+        if root == nil { root = try? CoreEngine.storageDirectory() }
+        guard let root else { return }
+        backgroundGeneration += 1
+        let generation = backgroundGeneration
+        diagnostics.record(.refreshStarted)
+        refreshing = true
+        engineStarted = true
+        caughtUp = false
+        status = "connecting"
+        recentConversations.removeAll()
+        requestedAvatars.removeAll()
+        pageReplies.removeAll()
+        fetchingPhone = false; loadingNewer = false; jumpRequested = false
+        engine.start(root: root)
+        engine.send(["type": "presence", "available": false])
+        let clock = ContinuousClock()
+        let deadline = clock.now + BackgroundRefresh.catchUpLimit
+        func current() -> Bool { generation == backgroundGeneration && refreshing && engineStarted && !foreground }
+        while !caughtUp, clock.now < deadline, !Task.isCancelled, current() {
+            try? await Task.sleep(for: .milliseconds(250))
+        }
+        if caughtUp, !Task.isCancelled, current() { try? await Task.sleep(for: BackgroundRefresh.settle) }
+        guard current() else { return }
+        diagnostics.record(caughtUp ? .refreshCaughtUp : .refreshTimedOut)
+        refreshing = false
+        engineStarted = false
+        status = "suspending"
+        await withCheckedContinuation { (finished: CheckedContinuation<Void, Never>) in
+            engine.stop { [weak self] in
+                defer { finished.resume() }
+                guard let self else { return }
+                self.flushDrafts()
+                if let id = self.uploadingAttachment { self.failAttachment(id, error: "Interrupted. Check this chat before retrying.") }
+                self.diagnostics.record(.engineStopped)
+                if !self.foreground, generation == self.backgroundGeneration {
+                    self.status = "suspended"; self.loading = false; self.fetchingPhone = false
+                }
+            }
         }
     }
 
@@ -520,6 +586,7 @@ final class ChatStore {
                     markRead()
                     pumpAttachments()
                 } else if status == "unlinked" || status == "logged_out" {
+                    if !isDemo { BackgroundRefresh.cancel() }
                     clearMemoryCaches()
                     phoneHistory.removeAll()
                     hasSession = false
@@ -540,8 +607,10 @@ final class ChatStore {
                     }
                 }
                 if status == "failed" { error = event.detail ?? "Could not connect to WhatsApp." }
+            case "caught_up": caughtUp = true
             case "me": accountName = event.name ?? "Your account"; accountID = event.id; accountAbout = event.about
             case "chats":
+                if !chatsLoaded { chatsLoaded = true }
                 // The worker re-emits unchanged rows (such as a read echo);
                 // skip them so the chat list is not rebuilt for nothing.
                 for chat in event.chats ?? [] where chatsByID[chat.id] != chat {

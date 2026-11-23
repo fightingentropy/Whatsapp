@@ -33,6 +33,9 @@ enum Input {
         phone: String,
     },
     Reconnect {},
+    Presence {
+        available: bool,
+    },
     Load {
         chat: String,
         before: Option<(i64, String)>,
@@ -246,6 +249,7 @@ fn parse_command(input: &str, dirs: Option<&AppDirs>) -> Option<Command> {
             Some(Command::PairWithPhone(phone))
         }
         Input::Reconnect {} => Some(Command::Reconnect),
+        Input::Presence { available } => Some(Command::Presence { available }),
         Input::Load { chat, before }
             if valid_chat(&chat)
                 && before
@@ -667,6 +671,7 @@ fn event_json(event: Event) -> Option<Value> {
             last_seen,
         } => json!({"type":"presence","id":id,"online":online,"lastSeen":last_seen}),
         Event::ContactReady { id, name } => json!({"type":"contact_ready","id":id,"name":name}),
+        Event::CaughtUp => json!({"type":"caught_up"}),
         Event::Incoming { chat, message } => {
             json!({"type":"incoming","chat":chat,"message":message_json(&message)})
         }
@@ -1126,6 +1131,23 @@ mod tests {
         ] {
             assert!(!valid_giphy_url(url), "accepted fixture {url}");
         }
+    }
+
+    #[test]
+    fn background_refresh_connects_without_announcing_presence() {
+        assert!(matches!(
+            parse_command(r#"{"type":"presence","available":false}"#, None),
+            Some(Command::Presence { available: false })
+        ));
+        assert!(matches!(
+            parse_command(r#"{"type":"presence","available":true}"#, None),
+            Some(Command::Presence { available: true })
+        ));
+        assert!(parse_command(r#"{"type":"presence"}"#, None).is_none());
+        assert_eq!(
+            event_json(Event::CaughtUp),
+            Some(serde_json::json!({"type":"caught_up"}))
+        );
     }
 
     #[test]
